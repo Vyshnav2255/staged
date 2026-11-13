@@ -134,23 +134,30 @@ function renderSidebar() {
   };
   const total = repos.reduce((n, r) => n + r.commits.length, 0);
   const waiting = repos.filter((r) => r.dirty).length;
-  let html = `<button class="repo is-today" data-today aria-current="${state.view === 'today'}">
-      <span class="repo-name">${icon('Sun03', 15)}Today</span>
+  const nameOf = (r) => `<span class="repo-name">${r.remote ? `<span class="repo-host" title="On ${esc(hostOf(r).name)}">${icon(hostOf(r).icon, 14)}</span>` : `<span class="repo-host is-local" title="Local only">${icon('Folder01', 14)}</span>`}<span class="repo-label">${esc(r.name)}</span>${r.dirty ? `<span class="repo-dirty" title="${r.dirty} uncommitted"></span>` : ''}</span>`;
+  let html = `<div class="side-top">
+    <button class="repo is-today" data-today aria-current="${state.view === 'today'}">
+      <span class="repo-name"><span class="repo-host">${icon('Sun03', 14)}</span><span class="repo-label">Today</span></span>
       <span class="repo-meta mono">${waiting ? `${waiting} repo${waiting > 1 ? 's' : ''} with work waiting` : 'all clear'}</span>
     </button>
     <button class="repo" data-repo="all" aria-current="${state.repo === 'all' && !GLOBAL_VIEWS.includes(state.view)}">
-      <span class="repo-name">All repos</span>
+      <span class="repo-name"><span class="repo-host">${icon('Queue02', 14)}</span><span class="repo-label">All repos</span></span>
       <span class="repo-meta mono">${repos.length} repos · ${fmt.format(total)} commits</span>
       ${spark(repos.flatMap((r) => r.commits.filter((c) => c.t > now - 12 * WEEK)))}
-    </button><div class="repo-sep"></div>`;
+    </button>
+  </div>
+  <div class="side-sec"><span class="side-sec-h mono">Repos <b>${repos.length}</b></span>${repos.length > 6 ? `<label class="side-filter">${icon('Search01', 13)}<input id="repoFilter" type="search" placeholder="Filter" value="${esc(state.sideQ || '')}" autocomplete="off" spellcheck="false" aria-label="Filter repos"></label>` : ''}</div>
+  <div class="repo-list">`;
   for (const r of repos) {
     const meta = [r.last ? ago(r.last) : 'no commits', r.dirty ? `${r.dirty} uncommitted` : ''].filter(Boolean).join(' · ');
-    html += `<button class="repo" data-repo="${esc(r.name)}" aria-current="${state.repo === r.name && !GLOBAL_VIEWS.includes(state.view)}" title="${esc(r.name)}">
-      <span class="repo-name">${r.remote ? `<span class="repo-host" title="On ${esc(hostOf(r).name)}">${icon(hostOf(r).icon, 13)}</span>` : ''}${esc(r.name)}</span>
+    const hide = state.sideQ && !r.name.toLowerCase().includes(state.sideQ.toLowerCase());
+    html += `<button class="repo" data-repo="${esc(r.name)}" aria-current="${state.repo === r.name && !GLOBAL_VIEWS.includes(state.view)}" title="${esc(r.name)}"${hide ? ' hidden' : ''}>
+      ${nameOf(r)}
       <span class="repo-meta mono">${esc(meta)}</span>
       ${spark(r.commits)}
     </button>`;
   }
+  html += `<p class="side-empty muted" ${repos.some((r) => !state.sideQ || r.name.toLowerCase().includes(state.sideQ.toLowerCase())) ? 'hidden' : ''}>No repo matches</p></div>`;
   $('#repos').innerHTML = html;
   const roots = (state.data.roots || [state.data.root]).map((x) => x.replace(/^(\/(Users|home|sessions)\/[^/]+|[A-Z]:\\Users\\[^\\]+)/, '~'));
   $('#root').textContent = roots.join(', ');
@@ -603,6 +610,19 @@ $('#cmdk').innerHTML = `${icon('Command', 14)}<span class="mono">K</span>`;
 $('#readmeLink').innerHTML = `${icon('BookOpen01', 15)}<span>README</span>`;
 $('#readmeLink').addEventListener('click', () => { if (!GLOBAL_VIEWS.includes(state.view)) state.lastView = state.view; state.view = 'readme'; render(); scrollTo({ top: 0 }); });
 
+$('#repos').addEventListener('input', (e) => {
+  if (e.target.id !== 'repoFilter') return;
+  state.sideQ = e.target.value.trim();
+  const q = state.sideQ.toLowerCase();
+  let any = false;
+  for (const b of $('#repos').querySelectorAll('.repo-list [data-repo]')) { const show = !q || b.dataset.repo.toLowerCase().includes(q); b.hidden = !show; any ||= show; }
+  $('#repos').querySelector('.side-empty').hidden = any;
+});
+$('#repos').addEventListener('keydown', (e) => {
+  if (e.target.id !== 'repoFilter') return;
+  if (e.key === 'Escape') { e.target.value = ''; e.target.dispatchEvent(new Event('input', { bubbles: true })); e.target.blur(); }
+  if (e.key === 'Enter') { const first = $('#repos').querySelector('.repo-list [data-repo]:not([hidden])'); if (first) first.click(); }
+});
 $('#repos').addEventListener('click', (e) => {
   if (e.target.closest('[data-today]')) { if (!GLOBAL_VIEWS.includes(state.view)) state.lastView = state.view; state.view = 'today'; render(); scrollTo({ top: 0 }); return; }
   const b = e.target.closest('[data-repo]');
