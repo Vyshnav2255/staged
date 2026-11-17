@@ -1,4 +1,8 @@
 import { icon } from './icons.js';
+import { commitFold, pushLaunch, discardOut } from './fx.js';
+import * as ai from './ai.js';
+import { pickEmoji as emojiPicker } from './emoji.js';
+import { sfxWrote } from './sfx.js';
 import { modal, confirmDialog, toast } from './ui.js';
 const LEAD = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Component}|\uFE0F|\u200D)+\s*/u;
 import { celebrate } from './release.js';
@@ -17,6 +21,7 @@ const GITMOJI = [
   ['👷', 'ci', 'CI'], ['✅', 'test', 'Tests'], ['🔒️', 'fix', 'Security'], ['⏪️', 'revert', 'Revert'],
   ['🔀', 'chore', 'Merge'], ['🧑‍💻', 'chore', 'Developer experience'], ['🥚', 'feat', 'Easter egg'], ['🚀', 'chore', 'Deploy'],
 ];
+const GL_TYPE = { feat: 'feature', style: 'ui', fix: 'fix', perf: 'perf', refactor: 'refactor', chore: 'refactor', build: 'refactor', docs: 'other', test: 'other', ci: 'other' };
 const TYPE_EMOJI = { feat: '✨', fix: '🐛', style: '💄', perf: '⚡️', refactor: '♻️', docs: '📝', chore: '🔧', build: '📦', ci: '👷', test: '✅' };
 
 let store = {};
@@ -26,6 +31,7 @@ const save = () => { try { localStorage.setItem('changes.commit', JSON.stringify
 const cs = {
   repo: null, data: null, groups: [], files: new Map(), off: new Set(), open: new Set(), bodyOpen: new Set(),
   busy: null, error: '', banner: null, format: store.format || 'gitmoji', loading: false, hunksOff: new Map(), hunkOpen: new Set(),
+  engine: 'rules', writing: new Set(), grouping: false,
 };
 let host = null, ctx = null;
 
@@ -37,11 +43,12 @@ const api = async (path, body) => {
 };
 
 export function subjectFor(g, format = cs.format) {
-  if (g.edited != null) return format === 'conventional' ? g.edited : `${g.emoji || '✨'} ${g.edited.replace(LEAD, '')}`;
+  if (g.edited != null) return format === 'conventional' || format === 'plain' ? g.edited : `${g.emoji || '✨'} ${g.edited.replace(LEAD, '')}`;
   const scope = g.scope ? `(${g.scope})` : '';
   const emoji = g.emoji || TYPE_EMOJI[g.type] || '✨';
   if (format === 'conventional') return `${g.type}${scope}: ${g.conventional}`;
   if (format === 'both') return `${emoji} ${g.type}${scope}: ${g.conventional}`;
+  if (format === 'plain') return cs.data?.grouping?.style?.tense === 'imperative' ? g.conventional.replace(/^\w/, (c) => c.toUpperCase()) : g.gitmoji;
   return `${emoji} ${g.gitmoji}`;
 }
 const messageFor = (g) => {
@@ -50,14 +57,80 @@ const messageFor = (g) => {
   return body ? `${subj}\n\n${body}` : subj;
 };
 
+// Each repo's plan (groups, messages written by the AI, your edits, unticked files) is kept, so
+// leaving the Commit tab or switching repos and coming back picks up where you left off. Files
+// that were committed or reverted drop out; new ones land in a "New changes" card.
+const PLANS = 'staged-commit-plans';
+const plans = (() => { try { return JSON.parse(localStorage.getItem(PLANS) || '{}'); } catch { return {}; } })();
+let planT;
+// A file can be split across commits: g.hunks[path] lists the chunks this commit owns. A path missing
+// from g.hunks means the commit takes the whole file.
+const allHunks = (p) => cs.files.get(p)?.hunks || [];
+const isSplit = (g, p) => !!g.hunks?.[p] && allHunks(p).length > 0;
+const ownedHunks = (g, p) => (isSplit(g, p) ? allHunks(p).filter((h) => g.hunks[p].includes(h.id)) : allHunks(p));
+const pickedHunks = (g, p) => { const off = cs.hunksOff.get(p); return ownedHunks(g, p).filter((h) => !off?.has(h.id)); };
+const isOn = (g, p) => (isSplit(g, p) ? pickedHunks(g, p).length > 0 : !cs.off.has(p));
+// What this commit changes in a file: its own chunks only, when the file is split.
+function viewOf(g, p) {
+  const f = cs.files.get(p);
+  if (!f || !isSplit(g, p)) return f;
+  const hs = pickedHunks(g, p).length ? pickedHunks(g, p) : ownedHunks(g, p);
+  return { ...f, diff: hs.map((h) => h.head + '\n' + h.lines.join('\n')).join('\n'), add: hs.reduce((n, h) => n + h.add, 0), del: hs.reduce((n, h) => n + h.del, 0) };
+}
+// Hands a file (or the chunks of it a commit owns) from one commit to another.
+function give(from, to, p) {
+  const ids = isSplit(from, p) ? [...from.hunks[p]] : null;
+  from.files = from.files.filter((x) => x !== p);
+  if (from.hunks) delete from.hunks[p];
+  if (!to.files.includes(p)) { to.files.push(p); if (ids) (to.hunks ||= {})[p] = ids; }
+  else if (isSplit(to, p)) to.hunks[p] = ids ? [...new Set([...to.hunks[p], ...ids])] : allHunks(p).map((h) => h.id);
+  if (isSplit(to, p) && to.hunks[p].length >= allHunks(p).length && !cs.groups.some((g) => g !== to && g.files.includes(p))) delete to.hunks[p];
+}
+function remember() {
+  if (!cs.repo || !cs.data) return;
+  clearTimeout(planT);
+  const repo = cs.repo;
+  planT = setTimeout(() => {
+    plans[repo] = { at: Date.now(), groups: cs.groups.map(({ id, title, why, type, scope, emoji, emojiSuggestions, conventional, gitmoji, body, files, hunks, edited, editedFormat, source, aiDone, confidence, review }) => ({ id, title, why, type, scope, emoji, emojiSuggestions, conventional, gitmoji, body, files, hunks, edited, editedFormat, source, aiDone, confidence, review })), off: [...cs.off] };
+    // Keep the 30 most recent repos.
+    for (const k of Object.keys(plans).sort((a, b) => plans[b].at - plans[a].at).slice(30)) delete plans[k];
+    try { localStorage.setItem(PLANS, JSON.stringify(plans)); } catch {}
+  }, 300);
+}
+function restore(repo, files) {
+  const p = plans[repo];
+  if (!p?.groups?.length) return false;
+  cs.groups = p.groups.map((g) => ({ ...g, files: [...g.files], hunks: g.hunks ? JSON.parse(JSON.stringify(g.hunks)) : undefined }));
+  cs.off = new Set(p.off || []);
+  mergeFiles(files);
+  return cs.groups.length > 0;
+}
+
 function adoptGroups(groups) {
-  cs.groups = groups.map((g) => ({ ...g, body: g.source === 'claude' ? g.body : '', edited: null }));
+  cs.groups = groups.map((g) => ({ ...g, files: [...new Set(g.files)], hunks: g.hunks ? JSON.parse(JSON.stringify(g.hunks)) : undefined, edited: null }));
 }
 
 // Keep the user's arrangement when files change underneath us.
 function mergeFiles(newFiles) {
   const paths = new Set(newFiles.map((f) => f.path));
   for (const g of cs.groups) g.files = g.files.filter((p) => paths.has(p));
+  const byPath = new Map(newFiles.map((f) => [f.path, f]));
+  const split = new Set(), lost = new Map();
+  for (const g of cs.groups) for (const p of Object.keys(g.hunks || {})) {
+    const ids = new Set((byPath.get(p)?.hunks || []).map((h) => h.id));
+    g.hunks[p] = g.hunks[p].filter((id) => ids.has(id));
+    if (!g.hunks[p].length) { delete g.hunks[p]; g.files = g.files.filter((x) => x !== p); if (!lost.has(p)) lost.set(p, g); } else split.add(p);
+  }
+  // A file whose chunks all changed stays in the commit it was in, rather than dropping to "New changes".
+  for (const [p, g] of lost) if (!cs.groups.some((x) => x.files.includes(p))) g.files.push(p);
+  for (const p of split) {
+    const holders = cs.groups.filter((g) => g.files.includes(p));
+    if (holders.some((g) => !g.hunks?.[p])) continue; // someone takes the whole file already
+    const owned = new Set(holders.flatMap((g) => g.hunks[p]));
+    const extra = (byPath.get(p)?.hunks || []).map((h) => h.id).filter((id) => !owned.has(id));
+    if (extra.length) holders[0].hunks[p].push(...extra);
+    if (holders.length === 1) delete holders[0].hunks[p];
+  }
   cs.groups = cs.groups.filter((g) => g.files.length);
   const placed = new Set(cs.groups.flatMap((g) => g.files));
   const fresh = newFiles.map((f) => f.path).filter((p) => !placed.has(p));
@@ -86,19 +159,59 @@ export async function loadChanges(repo, { keep } = {}) {
     const data = await api(`/api/changes?repo=${encodeURIComponent(repo)}`);
     if (cs.repo !== repo) return;
     cs.data = data;
+    if (!store.format) {
+      const learnedFormat = data.grouping?.style?.format;
+      cs.format = learnedFormat === 'conventional' || learnedFormat === 'plain' ? learnedFormat : 'gitmoji';
+    }
     cs.files = new Map(data.files.map((f) => [f.path, f]));
+    let restored = false;
     if (keep && cs.groups.length) mergeFiles(data.files);
-    else adoptGroups(data.groups);
+    else if (!(restored = restore(repo, data.files))) adoptGroups(data.groups);
     cs.error = '';
+    pickEngine().then(draw);
   } catch (e) {
     cs.error = e.message;
   }
   cs.loading = false;
+  if (!same || !keep) intro();
   draw();
+}
+// Cards rise in one after another only when a repo's changes first show up, not on every redraw.
+let introT;
+function intro() { host?.classList.add('is-intro'); clearTimeout(introT); introT = setTimeout(() => host?.classList.remove('is-intro'), 900); }
+
+// Settings can change the engines and the message style while this tab is closed.
+async function pickEngine() {
+  cs.engine = await ai.pick();
+}
+// Hold to discard a suggested commit: 1.5s of holding, let go to cancel. Keyboard users get the dialog.
+const HOLD_MS = 1500;
+function discardWhat(g) {
+  const files = [], partial = {};
+  for (const p of g.files.filter((x) => cs.files.has(x))) isSplit(g, p) ? (partial[p] = g.hunks[p]) : files.push(p);
+  return Object.keys(partial).length ? { files, partial } : { files };
+}
+function onHold(e) {
+  const b = e.target.closest('[data-discardgroup]');
+  if (!b || b.disabled || e.button > 0) return;
+  b.classList.add('is-holding');
+  const done = setTimeout(() => {
+    stop();
+    const g = groupById(b.dataset.discardgroup);
+    if (g) discard(discardWhat(g), host.querySelector(`[data-group="${CSS.escape(g.id)}"]`));
+  }, HOLD_MS);
+  const t0 = Date.now();
+  const stop = () => { clearTimeout(done); b.classList.remove('is-holding'); for (const k of ['pointerup', 'pointerleave', 'pointercancel']) b.removeEventListener(k, early); };
+  const early = () => { if (Date.now() - t0 < HOLD_MS) { stop(); if (Date.now() - t0 < 300) toast('Hold the button to discard'); } };
+  for (const k of ['pointerup', 'pointerleave', 'pointercancel']) b.addEventListener(k, early);
 }
 
 export function mountCommit(el, context) {
   host = el; ctx = context;
+  if (!host.dataset.holdBound) { host.addEventListener('pointerdown', onHold); host.dataset.holdBound = '1'; }
+  try { store = JSON.parse(localStorage.getItem('changes.commit') || '{}'); } catch {}
+  cs.format = store.format || 'gitmoji';
+  if (cs.data) pickEngine().then(draw);
   if (!host.dataset.bound) { host.addEventListener('click', onClick); host.addEventListener('input', onInput); host.addEventListener('change', onChange); host.dataset.bound = '1'; }
   if (ctx.repo === 'all') return drawAll();
   if (cs.repo !== ctx.repo || !cs.data) loadChanges(ctx.repo);
@@ -123,40 +236,82 @@ function fileRow(p, g) {
   if (!f) return '';
   const dirn = p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) : '';
   const base = p.slice(dirn.length);
-  const on = !cs.off.has(p);
+  const on = isOn(g, p);
   const open = cs.open.has(p);
-  const hk = f.hunks || [];
+  const all = f.hunks || [];
+  const hk = ownedHunks(g, p);
+  const split = isSplit(g, p);
   const offH = cs.hunksOff.get(p) || new Set();
+  const offN = hk.filter((h) => offH.has(h.id)).length;
+  const v = viewOf(g, p);
   const hOpen = cs.hunkOpen.has(p);
   const warn = (f.warnings || []);
   const others = cs.groups.filter((x) => x !== g);
   return `<div class="cm-file ${on ? '' : 'is-off'}">
-    <label class="cm-check" title="${on ? 'Leave out of this commit' : 'Include in this commit'}"><input type="checkbox" data-file="${esc(p)}" ${on ? 'checked' : ''}><span></span></label>
+    <label class="cm-check" title="${on ? 'Leave out of this commit' : 'Include in this commit'}"><input type="checkbox" data-file="${esc(p)}" data-g="${esc(g.id)}" ${on ? 'checked' : ''}><span></span></label>
     <span class="cm-status s-${f.status}" title="${STATUS[f.status] || f.status}${f.untracked ? ' (new file)' : ''}">${f.status}</span>
     <button class="cm-path" data-diff="${esc(p)}" aria-expanded="${open}" title="${esc(f.from ? `${f.from} → ${p}` : p)}"><span class="dir">${esc(dirn)}</span>${esc(base)}</button>
     <span class="cm-extra">
       ${warn.map((w) => `<span class="chip ${w.level === 'high' ? 'is-bad' : w.level === 'mid' ? 'is-warn' : ''}" title="${esc(w.text)}">${icon('Alert02', 12)}${esc(w.text)}</span>`).join('')}
-      ${hk.length ? `<button class="chip is-btn ${offH.size ? 'is-on' : ''}" data-chunks="${esc(p)}" aria-expanded="${hOpen}" title="Pick which chunks of this file go in">${offH.size ? `${hk.length - offH.size} of ${hk.length} chunks` : `${hk.length} chunks`}</button>` : ''}
-      <span class="lines mono">${f.binary ? '<span class="muted">binary</span>' : `<span class="a">+${compact(f.add)}</span> <span class="d">−${compact(f.del)}</span>`}</span>
+      ${hk.length && (all.length > 1 || split) ? `<button class="chip is-btn ${offN || split ? 'is-on' : ''}" data-chunks="${esc(p)}" aria-expanded="${hOpen}" title="${split ? `This commit takes ${hk.length} of the file's ${all.length} chunks; the rest are in other commits. Click to pick.` : 'Pick which chunks of this file go in'}">${split || offN ? `${hk.length - offN} of ${all.length} chunks` : `${all.length} chunks`}</button>` : ''}
+      <span class="lines mono">${f.binary ? '<span class="muted">binary</span>' : `<span class="a">+${compact(v.add)}</span> <span class="d">−${compact(v.del)}</span>`}</span>
     </span>
-    <span class="cm-move-wrap"><select class="cm-move" data-move="${esc(p)}" aria-label="Move to another commit">
+    <button class="cm-discard" data-discard="${esc(p)}" data-g="${esc(g.id)}" title="Discard ${split ? 'these chunks of' : 'changes to'} to ${esc(base)}" aria-label="Discard changes to ${esc(base)}">${icon('Delete02', 14)}</button>
+    <span class="cm-move-wrap"><select class="cm-move" data-move="${esc(p)}" data-g="${esc(g.id)}" aria-label="Move to another commit">
       <option value="">Move to…</option>
-      ${others.map((o) => `<option value="${esc(o.id)}">${esc(o.title)}</option>`).join('')}
+      ${others.map((o) => `<option value="${esc(o.id)}">${esc(clip(subjectFor(o), 48))}</option>`).join('')}
       <option value="__new">New commit</option>
     </select></span>
   </div>
-  ${hOpen && hk.length ? chunkView(f, offH) : ''}
-  ${open && !hOpen ? diffView(f) : ''}`;
+  ${hOpen && hk.length ? fresh(chunkView(f, offH, g), p) : ''}
+  ${open && !hOpen ? fresh(diffView(v), p) : ''}`;
 }
 
-function chunkView(f, offH) {
+// Diffs and chunk pickers open and close with their real height, so the cards below glide instead of jumping.
+const EASE = 'cubic-bezier(0.23, 1, 0.32, 1)';
+const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+function boxFrames(el, open) {
+  const cs2 = getComputedStyle(el);
+  const full = { height: el.offsetHeight - parseFloat(cs2.paddingTop) - parseFloat(cs2.paddingBottom) - parseFloat(cs2.borderTopWidth) - parseFloat(cs2.borderBottomWidth) + 'px', paddingTop: cs2.paddingTop, paddingBottom: cs2.paddingBottom, marginTop: cs2.marginTop, marginBottom: cs2.marginBottom, opacity: 1, transform: 'none' };
+  const none = { height: '0px', paddingTop: '0px', paddingBottom: '0px', marginTop: '0px', marginBottom: '0px', opacity: 0, transform: 'translateY(-4px)' };
+  return { frames: open ? [none, full] : [full, none], ms: Math.round(Math.min(open ? 420 : 300, (open ? 240 : 170) + el.offsetHeight * 0.12)) };
+}
+function unfold(el) {
+  if (!el || calm()) return;
+  const { frames, ms } = boxFrames(el, true);
+  el.style.overflow = 'hidden';
+  el.animate(frames, { duration: ms, easing: EASE }).finished.then(() => { el.style.overflow = ''; }, () => {});
+}
+async function fold(el) {
+  if (!el || calm()) return;
+  const { frames, ms } = boxFrames(el, false);
+  el.style.overflow = 'hidden';
+  await el.animate(frames, { duration: ms, easing: EASE, fill: 'forwards' }).finished.catch(() => {});
+}
+async function togglePanel(set, p, btn) {
+  const next = btn.closest('.cm-file')?.nextElementSibling;
+  if (set.has(p)) {
+    await fold(next?.matches('.cm-diff, .cm-chunks') ? next : null);
+    set.delete(p); draw(); return;
+  }
+  set.add(p); cs.justOpened = p; draw(); cs.justOpened = null;
+  unfold(host.querySelector('.cm-diff.is-new, .cm-chunks.is-new'));
+}
+
+// The panel you just opened slides in; the ones already open stay still on redraws.
+const fresh = (html, p) => (cs.justOpened === p ? html.replace(/class="(cm-chunks|cm-diff)/, 'class="$1 is-new') : html);
+
+function chunkView(f, offH, g) {
+  const own = new Set(ownedHunks(g, f.path).map((h) => h.id));
   return `<div class="cm-chunks">${f.hunks.map((h, i) => {
+    if (!own.has(h.id)) return '';
     const on = !offH.has(h.id);
     const lines = h.lines.slice(0, 24).map((l) => `<span class="${l.startsWith('+') ? 'a' : l.startsWith('-') ? 'd' : ''}">${esc(l) || ' '}</span>`).join('\n');
     return `<div class="cm-chunk ${on ? '' : 'is-off'}">
-      <label class="cm-chunk-head"><span class="cm-check"><input type="checkbox" data-hunk="${esc(f.path)}" data-hid="${h.id}" ${on ? 'checked' : ''}><span></span></span>
+      <label class="cm-chunk-head"><span class="cm-check"><input type="checkbox" data-hunk="${esc(f.path)}" data-g="${esc(g.id)}" data-hid="${h.id}" ${on ? 'checked' : ''}><span></span></span>
         <span class="mono">Chunk ${i + 1}</span><span class="mono muted">${esc(h.head.replace(/^@@[^@]*@@\s?/, '') || 'line ' + (h.head.match(/\+(\d+)/) || [])[1])}</span>
-        <span class="lines mono"><span class="a">+${h.add}</span> <span class="d">−${h.del}</span></span></label>
+        <span class="lines mono"><span class="a">+${h.add}</span> <span class="d">−${h.del}</span></span>
+        <button class="cm-discard" data-discardhunk="${esc(f.path)}" data-hid="${h.id}" title="Discard this chunk" aria-label="Discard chunk ${i + 1}">${icon('Delete02', 13)}</button></label>
       <pre class="cm-diff mono">${lines}${h.lines.length > 24 ? `\n<span class="muted">… ${h.lines.length - 24} more lines</span>` : ''}</pre>
     </div>`;
   }).join('')}</div>`;
@@ -174,140 +329,194 @@ function diffView(f) {
 
 function card(g, i) {
   const files = g.files.filter((p) => cs.files.has(p));
-  const picked = files.filter((p) => !cs.off.has(p));
-  const add = picked.reduce((s, p) => s + (cs.files.get(p)?.add || 0), 0);
-  const del = picked.reduce((s, p) => s + (cs.files.get(p)?.del || 0), 0);
+  const picked = files.filter((p) => isOn(g, p));
+  const add = picked.reduce((s, p) => s + (viewOf(g, p)?.add || 0), 0);
+  const del = picked.reduce((s, p) => s + (viewOf(g, p)?.del || 0), 0);
   const busy = cs.busy === g.id;
   const subj = subjectFor(g);
   const highs = picked.flatMap((p) => (cs.files.get(p)?.warnings || []).filter((w) => w.level === 'high').map((w) => `${p.split('/').pop()} ${w.text}`));
   const long = subj.length > 72;
-  const bodyOpen = cs.bodyOpen.has(g.id) || (g.body || '').trim();
-  return `<section class="cm-card" data-group="${esc(g.id)}">
+  // The description is optional, so it stays tucked away until asked for, even when the AI wrote one.
+  const bodyOpen = cs.bodyOpen.has(g.id), hasBody = !!(g.body || '').trim();
+  const writing = cs.writing.has(g.id);
+  return `<section class="cm-card ${writing ? 'is-writing' : ''}" data-group="${esc(g.id)}" data-gl="${esc(subj)}" data-gl-n="${picked.length}" data-gl-unit="file" data-gl-mix="${GL_TYPE[g.type] || 'other'}:1">
     <header class="cm-head">
       <span class="cm-num mono">${i + 1}</span>
-      <input class="cm-title" data-title="${esc(g.id)}" value="${esc(g.title)}" aria-label="Commit name" spellcheck="false">
+      <div class="cm-subject ${long ? 'is-long' : ''} ${cs.format === 'gitmoji' || cs.format === 'both' ? 'has-emoji' : ''}">
+        ${cs.format === 'gitmoji' || cs.format === 'both' ? `<button class="cm-emoji" data-emoji="${esc(g.id)}" title="Pick a gitmoji">${esc(g.emoji || '✨')}</button>` : ''}
+        <input data-subject="${esc(g.id)}" value="${esc(cs.format === 'conventional' ? subj : subj.replace(LEAD, ''))}" spellcheck="true" aria-label="Commit message" placeholder="Write your own message" ${writing ? 'readonly' : ''}>
+        <span class="cm-subj-tools">
+          <span class="cm-count mono" title="Keep the first line under 72 characters">${subj.length}</span>
+          <button class="cm-tool" data-clear="${esc(g.id)}" title="Clear the message and write your own" aria-label="Clear message">${icon('Eraser', 14)}</button>
+          <button class="cm-tool is-ai" data-write="${esc(g.id)}" ${writing ? 'disabled' : ''} title="Rewrite this message with ${esc(ai.ENGINES[cs.engine].short)}" aria-label="Rewrite message">${icon('MagicWand01', 14)}</button>
+        </span>
+      </div>
       <span class="cm-meta mono">${picked.length}/${files.length} files · <span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span></span>
-      ${g.source === 'claude' ? '<span class="cm-badge mono">Claude</span>' : ''}
+      ${g.edited == null && g.source && g.source !== 'rules' && ai.ENGINES[g.source] ? `<span class="cm-badge mono" title="Written by ${esc(ai.ENGINES[g.source].label)}">${icon('Sparkles', 11)}${esc(ai.ENGINES[g.source].short)}</span>` : ''}
+      ${g.review ? `<span class="cm-badge is-review mono" title="Below the 90% confidence target; review this grouping before committing">Check grouping</span>` : g.confidence != null && files.length > 1 ? `<span class="cm-badge mono" title="Grouping confidence">${Math.round(g.confidence * 100)}% confidence</span>` : ''}
     </header>
-    ${g.why ? `<p class="cm-why">${esc(g.why)}</p>` : ''}
+    ${g.why && !/^grouped by/i.test(g.why) ? `<p class="cm-why">${esc(g.why)}</p>` : ''}
     ${highs.length ? `<div class="cm-alert">${icon('Alert02', 14)}<span>Heads up: ${esc(highs.slice(0, 2).join('; '))}${highs.length > 2 ? ` and ${highs.length - 2} more` : ''}.</span></div>` : ''}
     <div class="cm-msg">
-      <div class="cm-subject ${long ? 'is-long' : ''} ${cs.format === 'conventional' ? '' : 'has-emoji'}">
-        ${cs.format === 'conventional' ? '' : `<button class="cm-emoji" data-emoji="${esc(g.id)}" title="Pick a gitmoji">${esc(g.emoji || '✨')}</button>`}
-        <input data-subject="${esc(g.id)}" value="${esc(cs.format === 'conventional' ? subj : subj.replace(LEAD, ''))}" spellcheck="true" aria-label="Commit message">
-        <span class="cm-count mono" title="Keep the first line under 72 characters">${subj.length}</span>
-      </div>
-      ${bodyOpen ? `<textarea data-body="${esc(g.id)}" rows="3" placeholder="Optional description: what changed and why">${esc(g.body || '')}</textarea>` : ''}
+      ${bodyOpen ? `<textarea data-body="${esc(g.id)}" rows="${Math.min(8, Math.max(2, (g.body || '').split('\n').length))}" placeholder="Optional description: what changed and why">${esc(g.body || '')}</textarea>` : ''}
       <div class="cm-actions">
-        ${bodyOpen ? '' : `<button class="text-btn" data-addbody="${esc(g.id)}">Add description</button>`}
+        <button class="text-btn cm-desc-btn" data-addbody="${esc(g.id)}" aria-expanded="${bodyOpen}">${bodyOpen ? 'Hide description' : hasBody ? 'Description' : 'Add description'}${!bodyOpen && hasBody ? '<i class="cm-desc-dot" title="Has a description"></i>' : ''}</button>
         ${g.edited != null ? `<button class="text-btn" data-reset="${esc(g.id)}" title="Go back to the suggested message">Reset message</button>` : ''}
-        ${cs.data?.claude ? `<button class="text-btn" data-rewrite="${esc(g.id)}" ${busy ? 'disabled' : ''}>${icon('Refresh', 14)}${busy ? 'Writing…' : 'Write with Claude'}</button>` : ''}
-        <button class="btn-primary" data-commit="${esc(g.id)}" ${picked.length && !cs.busy ? '' : 'disabled'}>Commit ${picked.length === files.length ? '' : picked.length + ' of '}${files.length} file${files.length === 1 ? '' : 's'}${picked.some((p) => cs.hunksOff.has(p)) ? ' (partly)' : ''}</button>
+        <button class="text-btn is-danger-soft hold-btn" data-discardgroup="${esc(g.id)}" ${cs.busy ? 'disabled' : ''} title="Hold to throw away these changes. You can bring them back right after.">${icon('Delete02', 14)}Hold to discard</button>
+        <button class="btn-primary" data-commit="${esc(g.id)}" ${picked.length && !cs.busy ? '' : 'disabled'}>Commit ${picked.length === files.length ? '' : picked.length + ' of '}${files.length} file${files.length === 1 ? '' : 's'}${picked.some((p) => pickedHunks(g, p).length < allHunks(p).length) ? ' (partly)' : ''}</button>
       </div>
     </div>
     <div class="cm-files">${files.map((p) => fileRow(p, g)).join('')}</div>
   </section>`;
 }
 
+const clip = (t, n) => (t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t);
+
 function draw() {
+  remember();
   if (!host || !ctx || ctx.view !== 'commit' || ctx.repo === 'all') return;
   if (cs.loading && !cs.data) { host.innerHTML = '<div class="loading mono">Reading changes…</div>'; return; }
   if (cs.error && !cs.data) { host.innerHTML = `<div class="empty"><h3>Couldn't read changes</h3><p>${esc(cs.error)}</p></div>`; return; }
   const d = cs.data;
   const total = d.files.length;
   const q = (ctx.q || '').toLowerCase();
-  const groups = q ? cs.groups.filter((g) => g.title.toLowerCase().includes(q) || g.files.some((p) => p.toLowerCase().includes(q))) : cs.groups;
-  const commitable = cs.groups.filter((g) => g.files.some((p) => !cs.off.has(p)));
+  const groups = q ? cs.groups.filter((g) => subjectFor(g).toLowerCase().includes(q) || g.files.some((p) => p.toLowerCase().includes(q))) : cs.groups;
+  const commitable = cs.groups.filter((g) => g.files.some((p) => isOn(g, p)));
   const add = d.files.reduce((s, f) => s + f.add, 0), del = d.files.reduce((s, f) => s + f.del, 0);
-
-  const banner = cs.banner ? `<div class="cm-banner ${cs.banner.error ? 'is-error' : ''}">
+  if (cs.banner && !cs.banner.t) cs.banner.t = Date.now();
+  const settled = cs.banner && Date.now() - cs.banner.t > 1700 ? 'is-settled' : '';
+  const banner = cs.banner ? `<div class="cm-banner ${cs.banner.error ? 'is-error' : ''} ${cs.banner.kind ? 'is-' + cs.banner.kind : ''} ${settled}">
+      ${cs.banner.kind === 'commit' ? '<i class="cm-dot" aria-hidden="true"></i>' : cs.banner.kind === 'pushed' ? `<i class="cm-dot is-up" aria-hidden="true">${icon('Tick02', 12)}</i>` : ''}
       <span>${cs.banner.html}</span>
       ${cs.banner.undo && d.canUndo ? `<button class="text-btn" data-undo>Undo</button>` : ''}
-      ${cs.banner.push && ctx.remote ? `<button class="text-btn bordered" data-pushnow ${cs.busy ? 'disabled' : ''}>${icon('ArrowUp02', 14)}${cs.busy === 'push' ? 'Pushing…' : 'Push'}</button>` : ''}
+      ${cs.banner.undoDiscard && d.canUndoDiscard ? `<button class="text-btn bordered" data-undodiscard>${icon('Undo02', 14)}Bring back</button>` : ''}
+      ${cs.banner.push && ctx.remote ? `<button class="text-btn bordered ${cs.busy === 'push' ? 'is-pushing' : ''}" data-pushnow ${cs.busy ? 'disabled' : ''}>${icon('ArrowUp02', 14)}${cs.busy === 'push' ? 'Pushing…' : 'Push'}</button>` : ''}
       <button class="text-btn" data-dismiss aria-label="Dismiss">${icon('Cancel01', 14)}</button>
     </div>` : '';
 
   if (!total) {
-    host.innerHTML = banner + `<div class="empty"><h3>Nothing to commit</h3><p>${esc(ctx.repo)} is clean on ${esc(d.branch)}.</p></div>`;
+    paintHost(banner + `<div class="empty"><h3>Nothing to commit</h3><p>${esc(ctx.repo)} is clean on ${esc(d.branch)}.</p></div>`);
     return;
   }
 
-  host.innerHTML = `${banner}
+  paintHost(`${banner}
     <div class="cm-bar">
       <div class="cm-summary"><b>${total} changed file${total > 1 ? 's' : ''}</b> <span class="mono muted">on ${esc(d.branch)} · <span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span> · ${cs.groups.length} suggested commit${cs.groups.length > 1 ? 's' : ''}</span></div>
       <div class="cm-tools">
-        <div class="seg" role="radiogroup" aria-label="Message style">
-          <button data-format="gitmoji" aria-selected="${cs.format === 'gitmoji'}" title="✨ Added book notes for …">Gitmoji</button>
-          <button data-format="conventional" aria-selected="${cs.format === 'conventional'}" title="feat(books): add notes for …">Conventional</button>
-          <button data-format="both" aria-selected="${cs.format === 'both'}" title="✨ feat(books): add notes for …">Both</button>
-        </div>
+        <button class="text-btn bordered" data-regroup ${cs.busy || cs.grouping ? 'disabled' : ''}>${icon('Refresh', 14)}${cs.grouping ? 'Regrouping…' : 'Regroup'}</button>
+        <button class="btn-primary" data-commitall ${commitable.length && !cs.busy && !cs.grouping ? '' : 'disabled'}>${commitable.length > 1 ? `Commit all ${commitable.length}` : 'Commit'}</button>
       </div>
-    </div>
-    <div class="cm-bar cm-bar-2">
-      <div class="cm-tools">
-        ${d.claude ? `<button class="text-btn bordered" data-regroup ${cs.busy ? 'disabled' : ''}>${icon('Layers01', 14)}${cs.busy === 'regroup' ? 'Claude is reading your changes…' : 'Regroup with Claude'}</button>` : `<span class="muted cm-hint">Install Claude Code for sharper grouping and messages.</span>`}
-        <button class="text-btn bordered" data-guess ${cs.busy ? 'disabled' : ''} title="Back to the quick, local grouping">Reset grouping</button>
-        <button class="text-btn bordered" data-merge ${cs.groups.length > 1 && !cs.busy ? '' : 'disabled'}>Make it one commit</button>
-      </div>
-      <button class="btn-primary" data-commitall ${commitable.length && !cs.busy ? '' : 'disabled'}>${commitable.length > 1 ? `Commit all ${commitable.length}` : 'Commit'}</button>
     </div>
     ${cs.error ? `<div class="cm-banner is-error"><span>${esc(cs.error)}</span></div>` : ''}
-    ${groups.map((g) => card(g, cs.groups.indexOf(g))).join('')}`;
+    ${groups.map((g) => card(g, cs.groups.indexOf(g))).join('')}`);
+}
+
+// Redraws that would change nothing leave the page alone, so animations in flight keep going.
+// The banner's animations pick up from where they were if it does get redrawn.
+let painted = '', paintedNode = null;
+function paintHost(html) {
+  if (html !== painted || !paintedNode || host.firstElementChild !== paintedNode) { host.innerHTML = html; painted = html; paintedNode = host.firstElementChild; }
+  const b = host.querySelector('.cm-banner');
+  if (b && cs.banner?.t) b.style.setProperty('--fx-t', `${-(Date.now() - cs.banner.t)}ms`);
 }
 
 // ---------- actions ----------
+// Writing messages: one group, or many in a row. Leaves messages you typed alone unless you ask.
+async function rewrite(g, asked = false) {
+  if (!g || cs.writing.has(g.id)) return;
+  const files = g.files.filter((p) => isOn(g, p)).map((p) => viewOf(g, p)).filter(Boolean);
+  if (!files.length) return;
+  cs.writing.add(g.id); draw();
+  try {
+    const again = asked && g.source && g.source !== 'rules';
+    // staged's own message is kept as a draft for the model to improve on.
+    if (!g.draft && (!g.source || g.source === 'guess' || g.source === 'rules')) g.draft = g.gitmoji;
+    const m = await ai.write({ repo: cs.repo, files, engine: cs.engine, again, draft: g.draft || '', ties: g.ties || [] });
+    if (!cs.groups.includes(g)) return;
+    Object.assign(g, { type: m.type || g.type, scope: m.scope ?? g.scope, emoji: m.emoji || g.emoji, conventional: m.conventional || g.conventional, gitmoji: m.gitmoji || g.gitmoji, body: m.body ?? g.body, source: m.source, edited: null, aiDone: true });
+    if (m.title && /^(New changes|Everything|New commit)$/.test(g.title)) g.title = m.title;
+    if (asked || m.source !== 'rules') sfxWrote();
+  } catch (e) {
+    if (asked) toast(`Couldn't write it: ${e.message}`);
+  } finally {
+    cs.writing.delete(g.id); draw();
+    host?.querySelector(`[data-group="${CSS.escape(g.id)}"] .cm-subject`)?.classList.add('is-fresh');
+  }
+}
+async function writeMany(groups, asked) {
+  for (const g of groups) { if (asked || (g.edited == null && !g.aiDone)) await rewrite(g, asked); }
+}
+// Re-run Commit Compass against the current working tree and replace the proposed groups.
+async function regroup() {
+  if (cs.grouping || cs.busy || !cs.repo) return;
+  cs.grouping = true; draw();
+  try {
+    const data = await api(`/api/changes?repo=${encodeURIComponent(cs.repo)}`);
+    if (cs.repo !== data.repo) return;
+    cs.data = data;
+    cs.files = new Map(data.files.map((file) => [file.path, file]));
+    adoptGroups(data.groups);
+    cs.off.clear(); cs.hunksOff.clear();
+    toast(`Regrouped into ${data.groups.length} suggested commit${data.groups.length === 1 ? '' : 's'}`);
+  } catch (error) {
+    toast(`Couldn't regroup: ${error.message}`);
+  } finally {
+    cs.grouping = false; draw();
+  }
+}
+
+async function discard(what, el) {
+  await discardOut(el);
+  return run('discard', async () => {
+    const r = await api(`/api/changes/discard?repo=${encodeURIComponent(cs.repo)}`, what);
+    const names = [...(what.files || []), ...Object.keys(what.partial || {})].map((p) => p.split('/').pop());
+    const label = what.partial && !what.files?.length && names.length === 1 ? `${Object.values(what.partial)[0].length > 1 ? 'chunks' : 'a chunk'} of ${names[0]}` : names.length === 1 ? names[0] : `${r.discarded} files`;
+    if (cs.banner?.kind !== 'commit' && cs.banner?.kind !== 'pushed') cs.banner = null;
+    toast(`Discarded ${label}`, { action: 'Undo', onAction: undoDiscard });
+  });
+}
+// Brings back the last discard, from the toast's Undo.
+function undoDiscard() {
+  return run('undo', async () => {
+    const r = await api(`/api/changes/discard-undo?repo=${encodeURIComponent(cs.repo)}`, {});
+    toast(`Brought back ${r.restored} file${r.restored > 1 ? 's' : ''}`);
+  });
+}
+
 const groupById = (id) => cs.groups.find((g) => g.id === id);
 
 async function commitGroup(g) {
-  const picked = g.files.filter((p) => !cs.off.has(p));
+  const picked = g.files.filter((p) => isOn(g, p));
   const whole = [], partial = {};
   for (const p of picked) {
-    const off = cs.hunksOff.get(p);
-    const hk = cs.files.get(p)?.hunks || [];
-    if (off && off.size && hk.length) partial[p] = hk.filter((h) => !off.has(h.id)).map((h) => h.id);
+    const ids = pickedHunks(g, p).map((h) => h.id);
+    if (allHunks(p).length && ids.length < allHunks(p).length) partial[p] = ids;
     else whole.push(p);
   }
   const message = messageFor(g);
   const res = await api(`/api/changes/commit?repo=${encodeURIComponent(cs.repo)}`, { files: whole, partial, message });
   // whole files leave the group; partly committed files stay with their remaining chunks
-  g.files = g.files.filter((p) => cs.off.has(p) || partial[p]);
-  for (const p of Object.keys(partial)) cs.hunksOff.delete(p);
+  // chunks you left unticked stay here; the file's other chunks stay with their own commits
+  for (const p of Object.keys(partial)) {
+    const left = ownedHunks(g, p).filter((h) => !partial[p].includes(h.id)).map((h) => h.id);
+    const elsewhere = cs.groups.some((x) => x !== g && x.files.includes(p));
+    if (!left.length) { partial[p] = null; if (g.hunks) delete g.hunks[p]; }
+    else if (elsewhere) (g.hunks ||= {})[p] = left;
+    const off = cs.hunksOff.get(p);
+    if (off) { for (const id of ownedHunks(g, p).map((h) => h.id)) if (!left.includes(id)) off.delete(id); if (!off.size) cs.hunksOff.delete(p); }
+  }
+  g.files = g.files.filter((p) => (cs.off.has(p) && !isSplit(g, p)) || partial[p]);
   return { sha: res.sha, subject: message.split('\n')[0], n: picked.length };
 }
 
 async function warnOk(groups) {
-  const highs = groups.flatMap((g) => g.files.filter((p) => !cs.off.has(p)).flatMap((p) => (cs.files.get(p)?.warnings || []).filter((w) => w.level === 'high').map((w) => `<li><b>${esc(p)}</b> ${esc(w.text)}</li>`)));
+  const highs = groups.flatMap((g) => g.files.filter((p) => isOn(g, p)).flatMap((p) => (cs.files.get(p)?.warnings || []).filter((w) => w.level === 'high').map((w) => `<li><b>${esc(p)}</b> ${esc(w.text)}</li>`)));
   if (!highs.length) return true;
   return confirmDialog({ title: 'Commit anyway?', text: `These look risky to commit:<ul class="warn-list">${highs.join('')}</ul>Untick them to leave them out.`, ok: 'Commit anyway', danger: true });
 }
 
-function pickEmoji(g, anchor) {
-  document.querySelector('.emoji-pop')?.remove();
-  const pop = document.createElement('div');
-  pop.className = 'emoji-pop';
-  pop.innerHTML = `<input class="emoji-q" placeholder="Search gitmoji" spellcheck="false"><div class="emoji-grid">${GITMOJI.map(([e, t, n]) => `<button data-e="${e}" data-t="${t}" title="${esc(n)}"><span>${e}</span><span class="emoji-name">${esc(n)}</span></button>`).join('')}</div>`;
-  document.body.appendChild(pop);
-  const r = anchor.getBoundingClientRect();
-  pop.style.left = Math.min(innerWidth - 336, r.left) + 'px';
-  pop.style.top = (r.bottom + 6 + scrollY) + 'px';
-  const q = pop.querySelector('input');
-  q.focus();
-  q.addEventListener('input', () => { const v = q.value.toLowerCase(); for (const b of pop.querySelectorAll('[data-e]')) b.hidden = v && !b.title.toLowerCase().includes(v) && !b.dataset.t.includes(v); });
-  const close = () => { pop.remove(); removeEventListener('mousedown', outside, true); };
-  const outside = (e) => { if (!pop.contains(e.target)) close(); };
-  setTimeout(() => addEventListener('mousedown', outside, true));
-  q.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); if (e.key === 'Enter') pop.querySelector('[data-e]:not([hidden])')?.click(); });
-  pop.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-e]');
-    if (!b) return;
-    g.emoji = b.dataset.e;
-    if (b.dataset.t !== 'revert' && g.edited == null) g.type = b.dataset.t;
-    close(); draw();
-  });
-}
-
 function reviewAll() {
-  const order = cs.groups.filter((x) => x.files.some((p) => !cs.off.has(p)));
+  const order = cs.groups.filter((x) => x.files.some((p) => isOn(x, p)));
   const m = modal({
     title: `Review ${order.length} commits`,
     wide: true,
@@ -317,11 +526,11 @@ function reviewAll() {
   const listEl = m.el.querySelector('.rv-list');
   const paint = () => {
     listEl.innerHTML = order.map((g, i) => {
-      const n = g.files.filter((p) => !cs.off.has(p)).length;
+      const n = g.files.filter((p) => isOn(g, p)).length;
       return `<li class="rv-item" draggable="true" data-i="${i}">
         <span class="rv-grip" aria-hidden="true">${icon('DragDropVertical', 16)}</span>
         <span class="cm-num mono">${i + 1}</span>
-        <span class="rv-main"><span class="rv-subj">${esc(subjectFor(g))}</span><span class="mono muted">${esc(g.title)} · ${n} file${n > 1 ? 's' : ''}</span></span>
+        <span class="rv-main"><span class="rv-subj">${esc(subjectFor(g))}</span><span class="mono muted">${n} file${n > 1 ? 's' : ''}</span></span>
         <span class="rv-tools">
           <button class="icon-btn sm" data-up="${i}" ${i ? '' : 'disabled'} title="Move up">${icon('ArrowUp01', 14)}</button>
           <button class="icon-btn sm" data-down="${i}" ${i < order.length - 1 ? '' : 'disabled'} title="Move down">${icon('ArrowDown01', 14)}</button>
@@ -361,7 +570,7 @@ function reviewAll() {
           cs.banner = { html: `Committed ${done.length} of ${order.length}…` };
           draw();
         }
-        cs.banner = { html: `Made ${done.length} commit${done.length > 1 ? 's' : ''}: ${done.map((r) => `<span class="mono muted">${r.sha.slice(0, 7)}</span> ${esc(r.subject)}`).join(' · ')}`, undo: done.length === 1, push: true };
+        cs.banner = { kind: 'commit', html: `Made ${done.length} commit${done.length > 1 ? 's' : ''}: ${done.map((r) => `<span class="mono muted">${r.sha.slice(0, 7)}</span> ${esc(r.subject)}`).join(' · ')}`, undo: done.length === 1, push: true };
         celebrate();
       });
     }
@@ -383,57 +592,71 @@ function onClick(e) {
   if ((b = t('[data-pick]'))) return ctx.pickRepo(b.dataset.pick);
   if ((b = t('[data-format]'))) {
     const f = b.dataset.format;
-    for (const g of cs.groups) if (g.edited != null && (g.editedFormat === 'conventional') !== (f === 'conventional')) g.edited = null;
+    for (const g of cs.groups) if (g.edited != null && g.editedFormat !== f) g.edited = null;
     cs.format = f; store.format = f; save(); return draw();
   }
-  if ((b = t('[data-emoji]'))) return pickEmoji(groupById(b.dataset.emoji), b);
-  if ((b = t('[data-chunks]'))) { const p = b.dataset.chunks; cs.hunkOpen.has(p) ? cs.hunkOpen.delete(p) : cs.hunkOpen.add(p); return draw(); }
-  if ((b = t('[data-diff]'))) { const p = b.dataset.diff; cs.open.has(p) ? cs.open.delete(p) : cs.open.add(p); return draw(); }
-  if ((b = t('[data-addbody]'))) { cs.bodyOpen.add(b.dataset.addbody); draw(); return host.querySelector(`[data-body="${CSS.escape(b.dataset.addbody)}"]`)?.focus(); }
+  if ((b = t('[data-emoji]'))) { const g = groupById(b.dataset.emoji); return emojiPicker(b, { current: g.emoji, type: g.type, suggested: g.emojiSuggestions, onPick: (e, type) => { g.emoji = e; if (type !== 'revert' && g.edited == null) { g.type = type; fetch(`/api/changes/learn-style?repo=${encodeURIComponent(cs.repo)}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-changes': '1' }, body: JSON.stringify({ type, emoji: e }) }).catch(() => {}); } draw(); } }); }
+  if ((b = t('[data-chunks]'))) return togglePanel(cs.hunkOpen, b.dataset.chunks, b);
+  if ((b = t('[data-diff]'))) return togglePanel(cs.open, b.dataset.diff, b);
+  if ((b = t('[data-addbody]'))) {
+    const id = b.dataset.addbody;
+    if (cs.bodyOpen.has(id)) { cs.bodyOpen.delete(id); return draw(); }
+    cs.bodyOpen.add(id); draw(); return host.querySelector(`[data-body="${CSS.escape(id)}"]`)?.focus();
+  }
   if ((b = t('[data-reset]'))) { groupById(b.dataset.reset).edited = null; return draw(); }
   if ((b = t('[data-dismiss]'))) { cs.banner = null; return draw(); }
-  if ((b = t('[data-guess]'))) { adoptGroups(cs.data.groups); cs.off.clear(); return draw(); }
-  if ((b = t('[data-merge]'))) {
-    const all = cs.groups.flatMap((g) => g.files);
-    cs.groups = [{ id: 'one', title: 'Everything', why: 'all changes as a single commit', type: 'feat', scope: '', emoji: '✨', conventional: 'update site', gitmoji: 'Updated site', body: '', files: all, edited: null }];
-    return draw();
+  if ((b = t('[data-write]'))) return rewrite(groupById(b.dataset.write), true);
+  if ((b = t('[data-regroup]'))) return regroup();
+  if ((b = t('[data-clear]'))) {
+    const g = groupById(b.dataset.clear);
+    g.edited = ''; g.editedFormat = cs.format; g.body = ''; draw();
+    const inp = host.querySelector(`[data-subject="${CSS.escape(g.id)}"]`);
+    inp?.focus();
+    return;
   }
-  if ((b = t('[data-rewrite]'))) {
-    const g = groupById(b.dataset.rewrite);
-    return run(g.id, async () => {
-      const files = g.files.filter((p) => !cs.off.has(p));
-      const m = await api(`/api/changes/message?repo=${encodeURIComponent(cs.repo)}`, { files: files.length ? files : g.files });
-      Object.assign(g, { type: m.type, scope: m.scope, emoji: m.emoji, conventional: m.conventional, gitmoji: m.gitmoji, body: m.body, source: 'claude', edited: null });
-      if (g.title === 'New changes' || g.title === 'Everything' || g.title === 'New commit') g.title = m.title;
-    });
+  if ((b = t('[data-discard]'))) {
+    const g = groupById(b.dataset.g), p = b.dataset.discard;
+    return discard(g && isSplit(g, p) ? { partial: { [p]: g.hunks[p] } } : { files: [p] }, b.closest('.cm-file'));
   }
-  if ((b = t('[data-regroup]'))) {
-    return run('regroup', async () => {
-      const res = await api(`/api/changes/suggest?repo=${encodeURIComponent(cs.repo)}`, {});
-      adoptGroups(res.groups);
-      cs.off.clear();
-    });
+  if ((b = t('[data-discardhunk]'))) { e.preventDefault(); return discard({ partial: { [b.dataset.discardhunk]: [b.dataset.hid] } }, b.closest('.cm-chunk')); }
+  if ((b = t('[data-discardgroup]'))) {
+    if (e.detail !== 0) return; // a mouse or finger holds instead; see onHold
+    const g = groupById(b.dataset.discardgroup);
+    const files = g.files.filter((p) => cs.files.has(p));
+    return confirmDialog({ title: `Discard ${files.length} file${files.length > 1 ? 's' : ''}?`, text: `Your changes to ${files.length > 1 ? 'these files' : esc(files[0])} go away. You can undo it right after, from the note at the bottom.`, ok: 'Discard', danger: true })
+      .then((go) => go && discard(discardWhat(g), host.querySelector(`[data-group="${CSS.escape(g.id)}"]`)));
   }
+  if ((b = t('[data-undodiscard]'))) return undoDiscard();
   if ((b = t('[data-commit]'))) {
     const g = groupById(b.dataset.commit);
-    return warnOk([g]).then((go) => go && run(g.id, async () => {
-      const r = await commitGroup(g);
-      cs.banner = { html: `Committed <b>${esc(r.subject)}</b> <span class="mono muted">${r.sha.slice(0, 7)} · ${r.n} file${r.n > 1 ? 's' : ''}</span>`, undo: true, push: true };
-    }));
+    return warnOk([g]).then((go) => {
+      if (!go) return;
+      const land = commitFold(host.querySelector(`[data-group="${CSS.escape(g.id)}"]`));
+      return run(g.id, async () => {
+        const r = await commitGroup(g);
+        cs.banner = { html: `Committed <b>${esc(r.subject)}</b> <span class="mono muted">${r.sha.slice(0, 7)} · ${r.n} file${r.n > 1 ? 's' : ''}</span>`, undo: true, push: true, kind: 'commit' };
+      }).then(() => land(cs.banner?.kind === 'commit' ? host.querySelector('.cm-banner .cm-dot') : false));
+    });
   }
   if ((b = t('[data-commitall]'))) {
-    const order = cs.groups.filter((x) => x.files.some((p) => !cs.off.has(p)));
+    const order = cs.groups.filter((x) => x.files.some((p) => isOn(x, p)));
     if (order.length > 1) return reviewAll();
     const g = order[0];
-    return warnOk([g]).then((go) => go && run(g.id, async () => {
-      const r = await commitGroup(g);
-      cs.banner = { html: `Committed <b>${esc(r.subject)}</b> <span class="mono muted">${r.sha.slice(0, 7)}</span>`, undo: true, push: true };
-    }));
+    return warnOk([g]).then((go) => {
+      if (!go) return;
+      const land = commitFold(host.querySelector(`[data-group="${CSS.escape(g.id)}"]`));
+      return run(g.id, async () => {
+        const r = await commitGroup(g);
+        cs.banner = { html: `Committed <b>${esc(r.subject)}</b> <span class="mono muted">${r.sha.slice(0, 7)}</span>`, undo: true, push: true, kind: 'commit' };
+      }).then(() => land(cs.banner?.kind === 'commit' ? host.querySelector('.cm-banner .cm-dot') : false));
+    });
   }
   if ((b = t('[data-pushnow]'))) {
+    const n = (cs.banner?.html.match(/Made (\d+) commit/) || [])[1] || 1;
+    b.classList.add('is-pushing');
     return run('push', async () => {
-      await api(`/api/x/push?repo=${encodeURIComponent(cs.repo)}`, {});
-      cs.banner = { html: `Pushed to ${ctx.host?.name || 'your remote'}.` };
+      await Promise.all([api(`/api/x/push?repo=${encodeURIComponent(cs.repo)}`, {}), pushLaunch(host.querySelector('[data-pushnow]') || b, +n)]);
+      cs.banner = { html: `Pushed to ${esc(ctx.host?.name || 'your remote')}. You're all caught up.`, kind: 'pushed' };
     });
   }
   if ((b = t('[data-undo]'))) {
@@ -459,29 +682,37 @@ function onInput(e) {
   } else if (el.dataset.title) {
     groupById(el.dataset.title).title = el.value;
   }
+  remember();
 }
 
 function onChange(e) {
   const el = e.target;
   if (el.dataset.file) {
-    el.checked ? cs.off.delete(el.dataset.file) : cs.off.add(el.dataset.file);
+    const g = groupById(el.dataset.g), p = el.dataset.file;
+    if (g && isSplit(g, p)) {
+      const set = cs.hunksOff.get(p) || new Set();
+      for (const h of ownedHunks(g, p)) el.checked ? set.delete(h.id) : set.add(h.id);
+      set.size ? cs.hunksOff.set(p, set) : cs.hunksOff.delete(p);
+    } else el.checked ? cs.off.delete(p) : cs.off.add(p);
     return draw();
   }
   if (el.dataset.hunk) {
     const p = el.dataset.hunk;
     const set = cs.hunksOff.get(p) || new Set();
     el.checked ? set.delete(el.dataset.hid) : set.add(el.dataset.hid);
-    const total = (cs.files.get(p)?.hunks || []).length;
-    if (set.size >= total) { set.clear(); cs.off.add(p); } // nothing picked: leave the file out
-    else cs.off.delete(p);
+    const g = groupById(el.dataset.g);
+    if (!g || !isSplit(g, p)) {
+      const total = allHunks(p).length;
+      if (set.size >= total) { set.clear(); cs.off.add(p); } // nothing picked: leave the file out
+      else cs.off.delete(p);
+    }
     set.size ? cs.hunksOff.set(p, set) : cs.hunksOff.delete(p);
     return draw();
   }
   if (el.dataset.move) {
     const p = el.dataset.move, to = el.value;
     if (!to) return;
-    const from = cs.groups.find((g) => g.files.includes(p));
-    from.files = from.files.filter((x) => x !== p);
+    const from = groupById(el.dataset.g) || cs.groups.find((g) => g.files.includes(p));
     let dest = groupById(to);
     if (to === '__new') {
       const f = cs.files.get(p);
@@ -489,8 +720,8 @@ function onChange(e) {
       if (f?.status === 'A') Object.assign(dest, { type: 'feat', emoji: '✨', conventional: `add ${p.split('/').pop()}`, gitmoji: `Added ${p.split('/').pop()}` });
       cs.groups.push(dest);
     }
-    const learnTo = dest.files.slice();
-    dest.files.push(p);
+    const learnTo = dest.files.filter((x) => x !== p);
+    give(from, dest, p);
     cs.groups = cs.groups.filter((g) => g.files.length);
     draw();
     // remember this correction for next time
