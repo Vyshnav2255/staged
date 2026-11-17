@@ -1215,6 +1215,7 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
         const sha = await commitWithTempIndex(dir, picked, byPath, partial, message);
         const paths = picked.flatMap((p) => [p, ...(byPath.get(p).from ? [byPath.get(p).from] : [])]);
         lastCommitByTool.set(name, { sha, paths });
+        styleCache.at = 0;
         onCommitted && onCommitted(name);
         return ok({ sha, files: picked.length }), true;
       }
@@ -1225,6 +1226,7 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
         await git(dir, ['reset', '--soft', 'HEAD~1']);
         await git(dir, ['reset', '-q', '--', ...last.paths]).catch(() => {}); // back to unstaged, as before
         lastCommitByTool.delete(name);
+        styleCache.at = 0;
         onCommitted && onCommitted(name);
         return ok({ undone: last.sha }), true;
       }
