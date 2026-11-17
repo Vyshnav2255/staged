@@ -5,7 +5,11 @@
   "description": "Every change across your git repos, sorted into features, commits and releases. Local, no AI needed.",
   "type": "module",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "setup": "node server.mjs --install",
+    "remove": "node server.mjs --uninstall",
+    "plan": "node server.mjs plan",
+    "release": "node release.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -15,7 +19,13 @@
   },
   "files": [
     "server.mjs",
+    "plan.mjs",
+    "app-server.mjs",
+    "tui.mjs",
     "commit.mjs",
+    "feature-index.mjs",
+    "updater.mjs",
+    "writer.mjs",
     "insights.mjs",
     "public/",
     "README.md"
