@@ -2,8 +2,14 @@ import { icon } from './icons.js';
 import { mountCommit, refreshCommit } from './commit-view.js';
 import { mountTree } from './tree.js';
 import { mountHealth } from './health.js';
-import { mountToday } from './today.js';
+import { mountHome } from './today.js';
 import { mountReadme } from './readme.js';
+import { mountSettings } from './settings.js';
+import { initUpdates, checkNow } from './update.js';
+import { pushLaunch, pushButtonDone, previewCommit, previewPush } from './fx.js';
+import { soundOn, setSound } from './sfx.js';
+import { initSegs, countUp, enter } from './motion.js';
+import { initGlance } from './glance.js';
 import { initPalette, open as openPalette } from './palette.js';
 import { recapCard, recapFor, openStory, releasePanel, openRelease, openChangelog } from './release.js';
 import { api, copy, hostOf, commitUrl } from './ui.js';
@@ -54,15 +60,17 @@ function weekLabel(ws) {
 }
 
 // ---------- state ----------
-const VIEWS = ['week', 'feature', 'release', 'tree', 'health', 'commit', 'today', 'readme'];
-const PANE_VIEWS = ['tree', 'health', 'commit', 'today', 'readme'];
-const GLOBAL_VIEWS = ['today', 'readme'];
+const VIEWS = ['week', 'feature', 'release', 'tree', 'health', 'commit', 'readme', 'settings'];
+const PANE_VIEWS = ['tree', 'health', 'commit', 'readme', 'settings'];
+const GLOBAL_VIEWS = ['readme', 'settings'];
+const isHome = () => state.repo === 'all' && state.view === 'week';
 const state = { repoState: null, data: null, repo: 'all', view: 'week', range: '12w', q: '', off: new Set(), open: new Set(), expanded: new Set() };
 
 function readHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.get('repo')) state.repo = h.get('repo');
   if (VIEWS.includes(h.get('view'))) state.view = h.get('view');
+  if (h.get('view') === 'today') { state.repo = 'all'; state.view = 'week'; } // Today is part of Home now
   if (RANGES[h.get('range')]) state.range = h.get('range');
 }
 function writeHash() {
@@ -117,33 +125,13 @@ function visible() {
 // ---------- render: chrome ----------
 function renderSidebar() {
   const repos = state.data.repos;
-  const now = weekStart(Date.now());
-  const spark = (commits) => {
-    const counts = new Array(12).fill(0);
-    for (const c of commits) {
-      const i = Math.round((now - weekStart(c.t)) / WEEK);
-      if (i < 0 || i >= 12) { if (i >= 12) break; continue; }
-      counts[11 - i]++;
-    }
-    const max = Math.max(1, ...counts);
-    const bars = counts.map((v, i) => {
-      const h = v ? Math.max(2, Math.round((v / max) * 18)) : 1;
-      return `<rect x="${i * 4}" y="${20 - h}" width="3" height="${h}" rx="1" fill="currentColor" opacity="${v ? 1 : .5}"/>`;
-    }).join('');
-    return `<svg class="repo-spark" width="47" height="20" viewBox="0 0 47 20" aria-hidden="true">${bars}</svg>`;
-  };
   const total = repos.reduce((n, r) => n + r.commits.length, 0);
   const waiting = repos.filter((r) => r.dirty).length;
   const nameOf = (r) => `<span class="repo-name">${r.remote ? `<span class="repo-host" title="On ${esc(hostOf(r).name)}">${icon(hostOf(r).icon, 14)}</span>` : `<span class="repo-host is-local" title="Local only">${icon('Folder01', 14)}</span>`}<span class="repo-label">${esc(r.name)}</span>${r.dirty ? `<span class="repo-dirty" title="${r.dirty} uncommitted"></span>` : ''}</span>`;
   let html = `<div class="side-top">
-    <button class="repo is-today" data-today aria-current="${state.view === 'today'}">
-      <span class="repo-name"><span class="repo-host">${icon('Sun03', 14)}</span><span class="repo-label">Today</span></span>
-      <span class="repo-meta mono">${waiting ? `${waiting} repo${waiting > 1 ? 's' : ''} with work waiting` : 'all clear'}</span>
-    </button>
-    <button class="repo" data-repo="all" aria-current="${state.repo === 'all' && !GLOBAL_VIEWS.includes(state.view)}">
-      <span class="repo-name"><span class="repo-host">${icon('Queue02', 14)}</span><span class="repo-label">All repos</span></span>
-      <span class="repo-meta mono">${repos.length} repos · ${fmt.format(total)} commits</span>
-      ${spark(repos.flatMap((r) => r.commits.filter((c) => c.t > now - 12 * WEEK)))}
+    <button class="repo is-home" data-home aria-current="${state.repo === 'all' && !GLOBAL_VIEWS.includes(state.view)}">
+      <span class="repo-name"><span class="repo-host">${icon('Home01', 14)}</span><span class="repo-label">Home</span></span>
+      <span class="repo-meta mono">${waiting ? `${waiting} repo${waiting > 1 ? 's' : ''} with work waiting` : `all clear · ${fmt.format(total)} commits`}</span>
     </button>
   </div>
   <div class="side-sec"><span class="side-sec-h mono">Repos <b>${repos.length}</b></span>${repos.length > 6 ? `<label class="side-filter">${icon('Search01', 13)}<input id="repoFilter" type="search" placeholder="Filter" value="${esc(state.sideQ || '')}" autocomplete="off" spellcheck="false" aria-label="Filter repos"></label>` : ''}</div>
@@ -154,23 +142,19 @@ function renderSidebar() {
     html += `<button class="repo" data-repo="${esc(r.name)}" aria-current="${state.repo === r.name && !GLOBAL_VIEWS.includes(state.view)}" title="${esc(r.name)}"${hide ? ' hidden' : ''}>
       ${nameOf(r)}
       <span class="repo-meta mono">${esc(meta)}</span>
-      ${spark(r.commits)}
     </button>`;
   }
   html += `<p class="side-empty muted" ${repos.some((r) => !state.sideQ || r.name.toLowerCase().includes(state.sideQ.toLowerCase())) ? 'hidden' : ''}>No repo matches</p></div>`;
   $('#repos').innerHTML = html;
-  const roots = (state.data.roots || [state.data.root]).map((x) => x.replace(/^(\/(Users|home|sessions)\/[^/]+|[A-Z]:\\Users\\[^\\]+)/, '~'));
-  $('#root').textContent = roots.join(', ');
-  $('#root').title = (state.data.roots || [state.data.root]).join('\n');
 }
 
 function renderHeader() {
   const repos = currentRepos();
   const gh = $('#ghLink');
   if (state.repo === 'all') {
-    $('#title').textContent = 'All repos';
+    $('#title').textContent = greeting();
     const active = repos.filter((r) => r.last > Date.now() - 30 * DAY).length;
-    $('#meta').innerHTML = `<span>${repos.length} repos</span><span>${active} active this month</span>`;
+    $('#meta').innerHTML = `<span>${icon('Calendar03', 13)}${new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</span><span>${repos.length} repos</span><span>${active} active this month</span>`;
     gh.hidden = true;
   } else {
     const r = repos[0];
@@ -193,12 +177,24 @@ function renderHeader() {
   push.hidden = !(rs2 && rs2.ahead && !GLOBAL_VIEWS.includes(state.view));
   push.innerHTML = `${icon('ArrowUp02', 15)}<span>Push ${rs2?.ahead || ''}</span>`;
   $('#readmeLink').setAttribute('aria-current', state.view === 'readme');
+  $('#settingsLink').setAttribute('aria-current', state.view === 'settings');
   if (state.view === 'readme') { $('#title').textContent = 'README'; $('#meta').innerHTML = '<span>How staged works</span>'; gh.hidden = true; push.hidden = true; }
-  if (state.view === 'today') { $('#title').textContent = 'Today'; $('#meta').innerHTML = `<span>${new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</span>`; gh.hidden = true; }
-  for (const b of document.querySelectorAll('#viewSeg button')) b.setAttribute('aria-selected', b.dataset.v === state.view);
+  if (state.view === 'settings') { $('#title').textContent = 'Settings'; $('#meta').innerHTML = '<span>AI, messages, sound and updates</span>'; gh.hidden = true; push.hidden = true; }
+  const viewTabs = [...document.querySelectorAll('#viewSeg button')];
+  const hasViewTab = viewTabs.some((b) => b.dataset.v === state.view);
+  for (const b of viewTabs) {
+    const selected = b.dataset.v === state.view;
+    b.setAttribute('aria-selected', selected);
+    b.tabIndex = selected || (!hasViewTab && b.dataset.v === 'week') ? 0 : -1;
+  }
   const dirty = repos.reduce((s, r) => s + (r.dirty || 0), 0);
   $('#dirtyCount').textContent = dirty ? dirty : '';
   for (const b of document.querySelectorAll('#rangeSeg button')) b.setAttribute('aria-selected', b.dataset.r === state.range);
+}
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
 }
 
 // ---------- render: stats ----------
@@ -226,13 +222,15 @@ function renderStats(list) {
     const txt = k === 'fixShare' ? `${d > 0 ? '+' : ''}${d} pts` : `${d > 0 ? '+' : ''}${fmt.format(d)}`;
     return `<div class="stat-delta mono ${cls}">${d === 0 ? 'same as' : txt + ' vs'} previous ${state.range}</div>`;
   };
+  const num = (k, n) => `<span class="num" data-k="${k}" data-n="${n}">${fmt.format(n)}</span>`;
   $('#stats').innerHTML = [
-    ['Commits', fmt.format(a.commits), delta('commits')],
-    ['Active days', `${a.days}`, delta('days')],
+    ['Commits', num('commits', a.commits), delta('commits')],
+    ['Active days', num('days', a.days), delta('days')],
     ['Lines changed', `${compact(a.add + a.del)} <small><span style="color:var(--add)">+${compact(a.add)}</span> <span style="color:var(--del)">−${compact(a.del)}</span></small>`, b ? `<div class="stat-delta mono">${compact(b.add + b.del)} previous ${state.range}</div>` : delta()],
-    ['Features shipped', fmt.format(a.feat), delta('feat')],
-    ['Fix share', `${a.fixShare}<small>%</small>`, delta('fixShare', true)],
+    ['Features shipped', num('feat', a.feat), delta('feat')],
+    ['Fix share', `${num('fix', a.fixShare)}<small>%</small>`, delta('fixShare', true)],
   ].map(([l, v, d]) => `<div class="stat"><div class="stat-label">${l}</div><div class="stat-value">${v}</div>${d}</div>`).join('');
+  for (const el of $('#stats').querySelectorAll('.num')) countUp(el, +el.dataset.n, el.dataset.k, (n) => fmt.format(Math.round(n)));
 }
 
 // ---------- render: chart ----------
@@ -304,10 +302,16 @@ function renderChart(list) {
     });
     const label = i % labelEvery === 0 || i === buckets.length - 1
       ? `<text x="${x + barW / 2}" y="${H - 5}" text-anchor="middle">${monthly ? dMonth.format(b).replace(' 20', " '") : dShort.format(b)}</text>` : '';
-    cols += `<g class="col" data-i="${i}"><rect class="hit" x="${padL + i * bw}" y="${padT}" width="${bw}" height="${ih}" rx="4"/>${segs}</g>`;
+    const detail = TYPES.filter((t) => data[i][t]).map((t) => `${TYPE_LABEL[t]}: ${data[i][t]}`).join(', ') || 'No commits';
+    const chartLabel = `${monthly ? dMonth.format(b) : weekLabel(b)}. ${detail}. Total: ${totals[i]} commits${!monthly && state.view === 'week' ? '. Use left and right arrow keys to move between weeks. Press Enter to view this week' : ''}`;
+    const navigable = !monthly && state.view === 'week';
+    cols += `<g class="col" data-i="${i}" ${navigable ? `role="button" tabindex="${i === 0 ? 0 : -1}"` : 'role="img"'} aria-label="${esc(chartLabel)}" style="--i:${buckets.length - 1 - i}"><rect class="hit" x="${padL + i * bw}" y="${padT}" width="${bw}" height="${ih}" rx="4"/>${segs}</g>`;
     if (label && (i === buckets.length - 1 ? true : buckets.length - 1 - i >= labelEvery * 0.6)) axis += label;
   });
-  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc($('#chartTitle').textContent)}">
+  const key = [state.repo, state.range, state.view, [...state.off].join()].join('|');
+  const grow = key !== renderChart.key;
+  renderChart.key = key;
+  el.innerHTML = `<svg class="${grow ? 'is-grow' : ''}" viewBox="0 0 ${W} ${H}" role="group" aria-label="${esc($('#chartTitle').textContent)}">
     <g class="grid">${grid}</g>
     <line class="baseline" x1="${padL}" x2="${W}" y1="${y(0) + .5}" y2="${y(0) + .5}"/>
     <g>${cols}</g><g class="axis">${axis}</g></svg>`;
@@ -325,7 +329,28 @@ function renderChart(list) {
   el.onclick = (e) => {
     const g = e.target.closest('.col');
     if (!g || monthly || state.view !== 'week') return;
-    document.getElementById('w' + buckets[+g.dataset.i])?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('w' + buckets[+g.dataset.i])?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  };
+  el.onkeydown = (e) => {
+    if (!e.target.matches('.col[role="button"]')) return;
+    const bars = [...el.querySelectorAll('.col[role="button"]')];
+    const at = bars.indexOf(e.target);
+    const next = e.key === 'ArrowRight' ? Math.min(bars.length - 1, at + 1)
+      : e.key === 'ArrowLeft' ? Math.max(0, at - 1)
+        : e.key === 'Home' ? 0 : e.key === 'End' ? bars.length - 1 : -1;
+    if (next >= 0) {
+      e.preventDefault();
+      bars.forEach((bar, i) => { bar.tabIndex = i === next ? 0 : -1; });
+      bars[next].focus();
+      return;
+    }
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    const i = +e.target.dataset.i;
+    const section = document.getElementById('w' + buckets[i]);
+    section?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+    section?.setAttribute('tabindex', '-1');
+    section?.focus({ preventScroll: true });
   };
 }
 function roundTop(x, y, w, h, r) {
@@ -366,6 +391,8 @@ function mixBar(counts, w = 72) {
   const title = present.map((t) => `${TYPE_LABEL[t]} ${counts[t]}`).join(' · ');
   return `<svg class="mix" width="${w}" height="6" viewBox="0 0 ${w} 6" preserveAspectRatio="none"><title>${title}</title>${out}</svg>`;
 }
+// What the glance rail reads: a label, a count and the mix of change types.
+const glance = (label, commits) => `data-gl="${esc(label)}" data-gl-n="${commits.length}" data-gl-mix="${Object.entries(countTypes(commits)).map(([t, n]) => t + ':' + n).join(',')}"`;
 function countTypes(list) {
   const c = {};
   for (const x of list) c[x.type] = (c[x.type] || 0) + 1;
@@ -393,7 +420,7 @@ function group(id, title, sub, commits, opts = {}) {
   const open = state.open.has(id);
   const shown = open ? commits : commits.slice(0, PAGE);
   const add = commits.reduce((s, c) => s + c.add, 0), del = commits.reduce((s, c) => s + c.del, 0);
-  return `<section class="group" id="${id}">
+  return `<section class="group" id="${id}" ${glance(title, commits)}>
     <div class="group-head">
       <span class="group-title">${esc(title)}</span>
       <span class="group-sub mono">${sub ? esc(sub) + ' · ' : ''}${commits.length} commit${commits.length === 1 ? '' : 's'} · +${compact(add)} −${compact(del)}</span>
@@ -416,7 +443,7 @@ function renderWeek(list) {
     if (!weeks.has(k)) weeks.set(k, []);
     weeks.get(k).push(c);
   }
-  let html = !state.q && !state.off.size && state.range !== 'all' ? recapCard(list) : '';
+  let html = '';
   for (const [k, commits] of weeks) {
     const id = 'w' + k;
     notesSource.set(id, { title: weekLabel(k), commits });
@@ -443,7 +470,7 @@ function renderFeature(list) {
   for (const f of feats.slice(0, limit)) {
     const add = f.commits.reduce((s, c) => s + c.add, 0), del = f.commits.reduce((s, c) => s + c.del, 0);
     const exp = state.expanded.has(f.key);
-    html += `<button class="feat" data-feat="${esc(f.key)}" aria-expanded="${exp}">
+    html += `<button class="feat" data-feat="${esc(f.key)}" aria-expanded="${exp}" ${glance(f.name, f.commits)}>
       <span class="feat-name">${esc(f.name)}${state.repo === 'all' ? `<span class="mono">${esc(f.repo)}</span>` : ''}</span>
       <span class="hide-sm">${mixBar(countTypes(f.commits), 96)}</span>
       <span class="mono">${f.commits.length}</span>
@@ -519,7 +546,7 @@ function pane(name) {
 }
 
 async function refreshRepoState() {
-  if (state.repo === 'all' || state.view === 'today') return;
+  if (state.repo === 'all') return;
   const name = state.repo;
   try {
     const s = await api(`/api/x/state?repo=${encodeURIComponent(name)}`);
@@ -536,18 +563,28 @@ function ctxFor(view) {
     go: (name, v) => { state.repo = name; state.view = v; render(); scrollTo({ top: 0 }); },
     onChange: () => { load(false); refreshRepoState(); },
     recap: () => recapFor(state.data.repos.flatMap((x) => x.commits)),
+    openSettings,
     typeOf: (() => { const m = new Map((r?.commits || []).map((c) => [c.sha, c.type])); return (sha) => m.get(sha) || null; })(),
   };
 }
 
+let lastPlace = '';
 function render() {
   if (!state.data) return;
   writeHash();
+  const place = state.repo + '|' + state.view;
+  const moved = lastPlace && place !== lastPlace;
+  lastPlace = place;
+  if (moved) requestAnimationFrame(() => document.querySelectorAll('.main > :not(.head):not([hidden])').forEach((x) => { if (!x.matches('.controls')) enter(x); }));
   renderSidebar();
   renderHeader();
   const v = state.view;
   const main = document.querySelector('.main');
   for (const x of VIEWS) main.classList.toggle('is-' + x, x === v);
+  main.classList.toggle('is-home', isHome());
+  const homeEl = $('#home');
+  homeEl.hidden = !isHome();
+  if (isHome()) { mountHome(homeEl, ctxFor('home')); for (const x of PANE_VIEWS) { const el = document.getElementById('pane-' + x); if (el) el.hidden = true; } return; }
   main.classList.toggle('is-pane', PANE_VIEWS.includes(v));
   $('#q').placeholder = v === 'commit' ? 'Filter files' : v === 'tree' ? 'Find in tree' : 'Search changes';
   for (const x of PANE_VIEWS) { const el = document.getElementById('pane-' + x); if (el) el.hidden = x !== v; }
@@ -611,8 +648,9 @@ function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;
   t.hidden = false;
+  t.classList.remove('is-out');
   clearTimeout(toastT);
-  toastT = setTimeout(() => (t.hidden = true), 1600);
+  toastT = setTimeout(() => { t.classList.add('is-out'); toastT = setTimeout(() => (t.hidden = true), 200); }, 1800);
 }
 
 // ---------- events ----------
@@ -620,6 +658,11 @@ $('#searchIcon').innerHTML = icon('Search01', 15);
 $('#refresh').innerHTML = icon('Refresh01', 16);
 $('#cmdk').innerHTML = `${icon('Command', 14)}<span class="mono">K</span>`;
 $('#readmeLink').innerHTML = `${icon('BookOpen01', 15)}<span>README</span>`;
+$('#settingsLink').innerHTML = `${icon('Settings02', 15)}<span>Settings</span>`;
+$('#settingsLink').addEventListener('click', () => openSettings());
+initUpdates(document.querySelector('.side'));
+initSegs();
+initGlance($('.main'));
 $('#readmeLink').addEventListener('click', () => { if (!GLOBAL_VIEWS.includes(state.view)) state.lastView = state.view; state.view = 'readme'; render(); scrollTo({ top: 0 }); });
 
 $('#repos').addEventListener('input', (e) => {
@@ -636,7 +679,7 @@ $('#repos').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { const first = $('#repos').querySelector('.repo-list [data-repo]:not([hidden])'); if (first) first.click(); }
 });
 $('#repos').addEventListener('click', (e) => {
-  if (e.target.closest('[data-today]')) { if (!GLOBAL_VIEWS.includes(state.view)) state.lastView = state.view; state.view = 'today'; render(); scrollTo({ top: 0 }); return; }
+  if (e.target.closest('[data-home]')) { goHome(); return; }
   const b = e.target.closest('[data-repo]');
   if (!b) return;
   state.repo = b.dataset.repo;
@@ -647,19 +690,35 @@ $('#repos').addEventListener('click', (e) => {
   refreshRepoState();
   scrollTo({ top: 0 });
 });
+function goHome() {
+  state.repo = 'all'; state.view = 'week'; state.repoState = null; state.open.clear(); state.expanded.clear();
+  render(); scrollTo({ top: 0, behavior: 'smooth' });
+}
+$('#brandHome').addEventListener('click', (e) => { e.preventDefault(); goHome(); });
 $('#pushBtn').addEventListener('click', async () => {
-  const b = $('#pushBtn'); b.disabled = true; b.innerHTML = `${icon('ArrowUp02', 15)}<span>Pushing…</span>`;
-  try { await api(`/api/x/push?repo=${encodeURIComponent(state.repo)}`, {}); toast(`Pushed to ${hostOf(state.data.repos.find((x) => x.name === state.repo)).name}`); }
-  catch (err) { toast(err.message); }
+  const b = $('#pushBtn'); const was = b.innerHTML;
+  b.disabled = true; b.classList.add('is-pushing'); b.innerHTML = `${icon('ArrowUp02', 15)}<span>Pushing…</span>`;
+  try {
+    await Promise.all([api(`/api/x/push?repo=${encodeURIComponent(state.repo)}`, {}), pushLaunch(b, state.repoState?.ahead || 1)]);
+    b.innerHTML = `${icon('Tick02', 15)}<span>Pushed</span>`;
+    pushButtonDone(b, was);
+    toast(`Pushed to ${hostOf(state.data.repos.find((x) => x.name === state.repo)).name}`);
+    await new Promise((r) => setTimeout(r, 1400));
+  } catch (err) { b.classList.remove('is-pushing'); b.innerHTML = was; toast(err.message); }
   b.disabled = false; refreshRepoState(); load(false);
 });
 $('#cmdk').addEventListener('click', () => openPalette());
 initPalette((q) => {
   const items = [];
   const repos = state.data ? state.data.repos : [];
-  const goRepo = (name, view) => () => { state.repo = name; if (view) state.view = view; else if (state.view === 'today') state.view = 'week'; state.repoState = null; render(); refreshRepoState(); scrollTo({ top: 0 }); };
-  items.push({ group: 'Go to', label: 'Today', hint: 'where you left off', run: () => { state.view = 'today'; render(); } });
-  items.push({ group: 'Go to', label: 'All repos', run: goRepo('all') });
+  const goRepo = (name, view) => () => { state.repo = name; if (view) state.view = view; else if (GLOBAL_VIEWS.includes(state.view)) state.view = 'week'; state.repoState = null; render(); refreshRepoState(); scrollTo({ top: 0 }); };
+  items.push({ group: 'Go to', label: 'Home', hint: 'what is waiting, across every repo', run: goHome });
+  items.push({ group: 'Actions', label: 'Preview commit animation', hint: 'nothing is committed', run: () => setTimeout(previewCommit, 200) });
+  items.push({ group: 'Actions', label: 'Preview push animation', hint: 'nothing is pushed', run: () => setTimeout(previewPush, 200) });
+  items.push({ group: 'Actions', label: soundOn() ? 'Turn sounds off' : 'Turn sounds on', hint: 'commit and push sounds', run: () => { setSound(!soundOn()); toast(soundOn() ? 'Sounds on' : 'Sounds off'); } });
+  items.push({ group: 'Actions', label: 'Check for updates', hint: 'new versions of staged', run: checkNow });
+  items.push({ group: 'Go to', label: 'Settings', hint: 'AI, models, message style, sound', run: () => openSettings() });
+  items.push({ group: 'Go to', label: 'AI settings', hint: 'who writes and groups your commits', run: () => openSettings('ai') });
   items.push({ group: 'Go to', label: 'README', hint: 'how staged works', run: () => { state.view = 'readme'; render(); scrollTo({ top: 0 }); } });
   for (const r of repos) items.push({ group: 'Repos', label: r.name, hint: r.dirty ? `${r.dirty} uncommitted` : r.last ? ago(r.last) : '', run: goRepo(r.name) });
   const views = [['week', 'By week'], ['feature', 'By feature'], ['release', 'By release'], ['tree', 'Git tree'], ['health', 'Health and site weight'], ['commit', 'Commit changes']];
@@ -681,6 +740,19 @@ initPalette((q) => {
   return items;
 });
 $('#viewSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) { state.view = b.dataset.v; render(); } });
+$('#viewSeg').addEventListener('keydown', (e) => {
+  const current = e.target.closest('[role="tab"]');
+  if (!current) return;
+  const tabs = [...document.querySelectorAll('#viewSeg [role="tab"]')];
+  const at = tabs.indexOf(current);
+  const next = e.key === 'ArrowRight' ? (at + 1) % tabs.length
+    : e.key === 'ArrowLeft' ? (at - 1 + tabs.length) % tabs.length
+      : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : -1;
+  if (next < 0) return;
+  e.preventDefault();
+  tabs[next].focus();
+  tabs[next].click();
+});
 $('#rangeSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-r]'); if (b) { state.range = b.dataset.r; render(); } });
 $('#legend').addEventListener('click', (e) => {
   const b = e.target.closest('[data-type]');
@@ -723,3 +795,36 @@ readHash();
 refreshRepoState();
 $('#list').innerHTML = '<div class="loading mono">Reading repos…</div>';
 load(false);
+
+// ---------- live reload ----------
+// When staged's own files change (or it restarts after an update), refresh without losing your place.
+// If you're typing or have a dialog open, wait until you're done.
+(() => {
+  if (!('EventSource' in window)) return;
+  let boot = null, pending = false;
+  const busy = () => document.querySelector('.modal-wrap, .pal-wrap') || (document.activeElement?.matches('input, textarea') && document.activeElement.value);
+  // Never loop: after 3 automatic reloads in 20 seconds, stop and wait for a manual refresh.
+  const looping = () => {
+    try {
+      const now = Date.now(), recent = JSON.parse(sessionStorage.getItem('staged-reloads') || '[]').filter((t) => now - t < 20000);
+      if (recent.length >= 3) { console.warn('staged: skipped an automatic reload (too many in a row)'); return true; }
+      sessionStorage.setItem('staged-reloads', JSON.stringify([...recent, now]));
+    } catch {}
+    return false;
+  };
+  const reload = () => {
+    if (looping()) return;
+    if (busy()) { if (!pending) { pending = true; const t = setInterval(() => { if (!busy()) { clearInterval(t); location.reload(); } }, 1500); } return; }
+    location.reload();
+  };
+  const es = new EventSource('/api/live');
+  es.addEventListener('hello', (e) => { const id = JSON.parse(e.data); if (boot && boot !== id) reload(); boot = id; });
+  es.addEventListener('change', (e) => {
+    const { file } = JSON.parse(e.data);
+    if (/\.css$/.test(file)) {
+      for (const l of document.querySelectorAll('link[rel="stylesheet"]')) l.href = l.href.replace(/(\?.*)?$/, `?v=${Date.now()}`);
+      return;
+    }
+    reload();
+  });
+})();
