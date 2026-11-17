@@ -2,31 +2,55 @@
 
 <img src="public/brand/staged-icon.svg" width="64" alt="staged">
 
-**Every change across your git repos, sorted into features, commits and releases.** staged reads the repos in `~/GitHub` and shows them on `localhost`. Nothing leaves your Mac, there is no account, and it has no dependencies.
+**Every change across your git repos, sorted into features, commits and releases.** staged reads the git repos on your computer and shows them on `localhost`. Nothing leaves your Mac, there is no account, and it has no dependencies.
 
 ## Quick start
 
-You need [Node 18+](https://nodejs.org) and git. No install step, no dependencies.
+You need [Node 18+](https://nodejs.org) and git. No dependencies.
 
 ```sh
-git clone <repo-url> staged
-node staged/server.mjs
+git clone https://github.com/Vyshnav2255/staged.git
+cd staged
+npm start
 ```
 
-staged finds the folder your repos live in (`~/GitHub`, `~/Developer`, `~/Projects`, `~/code` and similar), remembers it, and opens your browser. To point it somewhere else:
+It asks how you want to run it:
 
-```sh
-node staged/server.mjs ~/work ~/side-projects   # one or more folders, remembered next time
-node staged/server.mjs --port 5000 --no-open
-```
+- **Keep it running** (recommended): in the background and at every login, until you stop it. You never start it again, and it picks up updates by itself. On a Mac it shows up as **staged**, with its icon, in System Settings › General › Login Items.
+- **Just for now**: in that Terminal window. Press `o` to open it, `r` to restart and `q` to quit.
+
+It lives at http://localhost:4321. Run `npm start` again any time to open it, stop it, or switch modes. To stop the background copy for good: `npm run remove`. If you move or rename staged's folder, run `npm run setup` once in the new place.
+
+Use your browser's **Install app** (Chrome, Edge, Arc) or **File › Add to Dock** (Safari) to give it its own window and icon.
 
 Settings and anything it learns from your corrections live in `~/.config/staged/` (on Windows, `%APPDATA%\staged`), never in your repos.
+
+## Your repos
+
+The first time it runs, staged looks for the folder your repos live in (`~/GitHub`, `~/Developer`, `~/Projects`, `~/code` and similar) and remembers it. Every git repo directly inside that folder shows up. New repos you clone there appear on their own.
+
+To change what it shows, open **Settings › Repos**:
+
+- **Add** a folder of repos, or a single repo from anywhere. Type its path, like `~/work` or `~/code/my-app`.
+- **Remove** a folder or a single repo you added.
+- **Untick** a repo to hide it from the sidebar, Home and everything else. Nothing in the repo is touched, and you can tick it again any time.
+
+You can also pass folders when starting it: `npm start -- ~/work ~/side-projects`. Once you've changed folders in Settings, the Settings list wins.
+
+## Updates
+
+staged updates itself. When a new version is out, a card in the sidebar says so. Open it to see what's new, press **Update now**, and staged restarts in place in a few seconds. You stay on the page you were on. You can also look for updates any time from `⌘K`.
+
+This works when you installed with `git clone`. If you changed staged's own files, commit or undo those changes first.
+
+To ship a version (for maintainers): on GitHub, go to **Releases › Draft a new release**, create a tag like `v0.3.0`, write the notes and publish. The notes show up in staged's *What's new*. Or from the Terminal: `npm run release`.
 
 ## What's inside
 
 | View | What it shows |
 | --- | --- |
-| **Today** | Repos with work waiting, how long it has been sitting, what's ready to push, and a one-line recap of your week. |
+| **Home** | An overview: a line on today, this week against last week, your streak, lines changed, what's **waiting on you** (files to commit and commits to push, with buttons), six months of activity and your busiest repos. Click the logo to get here. |
+| **Settings** | Repos, Commit Compass confidence and learning stats, message style, sounds and updates. |
 | **By week** | Weekly drops with a type mix, lines changed and *Copy notes* for release notes in Markdown. |
 | **By feature** | Changes grouped by the part of the site they touched. Each feature has a *story*: its timeline month by month. |
 | **By release** | Commits between git tags, with *New release* and *Changelog*. |
@@ -43,21 +67,40 @@ The **Commit** tab groups every uncommitted file into suggested commits:
 - **Connected files travel together.** A new script, its styles, and the files that include it or use its `data-*` hooks.
 - **Content gets its own commit.** A collection like `_books/` plus its `Images/Books/`.
 - **Files that usually change together stay together.** staged learns this from your past commits.
-- **Small one-off edits** gather into one *Small tweaks* commit.
+- **Unrelated small edits stay separate.** Small changes join only when another signal links them.
+
+staged remembers each repo's commits as you work: the groups, the messages, your edits and the files you unticked. Leave the tab, switch repos or reload, and it picks up where you left off. Files you've committed drop out; new ones land in a *New changes* card.
 
 Each commit has a ready message in **Gitmoji** (`✨ Added book notes for …`, in your own voice), **Conventional** (`feat(books): add notes for …`) or **Both**. Then:
 
 - Untick files, or pick individual **chunks** of a file. The rest stays in your working copy.
 - **Move** a file to another commit. staged remembers the correction next time.
-- Pick an emoji from the **gitmoji picker**.
+- Pick an emoji from the **gitmoji picker**: suggestions for that change first, your recent picks, then everything by kind. Search by meaning or `:code:`, arrow keys and Enter work.
+- **Rewrite** (the wand) writes one message again; **Clear** (the eraser) empties it so you can write your own.
+- A **description** is optional, so it stays tucked away. Click *Add description* under a message to write one (a faint dot means the AI already wrote one).
+- **Discard** throws away changes to a file, a single chunk or a whole suggested commit (hold the button for a whole commit). A copy goes to `.git/staged-trash/` first, and the note that pops up has **Undo**.
 - **Commit** one group, or **Commit all** to review, reorder and merge first.
 - **Undo** puts the last commit made here back into your changes. **Push** appears when GitHub or GitLab is behind.
 
 Secrets files, API keys, huge files, conflict markers, `console.log` and `debugger` are flagged before you commit.
 
-## No AI needed
+## Commit Compass
 
-Grouping and messages come from your files and your history: imports, `data-*` hooks, folders, past co-changes and the verbs you use after each emoji. If Claude Code (`claude`) is installed, **Regroup with Claude** and **Write with Claude** read the actual diffs for sharper results. It uses Sonnet by default; set `CHANGES_CLAUDE_MODEL=haiku` for speed.
+Coding agents and scripts can inspect the same proposed groups shown in the Commit tab without starting the web app:
+
+```sh
+staged plan --json
+staged plan /path/to/repo --json
+```
+
+The command prints JSON using the `staged.commit-plan.v1` schema, including each commit subject in Gitmoji and Conventional formats, recommended emoji, group confidence and evidence, and changed file or hunk assignments. It does not commit or edit the repository. Use `--include-diff` only when an agent also needs local diff context; diffs are omitted by default. The output can be passed to an agent to review, compare with its own grouping, and suggest engine changes.
+
+Grouping and messages come from your files and your history: imports, `data-*` hooks, folders, past co-changes and the verbs you use after each emoji. Messages also read the diffs, so they say what changed (`Replaced Geist font with Akt`, `Added Haskoy Italic and Medium Italic fonts`, a new section or function), with a short list of the details underneath.
+Commit Compass always groups locally from rules and an incremental index of recent Git commit subjects and changed paths, plus an inverted term index for the current diff. The history index lives under `~/.config/staged/group-index/` and stores commit IDs, subjects and paths, never source contents or diffs. Each suggested group shows its confidence; multi-file groups below the 90% review threshold are flagged. Settings shows the current pair-weighted confidence across active suggestions, the history index, recurring path pairs and learned corrections. Moving files between groups teaches staged which paths belong together or apart.
+staged also learns your message grammar across the repos it knows about, while letting a repo's own history take priority. It adapts Gitmoji/plain/conventional style, tense, common verbs and category emojis, and learns repeated path pairs across projects as a weak grouping hint. General commit guidance supplies only a fallback: coherent, independently useful changes and subjects about behavior rather than filenames.
+Commit Compass drafts messages from diffs, repo history, imports, paths and change types. Grouping and naming use deterministic local rules and repository history; no model service is required.
+
+On long pages a **glance rail** on the right shows a short line per week, feature, release or suggested commit. Hover to see the names; click one to glide there.
 
 ## Keys
 
