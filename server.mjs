@@ -1,293 +1,295 @@
 #!/usr/bin/env node
-// staged — a local dashboard for every git repo in a folder.
-// Usage: staged [folder ...] [--port 4321] [--no-open]
-//   or:  node server.mjs [folder ...]
-// Zero dependencies. Reads git history only; nothing leaves your machine.
+// staged: every change across your git repos, on localhost.
+//
+//   node server.mjs [folder ...]                 asks: keep it running, or just for now
+//   node server.mjs --here [folder ...]          run in this Terminal until Ctrl+C
+//   node server.mjs --install [folder ...]       keep it running: now and at every login
+//   node server.mjs --uninstall                  stop the background copy
+//   options: --port 4321  --no-open
+//
+// This file keeps the web server (app-server.mjs) running and restarts it when the
+// app's own code changes, so you never have to start it again by hand.
 
-import http from 'node:http';
+import { fork, spawn, execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 import os from 'node:os';
-import { commitRoutes } from './commit.mjs';
-import { insightRoutes } from './insights.mjs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import net from 'node:net';
+import readline from 'node:readline';
+import { buildPlan } from './plan.mjs';
+import { c, link, pick, animateLogo, log } from './tui.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const APP = path.join(HERE, 'app-server.mjs');
 const args = process.argv.slice(2);
-if (args.includes('--help') || args.includes('-h')) {
-  console.log(`\n  staged: every change across your git repos, on localhost.\n\n  staged [folder ...]   folders that hold your repos (remembered for next time)\n  --port 4321           port to use (the next free one if taken)\n  --no-open             don't open the browser\n`);
-  process.exit(0);
-}
-const portIdx = args.indexOf('--port');
-const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : Number(process.env.STAGED_PORT) || 4321;
-const folderArgs = args.filter((a, i) => !a.startsWith('--') && i !== portIdx + 1);
+const LABEL = 'app.staged';
+let logoShown = false;
 
-// Settings and learned corrections live in your user folder, not in the app or your repos.
-const CONFIG_DIR = process.env.STAGED_HOME || (process.platform === 'win32'
-  ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'staged')
-  : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'staged'));
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
-const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } };
-const writeConfig = (c) => { try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); fs.writeFileSync(CONFIG_FILE, JSON.stringify(c, null, 2)); } catch {} };
+const plistPath = () => path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
+const unitPath = () => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user', 'staged.service');
+const vbsPath = () => path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'staged.vbs');
+const isInstalled = () => [plistPath(), unitPath(), vbsPath()].some((f) => f && fs.existsSync(f));
+const portBusy = (port = 4321) => new Promise((res) => {
+  const s = net.connect(port, '127.0.0.1');
+  s.on('connect', () => { s.destroy(); res(true); });
+  s.on('error', () => res(false));
+});
+const rest = (list, ...flags) => list.filter((a) => !flags.includes(a));
+const openUrl = (url) => {
+  const [cmd, a] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
+  execFile(cmd, a, () => {});
+};
 
-const isRepo = (d) => fs.existsSync(path.join(d, '.git'));
-const holdsRepos = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).some((e) => e.isDirectory() && !e.name.startsWith('.') && isRepo(path.join(d, e.name))); } catch { return false; } };
-const expand = (p) => path.resolve(p.replace(/^~(?=$|[/\\])/, os.homedir()));
+main();
 
-// Where your repos are: folders you pass > STAGED_ROOT > saved folders > a guess.
-function findRoots() {
-  if (folderArgs.length) return { roots: folderArgs.map(expand), how: 'given' };
-  if (process.env.STAGED_ROOT) return { roots: process.env.STAGED_ROOT.split(path.delimiter).map(expand), how: 'env' };
-  const saved = (readConfig().roots || []).filter((d) => fs.existsSync(d));
-  if (saved.length) return { roots: saved, how: 'saved' };
-  const home = os.homedir();
-  const parent = path.join(HERE, '..');
-  const guesses = [
-    ...(HERE.includes('node_modules') || HERE.includes('_npx') ? [] : [parent]),
-    process.cwd(),
-    ...['GitHub', 'Developer', 'Projects', 'projects', 'code', 'Code', 'dev', 'src', 'repos', 'Sites', 'work', 'Documents/GitHub', 'Documents/GitLab'].map((d) => path.join(home, d)),
-  ];
-  const found = [...new Set(guesses.map((d) => path.resolve(d)))].filter((d) => holdsRepos(d) || (d === path.resolve(process.cwd()) && isRepo(d)));
-  return { roots: found.length ? found : [process.cwd()], how: found.length ? 'found' : 'none' };
-}
-const { roots: ROOTS, how: ROOTS_HOW } = findRoots();
-if (ROOTS_HOW === 'given' || ROOTS_HOW === 'found') writeConfig({ ...readConfig(), roots: ROOTS });
-const ROOT = ROOTS.join(path.delimiter);
-const PUBLIC = path.join(HERE, 'public');
-
-const git = (cwd, argv, max = 512 * 1024 * 1024) =>
-  new Promise((resolve, reject) =>
-    execFile('git', argv, { cwd, maxBuffer: max, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (err, out, stderr) => {
-      if (err) { err.stderr = stderr; if (stderr) err.message = String(stderr).trim(); return reject(err); }
-      resolve(out);
-    }));
-
-// ---------- commit types (gitmoji + conventional commits) ----------
-const TYPES = [
-  ['feature', ['✨', '🎉', '🚀', ':sparkles:', ':tada:', ':rocket:'], /^(feat|feature)(\(.+\))?!?:/i],
-  ['ui', ['💄', '💫', '🎨', '🍱', '🚸', '📱', ':lipstick:', ':dizzy:', ':art:', ':bento:', ':iphone:'], /^(style|ui)(\(.+\))?:/i],
-  ['fix', ['🐛', '🚑', '🩹', '🚨', '✏️', ':bug:', ':ambulance:', ':adhesive_bandage:', ':pencil2:'], /^(fix|hotfix)(\(.+\))?:/i],
-  ['perf', ['⚡', ':zap:'], /^perf(\(.+\))?:/i],
-  ['refactor', ['♻️', '🔥', '🚚', '🏗', '⏪', '🗑', '🔧', '🔨', '📦', '⬆️', '⬇️', '➕', '➖', '🙈', ':recycle:', ':fire:', ':truck:', ':wrench:', ':package:'], /^(refactor|chore|build|ci)(\(.+\))?:/i],
-];
-// Fallback for commits without a gitmoji: guess from the words.
-const WORDS = [
-  ['fix', /\b(fix(es|ed)?|bug|broken|typo|hotfix|patch)\b/i],
-  ['perf', /\b(perf|performance|optimi[sz]e[ds]?|faster|speed up|lazy.?load)\b/i],
-  ['refactor', /\b(refactor|clean ?up|remove[ds]?|delete[ds]?|rename[ds]?|bump|upgrade|deps?)\b/i],
-  ['ui', /\b(ui|style[ds]?|css|font|colou?rs?|design|layout|spacing|icons?|theme|animation)\b/i],
-  ['feature', /^(add(s|ed)?|new|feature|implement(s|ed)?|introduc(e|ed)|support)\b/i],
-];
-const LEAD = /^\s*(?:(?:\p{Extended_Pictographic}|\p{Emoji_Component})️?‍?)+\s*|^\s*:[a-z0-9_+-]+:\s*/u;
-
-function classify(subject) {
-  const s = subject.trim();
-  for (const [type, marks, re] of TYPES) {
-    if (marks.some((m) => s.startsWith(m))) return { type, mark: marks.find((m) => s.startsWith(m)), text: s.replace(LEAD, '') };
-    if (re.test(s)) return { type, mark: '', text: s.replace(re, '').trim() };
+async function main() {
+  if (args[0] === 'plan') {
+    const usage = 'Usage: staged plan [repo-path] [--include-diff]';
+    if (args.includes('--help') || args.includes('-h')) { console.log(usage); return; }
+    const includeDiff = args.includes('--include-diff');
+    const positional = args.slice(1).filter((arg) => !arg.startsWith('--'));
+    if (positional.length > 1) { console.error(usage); process.exitCode = 2; return; }
+    try { process.stdout.write(JSON.stringify(await buildPlan(positional[0] || process.cwd(), { includeDiff }), null, 2) + '\n'); }
+    catch (error) { process.stderr.write(`staged plan: ${error.message}\n`); process.exitCode = 1; }
+    return;
   }
-  const m = s.match(LEAD);
-  const text = s.replace(LEAD, '');
-  for (const [type, re] of WORDS) if (re.test(text)) return { type, mark: m ? m[0].trim() : '', text, guessed: true };
-  return { type: 'other', mark: m ? m[0].trim() : '', text };
+  if (args.includes('--uninstall')) return uninstall();
+  if (args.includes('--install') || args.includes('--background')) return guardedInstall(rest(args, '--install', '--background'));
+  if (args.includes('--here') || args.includes('--help') || args.includes('-h') || !process.stdin.isTTY || !process.stdout.isTTY) return supervise(rest(args, '--here'));
+  return ask();
 }
 
-// ---------- areas ("features") from touched paths ----------
-const GENERIC = new Set(('assets images image img imgs src lib libs js ts css scss sass styles style includes include layouts layout ' +
-  'elements element components component svg svgs icons icon fonts font audio video media public static scripts script data app ' +
-  'pages page index main utils util helpers dist build vendor base ui content docs doc posts post partials partial views view ' +
-  'common shared core modules module packages pkg resources res web site www client frontend').split(' '));
-const PROJECT_FILES = /^(\.|_config|package(-lock)?\.json|yarn\.lock|pnpm-lock|gemfile|readme|license|tsconfig|vite\.config|netlify|vercel|cname|robots|sitemap|favicon)/i;
-
-function normalise(seg, isFile) {
-  let s = seg.toLowerCase().replace(/^[_.]+/, '');
-  if (isFile) s = s.replace(/\.[a-z0-9]+$/i, '').replace(/\.(min|module|test|spec)$/, '');
-  if (isFile) s = s.split(/[-_.]/)[0];
-  return s.replace(/[-_]+/g, ' ').replace(/\bv?\d+$/, '').trim();
-}
-
-function globToRe(g) {
-  const re = g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\/?/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\u0000/g, '.*');
-  return new RegExp('^' + re + (g.endsWith('/') ? '.*' : '') + '$', 'i');
-}
-
-function makeAreaFn(repoDir) {
-  let rules = [];
-  let ignore = [];
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(repoDir, '.changes.json'), 'utf8'));
-    rules = Object.entries(cfg.areas || {}).map(([name, globs]) => [name, [].concat(globs).map(globToRe)]);
-    ignore = [].concat(cfg.ignore || []).map(globToRe);
-  } catch {}
-  const cache = new Map();
-  return (file) => {
-    if (cache.has(file)) return cache.get(file);
-    let area = null;
-    if (ignore.some((r) => r.test(file))) area = '';
-    for (const [name, res] of rules) if (area === null && res.some((r) => r.test(file))) area = name;
-    if (area === null) {
-      const segs = file.split('/');
-      if (segs.length === 1 && PROJECT_FILES.test(segs[0])) area = 'Project setup';
-      else {
-        for (let i = 0; i < segs.length; i++) {
-          const n = normalise(segs[i], i === segs.length - 1);
-          if (n && !GENERIC.has(n) && n.length > 1) { area = n; break; }
-        }
-        if (!area) area = normalise(segs[segs.length - 1], true) || normalise(segs[0], false) || 'root';
-        area = area.charAt(0).toUpperCase() + area.slice(1);
-      }
-    }
-    cache.set(file, area);
-    return area;
-  };
-}
-
-// ---------- repo reading ----------
-const repoCache = new Map(); // name -> { head, data }
-
-async function listRepos() {
-  const out = [];
-  const seen = new Map();
-  const add = (dir) => {
-    let name = path.basename(dir);
-    if (seen.has(name)) name = `${name} (${path.basename(path.dirname(dir))})`;
-    seen.set(name, dir);
-    out.push({ name, dir });
-  };
-  for (const root of ROOTS) {
-    if (isRepo(root)) { add(root); continue; }
-    let entries = [];
-    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
-    for (const e of entries) {
-      if (!e.isDirectory() || e.name.startsWith('.')) continue;
-      const dir = path.join(root, e.name);
-      if (path.resolve(dir) === HERE || !isRepo(dir)) continue;
-      add(dir);
-    }
+// Asked when you start staged from a Terminal.
+async function ask() {
+  await animateLogo(); logoShown = true;
+  const url = 'http://localhost:4321';
+  if (isInstalled()) {
+    const running = await portBusy();
+    console.log(running
+      ? `  ${c.green('●')} Already running in the background at ${link(url)}\n`
+      : `  ${c.amber('●')} Set up to run in the background, but it isn't answering right now.\n`);
+    const choice = await pick('What would you like to do?', [
+      ...(running ? [{ value: 'open', label: 'Open it', hint: 'in your browser' }] : [{ value: 'restart', label: 'Start it again', hint: 'in the background' }]),
+      { value: 'here', label: 'Run here instead', hint: 'stop the background copy, run in this Terminal' },
+      { value: 'stop', label: 'Stop it', hint: "and don't start it at login" },
+    ]);
+    console.log('');
+    if (choice === 'open') { openUrl(url); return console.log(`  Opened ${link(url)}\n`); }
+    if (choice === 'restart') return install(args);
+    if (choice === 'stop') return uninstall();
+    if (choice === 'here') { uninstall(true); await new Promise((r) => setTimeout(r, 600)); return supervise(args); }
+    return console.log(`  ${c.muted('Nothing changed.')}\n`);
   }
-  return out;
-}
-
-async function readRepo(name, dir) {
-  let head = '';
-  try { head = (await git(dir, ['rev-parse', 'HEAD'])).trim(); } catch { return null; }
-  const status = (await git(dir, ['status', '--porcelain']).catch(() => '')).split('\n').filter(Boolean).length;
-  const cached = repoCache.get(name);
-  if (cached && cached.head === head) return { ...cached.data, dirty: status };
-
-  const [branch, remote, logRaw] = await Promise.all([
-    git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).then((s) => s.trim()).catch(() => ''),
-    git(dir, ['remote', 'get-url', 'origin']).then((s) => s.trim()).catch(() => ''),
-    git(dir, ['log', '--no-merges', '--numstat', '--date=iso-strict', '--format=%x1e%H%x1f%an%x1f%ad%x1f%D%x1f%s']),
+  const choice = await pick('How do you want to run it?', [
+    { value: 'keep', label: 'Keep it running', tag: 'recommended', hint: 'always there, starts at login' },
+    { value: 'here', label: 'Just for now', hint: 'in this Terminal, until you press Ctrl+C' },
   ]);
-  const areaOf = makeAreaFn(dir);
-  const commits = [];
-  const tags = [];
-  for (const chunk of logRaw.split('\x1e')) {
-    if (!chunk.trim()) continue;
-    const nl = chunk.indexOf('\n');
-    const header = nl < 0 ? chunk : chunk.slice(0, nl);
-    const [sha, author, date, refs, subject = ''] = header.split('\x1f');
-    let add = 0, del = 0, files = 0;
-    const areaLines = {};
-    for (const line of (nl < 0 ? '' : chunk.slice(nl + 1)).split('\n')) {
-      const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
-      if (!m) continue;
-      let file = m[3];
-      if (file.includes(' => ')) file = file.replace(/\{([^}]*) => ([^}]*)\}/, '$2').replace(/^.* => /, '');
-      const a = m[1] === '-' ? 0 : +m[1], d = m[2] === '-' ? 0 : +m[2];
-      add += a; del += d; files++;
-      const area = areaOf(file);
-      if (area) areaLines[area] = (areaLines[area] || 0) + a + d + 1;
-    }
-    const areas = Object.entries(areaLines).sort((x, y) => y[1] - x[1]).map(([a]) => a);
-    const c = classify(subject);
-    const tagNames = (refs || '').split(', ').filter((r) => r.startsWith('tag: ')).map((r) => r.slice(5));
-    for (const t of tagNames) tags.push({ name: t, sha, date });
-    commits.push({ sha, author, date, subject, type: c.type, guessed: !!c.guessed, mark: c.mark, text: c.text, add, del, files, areas, tags: tagNames });
+  console.log('');
+  if (choice === 'keep') return guardedInstall(args);
+  if (choice === 'here') return supervise(args);
+  console.log(`  ${c.muted('Maybe later.')}\n`);
+}
+
+async function guardedInstall(folders) {
+  // A copy already running in another Terminal would take the usual address, so ask to close it first.
+  if (!isInstalled() && await portBusy()) {
+    console.log(`\n  ${c.amber('●')} staged is already running in another Terminal window.\n    Stop it there with Ctrl+C, then run this again.\n`);
+    process.exit(1);
   }
-  const hasWorkflows = fs.existsSync(path.join(dir, '.github', 'workflows'));
-  const web = toWeb(remote);
-  const data = { name, branch, remote: web.url, provider: web.provider, head, commits, tags, hasWorkflows };
-  repoCache.set(name, { head, data });
-  return { ...data, dirty: status };
+  install(folders);
 }
 
-// Turn any origin URL (https, ssh, scp-style, ssh host aliases) into a web page and a provider.
-function toWeb(remote) {
-  if (!remote) return { url: '', provider: '' };
-  let host = '', p = '';
-  let m;
-  if ((m = remote.match(/^[a-z+]+:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i))) [, host, p] = m;      // https://, ssh://
-  else if ((m = remote.match(/^(?:[^@]+@)?([^:/]+):(.+)$/))) [, host, p] = m;                             // git@host:owner/repo
-  else return { url: '', provider: '' };
-  p = p.replace(/\.git$/, '').replace(/\/$/, '');
-  const h = host.toLowerCase();
-  const provider = h.includes('gitlab') ? 'gitlab' : h.includes('github') ? 'github' : h.includes('bitbucket') ? 'bitbucket' : 'git';
-  // ssh aliases like "github-work" have no dot: map them to the public site
-  if (!h.includes('.')) host = provider === 'gitlab' ? 'gitlab.com' : provider === 'bitbucket' ? 'bitbucket.org' : provider === 'github' ? 'github.com' : host;
-  return { url: `https://${host}/${p}`, provider };
+// ---------- keep the server running, restart on code changes ----------
+function supervise(argv) {
+  let child = null, port = null, restarting = false, restarts = 0, timer = null, quitting = false;
+  // In a Terminal, single keys drive it: o opens the browser, r restarts, q quits.
+  const keys = process.stdin.isTTY && process.stdout.isTTY;
+  const onKey = (_, k = {}) => {
+    if ((k.ctrl && k.name === 'c') || k.name === 'q') return quit();
+    if (k.name === 'o' && port) { openUrl(`http://localhost:${port}`); log(c.blue('↗'), c.muted('opened in your browser')); }
+    if (k.name === 'r') restart();
+  };
+  const listenKeys = () => { if (!keys) return; readline.emitKeypressEvents(process.stdin); process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('keypress', onKey); };
+  const stopKeys = () => { if (!keys) return; process.stdin.off('keypress', onKey); try { process.stdin.setRawMode(false); } catch {} process.stdin.pause(); };
+  const quit = () => {
+    if (quitting) return;
+    quitting = true; stopKeys();
+    console.log(`\n  ${c.faint('●')} ${c.muted('Stopped. See you soon.')}\n`);
+    if (child) { child.removeAllListeners('exit'); child.on('exit', () => process.exit(0)); child.kill('SIGTERM'); setTimeout(() => process.exit(0), 1500).unref(); }
+    else process.exit(0);
+  };
+
+  const start = () => {
+    const env = { ...process.env };
+    let a = argv;
+    if (port) { // after a restart, keep the same address and don't open another tab
+      a = argv.filter((x, i) => x !== '--port' && argv[i - 1] !== '--port');
+      Object.assign(env, { STAGED_PORT: String(port), STAGED_NO_OPEN: '1', STAGED_RESTART: '1' });
+    }
+    if (keys) env.STAGED_KEYS = '1';
+    child = fork(APP, a, { env, stdio: 'inherit' });
+    child.on('message', (m) => {
+      if (m && m.port) port = m.port;
+      if (m && m.restart) m.self ? relaunch() : schedule();
+    });
+    child.on('exit', (code, signal) => {
+      child = null;
+      if (restarting) { restarting = false; return start(); }
+      if (code === 0 || signal === 'SIGINT' || signal === 'SIGTERM') process.exit(code || 0);
+      if (restarts > 0) log(c.red('✕'), `staged stopped with an error. ${c.muted('It starts again when you save a fix.')}`);
+      else process.exit(code || 1);
+    });
+  };
+
+  const restart = () => {
+    restarts++;
+    if (!child) return start();
+    restarting = true;
+    child.kill('SIGTERM');
+  };
+
+  // Restart only when a file's contents change: macOS also reports reads and touches.
+  const sumOf = (f) => { try { return crypto.createHash('md5').update(fs.readFileSync(path.join(HERE, f))).digest('hex'); } catch { return null; } };
+  const sums = new Map(fs.readdirSync(HERE).filter((f) => /\.mjs$/.test(f)).map((f) => [f, sumOf(f)]));
+  const schedule = () => { if (relaunched) return; clearTimeout(timer); timer = setTimeout(restart, 150); };
+  // An update changed this file too: start a fresh supervisor with the new code and step aside.
+  let relaunched = false;
+  const relaunch = () => {
+    if (relaunched) return;
+    relaunched = true;
+    clearTimeout(timer);
+    const next = () => {
+      stopKeys();
+      const env = { ...process.env, STAGED_RESTART: '1', STAGED_NO_OPEN: '1', ...(port ? { STAGED_PORT: String(port) } : {}) };
+      const kid = spawn(process.execPath, [path.join(HERE, 'server.mjs'), '--here', ...argv.filter((x, i) => x !== '--port' && argv[i - 1] !== '--port')], { env, stdio: 'inherit' });
+      for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) { process.removeAllListeners(sig); process.on(sig, () => { kid.kill(sig); process.exit(0); }); }
+      kid.on('exit', (code) => process.exit(code || 0));
+    };
+    if (!child) return next();
+    child.removeAllListeners('exit');
+    child.on('exit', next);
+    child.kill('SIGTERM');
+  };
+  fs.watch(HERE, (_, file) => {
+    if (!file || !/\.mjs$/.test(file) || file === 'server.mjs') return;
+    const sum = sumOf(file);
+    if (sums.get(file) === sum) return;
+    sums.set(file, sum);
+    clearTimeout(timer);
+    if (!relaunched) timer = setTimeout(restart, 150);
+  });
+
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { if (child) child.kill(sig); process.exit(0); });
+  (async () => {
+    if (!logoShown && !process.env.STAGED_RESTART && process.stdout.isTTY) await animateLogo();
+    listenKeys();
+    start();
+  })();
 }
 
-// ---------- http ----------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json' };
+// ---------- start at login ----------
+function install(folders) {
+  const node = process.execPath;
+  const runArgs = [path.join(HERE, 'server.mjs'), '--no-open', ...folders.map((f) => path.resolve(f.replace(/^~(?=$|[/\\])/, os.homedir())))];
+  const url = 'http://localhost:4321';
+  const home = os.homedir();
 
-const commits = commitRoutes({
-  git,
-  makeAreaFn,
-  repoDir: async (name) => (await listRepos()).find((r) => r.name === name)?.dir || null,
-  onCommitted: (name) => repoCache.delete(name),
-  store: (() => {
-    const f = path.join(CONFIG_DIR, 'learned.json'), old = path.join(HERE, '.learned.json');
-    try { if (!fs.existsSync(f) && fs.existsSync(old)) { fs.mkdirSync(CONFIG_DIR, { recursive: true }); fs.copyFileSync(old, f); } } catch {}
-    return f;
-  })(),
-});
-const insights = insightRoutes({
-  git,
-  listRepos,
-  repoDir: async (name) => (await listRepos()).find((r) => r.name === name)?.dir || null,
-});
+  if (process.platform === 'darwin') {
+    const plist = path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);
+    const log = path.join(home, 'Library', 'Logs', 'staged.log');
+    const xml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const exe = macApp(node, runArgs);
+    fs.mkdirSync(path.dirname(plist), { recursive: true });
+    fs.writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${LABEL}</string>
+  <key>ProgramArguments</key><array>${(exe ? [exe] : [node, ...runArgs]).map((a) => `<string>${xml(a)}</string>`).join('')}</array>
+  <key>AssociatedBundleIdentifiers</key><string>${LABEL}</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(process.env.PATH || '/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin')}</string></dict>
+  <key>WorkingDirectory</key><string>${xml(HERE)}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${xml(log)}</string>
+  <key>StandardErrorPath</key><string>${xml(log)}</string>
+</dict></plist>
+`);
+    const uid = process.getuid();
+    try { execFileSync('launchctl', ['bootout', `gui/${uid}/${LABEL}`], { stdio: 'ignore' }); } catch {}
+    execFileSync('launchctl', ['bootstrap', `gui/${uid}`, plist]);
+    done(url);
+  } else if (process.platform === 'linux') {
+    const unit = path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user', 'staged.service');
+    fs.mkdirSync(path.dirname(unit), { recursive: true });
+    fs.writeFileSync(unit, `[Unit]\nDescription=staged\n\n[Service]\nExecStart=${[node, ...runArgs].map((a) => JSON.stringify(a)).join(' ')}\nEnvironment=PATH=${process.env.PATH}\nRestart=always\n\n[Install]\nWantedBy=default.target\n`);
+    execFileSync('systemctl', ['--user', 'daemon-reload']);
+    execFileSync('systemctl', ['--user', 'enable', '--now', 'staged.service']);
+    done(url);
+  } else if (process.platform === 'win32') {
+    const startup = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'staged.vbs');
+    const cmd = [node, ...runArgs].map((a) => `""${a}""`).join(' ');
+    fs.writeFileSync(startup, `CreateObject("WScript.Shell").Run "${cmd}", 0, False\r\n`);
+    execFile('wscript', [startup], () => {});
+    done(url);
+  } else {
+    console.log(`  Starting at login isn't supported on ${process.platform} yet. Run "node server.mjs" instead.`);
+  }
+}
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
-  // Only answer to localhost names, so other websites can't reach this server through DNS tricks.
-  if (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(req.headers.host || '')) return send(res, 403, 'Forbidden', 'text/plain');
+// macOS names a login item after the program it runs, which would be "node". So the item runs a
+// tiny staged.app instead: a launcher script with the staged name and icon, kept in Application
+// Support. Returns the launcher's path, or null if it couldn't be made (then node runs directly).
+function macApp(node, runArgs) {
   try {
-    const sendJson = (r, code, body) => send(r, code, body, MIME['.json']);
-    if (await commits(req, res, url, sendJson)) return;
-    if (await insights(req, res, url, sendJson)) return;
-    if (url.pathname === '/api/repos') {
-      const repos = await listRepos();
-      const all = (await Promise.all(repos.map((r) => readRepo(r.name, r.dir).catch(() => null)))).filter(Boolean);
-      return send(res, 200, JSON.stringify({ root: ROOT, roots: ROOTS, repos: all }), MIME['.json']);
-    }
-    if (url.pathname === '/README.md') return send(res, 200, fs.readFileSync(path.join(HERE, 'README.md')), 'text/markdown; charset=utf-8');
-    let p = decodeURIComponent(url.pathname);
-    if (p === '/') p = '/index.html';
-    const file = path.join(PUBLIC, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
-    if (!file.startsWith(PUBLIC) || !fs.existsSync(file)) return send(res, 404, 'Not found', 'text/plain');
-    send(res, 200, fs.readFileSync(file), MIME[path.extname(file)] || 'application/octet-stream');
-  } catch (err) {
-    send(res, 500, String(err && err.message || err), 'text/plain');
-  }
-});
-const send = (res, code, body, type) => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' }); res.end(body); };
+    const app = path.join(os.homedir(), 'Library', 'Application Support', 'staged', 'staged.app');
+    const q = (a) => `'${a.replace(/'/g, `'\\''`)}'`;
+    fs.mkdirSync(path.join(app, 'Contents', 'MacOS'), { recursive: true });
+    fs.mkdirSync(path.join(app, 'Contents', 'Resources'), { recursive: true });
+    fs.writeFileSync(path.join(app, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>staged</string>
+  <key>CFBundleDisplayName</key><string>staged</string>
+  <key>CFBundleIdentifier</key><string>${LABEL}</string>
+  <key>CFBundleExecutable</key><string>staged</string>
+  <key>CFBundleIconFile</key><string>staged</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8')).version || '1.0'}</string>
+  <key>LSUIElement</key><true/>
+  <key>LSBackgroundOnly</key><true/>
+</dict></plist>
+`);
+    fs.copyFileSync(path.join(HERE, 'public', 'brand', 'staged.icns'), path.join(app, 'Contents', 'Resources', 'staged.icns'));
+    const exe = path.join(app, 'Contents', 'MacOS', 'staged');
+    fs.writeFileSync(exe, `#!/bin/bash\n# Starts staged. Made by "npm start"; safe to delete, it's remade when needed.\ncd ${q(HERE)} && exec -a staged ${[node, ...runArgs].map(q).join(' ')}\n`, { mode: 0o755 });
+    fs.chmodSync(exe, 0o755);
+    try { execFileSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', app], { stdio: 'ignore' }); } catch {}
+    return exe;
+  } catch { return null; }
+}
 
-// Use the next free port if this one is taken, then open the browser.
-let port = PORT;
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE' && port < PORT + 20) { port++; server.listen(port, '127.0.0.1'); }
-  else { console.error(`  Couldn't start: ${err.message}`); process.exit(1); }
-});
-server.on('listening', () => {
-  const url = `http://localhost:${port}`;
-  const where = ROOTS.map((r) => r.replace(os.homedir(), '~')).join(', ');
-  console.log(`\n  staged is reading ${where}${ROOTS_HOW === 'none' ? ' (no repos found here: run `staged ~/your/code/folder`)' : ''}\n  Open ${url}\n`);
-  if (!args.includes('--no-open') && !process.env.STAGED_NO_OPEN) {
-    const [cmd, cargs] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
-    execFile(cmd, cargs, () => {});
+function uninstall(quiet = false) {
+  const home = os.homedir();
+  if (process.platform === 'darwin') {
+    const plist = path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);
+    try { execFileSync('launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], { stdio: 'ignore' }); } catch {}
+    fs.rmSync(plist, { force: true });
+  } else if (process.platform === 'linux') {
+    try { execFileSync('systemctl', ['--user', 'disable', '--now', 'staged.service'], { stdio: 'ignore' }); } catch {}
+    fs.rmSync(path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user', 'staged.service'), { force: true });
+  } else if (process.platform === 'win32') {
+    fs.rmSync(path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'staged.vbs'), { force: true });
+    console.log('  Removed. staged stops after you sign out, or end the "node" task now.');
   }
-});
-server.listen(port, '127.0.0.1');
+  if (!quiet) console.log(`  ${c.muted('●')} Stopped. staged won't start at login any more.\n    Run ${c.bold('npm start')} whenever you want it back.\n`);
+}
+
+// Kept short on purpose: what happened, where it is, and how to stop it.
+function done(url) {
+  console.log(`  ${c.green('●')} ${c.bold('staged is running')} ${c.muted('and starts by itself when you log in')}`);
+  console.log(`    ${link(url)}\n`);
+  console.log(`    ${c.muted('To stop it, run')} ${c.ink('npm run remove')}\n`);
+  setTimeout(() => openUrl(url), 1200);
+}

@@ -3,11 +3,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, spawn } from 'node:child_process';
+import { factsFor, kindOf, isAsset, assetSubject, commonDir, topicOf, thingFor, nameOf, list, aboutOf, contextsOf } from './writer.mjs';
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import { indexHistory, cochangeFor, buildTermIndex, historyStyle, styleAcrossRepos, repoIdForPath, CONFIDENCE_TARGET } from './feature-index.mjs';
 
-const MAX_DIFF = 12000;        // chars of diff kept per file for the UI and for Claude
-const MAX_PROMPT = 60000;      // chars of diff sent to Claude in one request
+const MAX_DIFF = 12000;        // chars of diff kept per file for the UI
 
 // git with env and stdin, for the temporary-index commit
 function run(dir, args, { env, input } = {}) {
@@ -36,8 +37,13 @@ function parseHunks(diff) {
     else if (cur) cur.lines.push(l);
     else header.push(l);
   }
+  // Ids come from the chunk's lines only: line numbers and the function name git prints after @@ shift
+  // when a nearby chunk is committed. Twin chunks get a counter.
+  const seen = new Map();
   for (const h of hunks) {
-    h.id = hid(h.head.replace(/^@@[^@]*@@/, '') + '\n' + h.lines.join('\n'));
+    const base = hid(h.lines.join('\n'));
+    const k = seen.get(base) || 0; seen.set(base, k + 1);
+    h.id = k ? hid(base + ':' + k) : base;
     h.add = h.lines.filter((l) => l.startsWith('+')).length;
     h.del = h.lines.filter((l) => l.startsWith('-')).length;
   }
@@ -66,6 +72,7 @@ function warningsFor(f) {
     if (/^\+(?!\s*\/\/).*\bconsole\.(log|debug)\(/m.test(add)) w.push({ level: 'low', text: 'adds console.log' });
     if (/^\+\s*debugger;?\s*$/m.test(add)) w.push({ level: 'mid', text: 'adds debugger' });
   }
+  if (/(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$/.test(f.path) && f.status !== 'D') w.push({ level: 'mid', text: 'system file: add it to .gitignore instead' });
   if (/^\+.*(<<<<<<<|>>>>>>>) /m.test(add)) w.push({ level: 'high', text: 'has conflict markers' });
   return w;
 }
@@ -141,7 +148,7 @@ async function readChanges(git, dir, areaOf) {
     if (f.status === 'M' && !f.from) {
       const full = await git(dir, ['diff', 'HEAD', '--no-color', '-U3', '--', f.path]).catch(() => '');
       const { hunks } = parseHunks(full);
-      if (hunks.length > 1) f.hunks = hunks.map((h) => ({ id: h.id, head: h.head, add: h.add, del: h.del, lines: h.lines.slice(0, 80) }));
+      if (hunks.length) f.hunks = hunks.map((h) => ({ id: h.id, head: h.head, add: h.add, del: h.del, lines: h.lines.slice(0, 80), all: h.lines }));
     }
   }));
   for (const f of files) {
@@ -167,6 +174,14 @@ function collectionOf(p) {
   return null;
 }
 
+const GENERIC_EXPORTS = new Set('list words kindof isasset commondir topicof nameof'.split(' '));
+function exportsOf(text) {
+  const out = new Set();
+  const add = (name) => { if (name.length >= 4 && !GENERIC_EXPORTS.has(name.toLowerCase())) out.add(name); };
+  for (const m of text.matchAll(/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]{3,})/g)) add(m[1]);
+  for (const m of text.matchAll(/\bexport\s*\{([^}]+)\}/g)) for (const x of m[1].split(',')) add(x.trim().split(/\s+as\s+/).pop());
+  return [...out];
+}
 function addedText(f) {
   return (f.diff || '').split('\n').filter((l) => l.startsWith('+')).join('\n');
 }
@@ -181,23 +196,138 @@ function introducedHooks(f) {
   return hooks;
 }
 
-function suggestGroups(files, learn = {}) {
+// ---------- imports and meaning, for grouping ----------
+// Paths a piece of code refers to: ES imports, require, new URL (workers), script and link tags,
+// CSS @import and url(). Package names (no ./ or /) are skipped: they aren't files in the repo.
+function importsIn(text) {
+  const out = [];
+  const res = [
+    /\bimport\s+(?:[\w*{}\s,$]+?\s+from\s+)?['"]([^'"]+)['"]/g,
+    /\b(?:import|require)\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /\bnew\s+(?:URL|Worker)\(\s*['"]([^'"]+)['"]/g,
+    /<(?:script|img|source|link|use)\b[^>]*?\b(?:src|href)=["']([^"'#?]+)/gi,
+    /@import\s+(?:url\()?\s*['"]?([^'")\s;]+)/g,
+    /url\(\s*['"]?([^'")]+?)['"]?\s*\)/g,
+  ];
+  for (const re of res) for (const m of text.matchAll(re)) if (/^(\.|\/)/.test(m[1]) || /^[\w-]+\.[a-z]{2,5}$/i.test(m[1])) out.push(m[1]);
+  return out;
+}
+function resolveImport(from, spec, byPath) {
+  const base = spec.startsWith('/') ? [spec.slice(1), 'public' + spec, 'src' + spec] : [path.posix.join(path.posix.dirname(from), spec)];
+  for (const b of base) for (const ext of ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.css', '.scss', '/index.js', '/index.ts']) {
+    const p = path.posix.normalize(b + ext);
+    if (byPath.has(p)) return byPath.get(p);
+  }
+  return null;
+}
+
+// What a change is about, for weighing two changes against each other: the names in the lines it adds
+// and removes (identifiers, CSS classes, custom properties, data attributes, routes), the plain words
+// inside those names, and the words of its path. `kept` holds names seen in unchanged lines around it.
+const COMMON_NAMES = new Set('document window console element elements queryselector queryselectorall getelementbyid addeventlistener removeeventlistener createelement appendchild classlist innerhtml textcontent setattribute getattribute removeattribute preventdefault stoppropagation settimeout cleartimeout setinterval clearinterval requestanimationframe disabled hidden include includes endif endfor assign capture content container wrapper section important transparent inherit initial currentcolor uppercase lowercase pointer relative absolute position display opacity visibility transition transform animation background duration function constructor prototype promise response request headers stringify parsefloat parseint tostring tolowercase touppercase startswith endswith foreach indexof contains children parentnode target currenttarget dataset viewbox xmlns stroke-width stroke-linecap stroke-linejoin fill-rule clip-rule evenodd'.split(' '));
+// Names every program uses: the language's and the platform's own, which say nothing about a feature.
+const BUILTIN = /^(readFile|writeFile|appendFile|exists|mkdir|readdir|stat|unlink|rm|rename|copyFile)(Sync)?$|^(getFullYear|getMonth|getDate|getDay|getHours|getMinutes|getTime|toISOString|toLocale\w+|toFixed|toUpperCase|toLowerCase|startsWith|endsWith|indexOf|lastIndexOf|forEach|flatMap|findIndex|matchAll|replaceAll|padStart|padEnd|localeCompare|fromEntries|isArray|hasOwnProperty|querySelector(All)?|getElementById|addEventListener|removeEventListener|createElement|appendChild|removeChild|insertBefore|classList|innerHTML|innerText|textContent|setAttribute|getAttribute|removeAttribute|preventDefault|stopPropagation|setTimeout|clearTimeout|setInterval|clearInterval|requestAnimationFrame|getBoundingClientRect|matchMedia|cancelAnimationFrame|IntersectionObserver|ResizeObserver|MutationObserver|scrollIntoView|localStorage|sessionStorage|getItem|setItem|removeItem|backgroundColor|fontSize|fontWeight|innerWidth|innerHeight|clientWidth|clientHeight|offsetWidth|offsetHeight|scrollTop|scrollLeft|parentNode|parentElement|firstChild|lastChild|nextSibling|currentTarget|dataset|JSON|stringify|parseInt|parseFloat|isNaN|encodeURIComponent|decodeURIComponent|statusCode|writeHead|setHeader|content-type|user-agent|utf-8|utf8|no-cache|no-store|DS_Store|node_modules|package-lock|use strict)$/i;
+const NOISE = /^(font|background|border|margin|padding|text|line|letter|box|flex|grid|align|justify|transition|animation|transform|max|min|overflow|pointer|white|word|object|outline|user|aria|webkit|moz|inline|stroke|fill|list|place|row|column|scroll|will|backdrop|mix|accent|caret|content|items|self|space|ease|cubic|sans|serif|system|apple|blink|segoe|helvetica|no|pre|not|is|has|first|last|nth|only|focus|hover|active|before|after)-/;
+function signalsOf(f) {
+  const plus = new Map(), minus = new Map(), kept = new Set(), where = new Set(), shown = new Map();
+  const bump = (m, k, w = 1) => m.set(k, (m.get(k) || 0) + w);
+  const read = (line, into) => {
+    for (const m of line.matchAll(/--[a-z][\w-]{3,}|[A-Za-z_$][\w$]*(?:-[A-Za-z0-9_]+)*/g)) {
+      const raw = m[0];
+      if (raw.length < 4) continue;
+      const low = raw.toLowerCase();
+      const parts = raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOPWORDS.has(w) && !/^\d+$/.test(w));
+      // A name: something made of parts (camelCase, kebab-case, snake_case), or one long word.
+      const named = parts.length >= 2 && !BUILTIN.test(raw);
+      if (named && !NOISE.test(low) && !STOPWORDS.has(low) && !COMMON_NAMES.has(low)) { if (into) { bump(into, 'I:' + low); shown.set('I:' + low, raw); } else kept.add('I:' + low); }
+      if (into) for (const w of parts) bump(into, 'W:' + w);
+    }
+  };
+  if (f.status === 'A' && f.content) for (const l of f.content.slice(0, 30000).split('\n')) read(l, plus);
+  else for (const l of (f.diff || '').split('\n')) {
+    if (l.startsWith('@@')) continue;
+    if (l[0] === '+') read(l.slice(1), plus); else if (l[0] === '-') read(l.slice(1), minus); else read(l, null);
+  }
+  for (const w of f.path.replace(/\.[a-z0-9]+$/i, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)) if (w.length >= 3 && !STOPWORDS.has(w) && !WEAK_STEMS.has(w) && !/^(public|src|assets|includes|sass|pages|test|tests|lib|js|css|scss|html|data)$/.test(w)) where.add('W:' + w);
+  return plus.size || minus.size || where.size ? { plus, minus, kept, where, shown } : null;
+}
+const MEANING_MIN = 0.16;
+// Soft semantic edges below this score are useful hints, but too weak to turn two
+// independently reviewable changes into one suggested commit. Explicit imports,
+// same-file chunks, learned pairs, collections, and strong history links remain intact.
+export const MIN_GROUP_LINK_EVIDENCE = 0.83;
+const STOPWORDS = new Set(('the and for with from that this are was were not but you your our its into out over then than when what which while also just only more most some any each all can will would should could has have had been being does did done use used uses using via per new old get set let var const function return import export default async await class extends true false null undefined typeof instanceof try catch finally throw case switch break continue else void yield static public private string number object array value values item items list data file files path name names text type types error errors event events options option result results index length push map filter find join split slice replace trim keys entries json html css div span button input src href class style width height left right top bottom px rem var auto none block flex grid ').split(/\s+/));
+function wordsOf(f) {
+  const out = new Map();
+  const add = (s, w = 1) => {
+    for (const t of String(s).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)) {
+      if (t.length < 3 || STOPWORDS.has(t) || /^\d+$/.test(t)) continue;
+      out.set(t, (out.get(t) || 0) + w);
+    }
+  };
+  add(f.path.replace(/\.[a-z0-9]+$/i, ''), 3);
+  const text = (f.status === 'A' && f.content ? f.content : addedText(f)).slice(0, 30000);
+  const head = text.split('\n').slice(0, 15).join('\n').match(/(?:\/\/|\/\*+|#|<!--|\*)\s*[^\n]{8,}/g);
+  if (head) for (const h of head) add(h, 2);
+  for (const m of text.matchAll(/(?:function\*?\s+|const\s+|let\s+|class\s+|def\s+|export\s+(?:async\s+)?function\s+)([A-Za-z_$][\w$]{2,})/g)) add(m[1]);
+  for (const m of text.matchAll(/(?:^|\s)\.([a-z][\w-]{2,})\s*[{,:]/gm)) add(m[1]);
+  for (const m of text.matchAll(/(?:\/\/|\/\*|\s#)\s*([A-Za-z][^\n*]{10,})/g)) add(m[1]);
+  return out.size ? out : null;
+}
+
+function normalise(v) { let s = 0; for (const w of v.values()) s += w * w; s = Math.sqrt(s) || 1; for (const [t, w] of v) v.set(t, w / s); return v; }
+function cosine(a, b) { if (a.size > b.size) [a, b] = [b, a]; let s = 0; for (const [t, w] of a) { const o = b.get(t); if (o) s += w * o; } return s; }
+
+function suggestGroups(input, learn = {}) {
+  // Chunks, not just files: a modified file with a few separate chunks is split into one unit per chunk,
+  // so app.js's glance chunk can go with the glance feature and its settings chunk with settings. Rules
+  // that only look at the path (names, folders, history, what you taught it) go through one unit per
+  // file, the biggest chunk, its "home"; rules that read the change itself (imports, hooks, words) see
+  // every chunk. Chunks that find no feature of their own stay with the home chunk.
+  const files = [];
+  for (const f of input) {
+    const hs = f.hunks;
+    const splittable = hs && hs.length >= 2 && hs.length <= 40 && !collectionOf(f.path) && !/\.(md|mdx|txt|json|ya?ml|toml|lock)$/i.test(f.path);
+    if (!splittable) { files.push(f); continue; }
+    const big = hs.reduce((b, h) => (h.add + h.del > b.add + b.del ? h : b), hs[0]);
+    for (const [at, h] of hs.entries()) files.push({ ...f, unitOf: f.path, hunk: h.id, at, home: h === big, units: hs.length, diff: h.head + '\n' + (h.all || h.lines).join('\n'), add: h.add, del: h.del, hunks: undefined });
+  }
+  const whole = (i) => !files[i].unitOf || files[i].home;
   const n = files.length;
   const parent = files.map((_, i) => i);
   const why = files.map(() => new Set());
+  const linkEvidence = [];
   const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const apart = learn.apart || new Set();
   const keyOf = (a, b) => (files[a].path < files[b].path ? files[a].path + '\0' + files[b].path : files[b].path + '\0' + files[a].path);
   const members = (r) => files.map((_, k) => k).filter((k) => find(k) === r);
-  const union = (a, b, reason) => {
+  const evidenceWeight = (reason) => reason === 'you grouped these before' ? 0.99
+    : reason === 'imports new file' ? 0.97
+      : reason.startsWith('uses ') ? 0.94
+        : reason === 'includes new file' ? 0.90
+          : reason === 'same file' ? 0.90
+            : reason === 'usually change together' ? 0.88
+              : reason === 'recurring co-change pattern' ? 0.76
+                : reason.startsWith('both touch ') ? 0.84
+                  : reason === 'share rare changed terms' ? 0.72
+                    : reason === 'same collection' ? 0.86
+                      : reason === 'same font folder' || reason === 'same kind of asset' || reason === 'app icons' ? 0.84
+                        : reason === 'one topic' ? 0.68
+                            : reason === 'same name' ? 0.86
+                            : reason === 'same folder' ? 0.58
+                              : reason === 'notes and docs' ? 0.54
+                                : reason === 'wires the new parts in' ? 0.60
+                                  : 0.60;
+  const union = (a, b, reason, confidence = evidenceWeight(reason)) => {
     const ra = find(a), rb = find(b);
     if (ra === rb) return;
     // never join groups that contain a pair you split apart before
     if (apart.size) for (const x of members(ra)) for (const y of members(rb)) if (apart.has(keyOf(x, y))) return;
     parent[rb] = ra; why[a].add(reason); why[b].add(reason);
+    linkEvidence.push({ a, b, confidence, reason });
   };
   // What you taught it: files you moved together before.
-  if (learn.together) for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) if (learn.together.has(keyOf(i, j))) union(i, j, 'you grouped these before');
+  if (learn.together) for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) if (whole(i) && whole(j) && learn.together.has(keyOf(i, j))) union(i, j, 'you grouped these before');
 
   const stems = files.map((f) => stemOf(f.path));
   const coll = files.map((f) => collectionOf(f.path));
@@ -205,64 +335,271 @@ function suggestGroups(files, learn = {}) {
 
   // Hidden tool folders (.agents, .claude, .github …) travel together.
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-    if (top[i].startsWith('.') && top[i] === top[j] && files[i].path.includes('/') && files[j].path.includes('/')) union(i, j, 'same folder');
+    const sameDirectory = path.dirname(files[i].path) === path.dirname(files[j].path);
+    if (whole(i) && whole(j) && top[i].startsWith('.') && top[i] === top[j] && sameDirectory && files[i].path.includes('/')) union(i, j, 'same folder');
   }
   // Content collections: _books/* with Images/Books/*
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
     if (coll[i] && coll[i] === coll[j]) union(i, j, 'same collection');
   }
+  // New assets of one kind in one folder travel together: a font family, a set of icons. Licences go with their fonts.
+  const kinds = files.map((f) => kindOf(f.path));
+  const dirOf = (p) => p.split('/').slice(0, -1).join('/');
+  const fam = (p) => path.basename(p).split(/[-_ .]/)[0].toLowerCase();
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    if (!whole(i) || !whole(j) || !isAsset(kinds[i]) || !isAsset(kinds[j]) || coll[i] || coll[j]) continue;
+    const sameDir = dirOf(files[i].path) === dirOf(files[j].path);
+    const licenceFont = (kinds[i] === 'licence' || kinds[j] === 'licence') && [kinds[i], kinds[j]].some((k) => k === 'font' || k === 'licence');
+    if (sameDir && (kinds[i] === kinds[j] || licenceFont) && files[i].status === files[j].status) union(i, j, kinds[i] === 'font' || licenceFont ? 'same font folder' : 'same kind of asset');
+    else if (kinds[i] === 'app-icon' && kinds[j] === 'app-icon') union(i, j, 'app icons');
+  }
+  // A web manifest lists the app icons, so it goes with them.
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    if (/(^|\/)(manifest\.webmanifest|site\.webmanifest)$/i.test(files[i].path) && kinds[j] === 'app-icon') { union(i, j, 'app icons'); break; }
+  }
   // Same file stem: delights.js + _delights.scss, pages/tags.html + post/tags.html
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-    if (stems[i].length >= 3 && stems[i] === stems[j] && !WEAK_STEMS.has(stems[i])) union(i, j, 'same name');
+    if (whole(i) && whole(j) && (files[i].status === 'A' || files[j].status === 'A') && stems[i].length >= 3 && stems[i] === stems[j] && !WEAK_STEMS.has(stems[i])) union(i, j, 'same name');
   }
-  // Connected: a change that imports, includes or hooks into a new file.
+  // One topic in the name: update.js and updater.mjs; server.mjs and
+  // app-server.mjs. At least one of the two must be new: a shared word in a
+  // new file's name is a strong sign of one feature.
+  const words = stems.map((st) => st.split(/[-_.]+/).filter((w) => w.length >= 2 && !WEAK_STEMS.has(w)));
+  const sameWord = (a, b) => a === b || (Math.min(a.length, b.length) >= 5 && (a.startsWith(b) || b.startsWith(a)));
+  const folders = files.map((f) => f.path.split('/').slice(0, -1));
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    if (!whole(i) || !whole(j)) continue;
+    const named = (a, b) => folders[a].length && folders[a].at(-1).toLowerCase() === stems[b] && folders[a].slice(0, -1).join('/') === folders[b].join('/');
+    if (named(i, j) || named(j, i)) { union(i, j, 'same name'); continue; }
+    if ((files[i].status === 'A' || files[j].status === 'A') && !coll[i] && !coll[j] && !isAsset(kinds[i]) && !isAsset(kinds[j]) && words[i].some((a) => words[j].some((b) => sameWord(a, b)))) union(i, j, 'one topic');
+  }
+  // Connected: a change that imports, includes or hooks into a new file. Real import statements are
+  // resolved to paths (import, require, new URL, <script src>, <link href>, @import, url()), which is
+  // exact; for anything else (templates, includes) the new file's name showing up in the change counts.
+  // Links are collected first so a hub (app.js, a server, index.html: files that wire up three or more
+  // new files) can't chain every feature into one giant commit. A new file joins its importer only when
+  // that's the one file using it, and the importer isn't a hub.
   const isNew = files.map((f) => f.status === 'A');
+  const prose = (p) => /\.(md|mdx|txt|json|ya?ml|toml)$/i.test(p) || /(^|\/)(readme|changelog|licen[cs]e)/i.test(p);
+  const byPath = new Map(files.map((f, i) => [f.path, i]));
+  const links = [];
   for (let i = 0; i < n; i++) {
-    if (isNew[i] && coll[i]) continue;
+    if ((isNew[i] && coll[i]) || prose(files[i].path)) continue;
     const add = addedText(files[i]);
     if (!add) continue;
+    const exact = new Set();
+    for (const spec of importsIn(add)) { const j = resolveImport(files[i].path, spec, byPath); if (j != null && j !== i && isNew[j] && !coll[j]) exact.add(j); }
+    for (const j of exact) links.push([i, j, 'imports new file']);
+    const code = /\.(m?js|cjs|jsx?|tsx?|s?css)$/i.test(files[i].path);
     const hooks = isNew[i] ? new Set() : introducedHooks(files[i]);
     for (let j = 0; j < n; j++) {
-      if (i === j || !isNew[j] || coll[j]) continue;
-      const s = stems[j];
-      if (s.length >= 4 && !WEAK_STEMS.has(s) && new RegExp(`(^|[^a-z0-9])${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i').test(add)) { union(i, j, 'imports new file'); continue; }
+      if (i === j || exact.has(j) || !isNew[j] || coll[j]) continue;
+      // Outside code, a file counts as used when its full name appears ("hero.html", "logo.svg") or it's
+      // pulled in by an include or render tag; a bare word could be anything, like the project's name.
+      const s = stems[j], esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const base = path.basename(files[j].path);
+      if (!code && s.length >= 3 && (new RegExp(`(^|[^\\w.-])${esc(base)}([^\\w.-]|$)`, 'i').test(add) || new RegExp(`\\{%-?\\s*(include|render|section|partial)\\s+['"]?${esc(s)}\\b`, 'i').test(add))) { links.push([i, j, 'includes new file']); continue; }
       const body = files[j].content || '';
-      for (const h of hooks) if (body.includes(h)) { union(i, j, `uses ${h}`); break; }
+      let hit = null;
+      for (const h of hooks) if (body.includes(h)) { hit = h; break; }
+      // A chunk that calls what a new file exports (glanceRail()), or styles a class only a new file uses.
+      if (!hit && code) hit = exportsOf(body).find((x) => new RegExp(`\\b${esc(x)}\\b`).test(add));
+      if (!hit && /\.s?css$/i.test(files[i].path)) hit = [...add.matchAll(/\.([a-z][\w]*-[\w-]{2,})/g)].map((m) => m[1]).find((c) => c.length >= 6 && !/^(is|has|no|js|u|with)-/.test(c) && body.includes(c));
+      if (hit) links.push([i, j, `uses ${hit}`]);
     }
   }
-
-  // History: files that usually change together in past commits.
-  if (learn.cochange) for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-    const sc = learn.cochange.get(keyOf(i, j));
-    if (sc) union(i, j, 'usually change together');
+  const usedBy = new Array(n).fill(0), uses = new Array(n).fill(0);
+  // Users are counted by file, so two chunks of app.js using glance.js count once.
+  const seenUse = new Set();
+  for (const [i, j] of links) { uses[i]++; const k = files[i].path + '\0' + j; if (!seenUse.has(k)) { seenUse.add(k); usedBy[j]++; } }
+  const hub = uses.map((u) => u >= 3);
+  // A new file using another new file is one feature (fx.js playing sfx.js), unless the second is shared wider.
+  // A chunk is small enough to follow what it wires in, even when a few files share it (the import, the
+  // call and the style for one new part).
+  for (const [i, j, reason] of links) {
+    // A hub should not drag every shared module into one commit, but a uniquely used helper
+    // still belongs with the importing change even when that hunk also wires in other features.
+    if (usedBy[j] === 1 || (!hub[i] && ((isNew[i] && usedBy[j] <= 2) || (files[i].unitOf && usedBy[j] <= 3)))) union(i, j, reason);
   }
+
+  // Evidence, weighed together. Everything above joins on a hard fact (a new file and the line that
+  // imports it). What's left is softer and only counts in sum: the names two changes share (a class
+  // styled in one chunk and used in another, a function added here and called there), the words they
+  // share, how often the two files were committed together before, and sitting next to each other in one
+  // file. Names a change brings in or takes out count double: `.report-dialog` appearing in three chunks
+  // for the first time is one feature. Groups merge, most alike first, while they're alike enough.
+  let sig = [], oldNames = new Set();
+  {
+    const T = learn.tune || {};
+    sig = files.map((f, i) => (isAsset(kinds[i]) || (coll[i] && isNew[i]) ? null : signalsOf(f)));
+    // A name seen in unchanged or removed lines already existed; one only ever added is new.
+    const old = new Set(), added = new Set(), gone = new Set();
+    oldNames = old;
+    for (const s of sig) if (s) { for (const t of s.kept) old.add(t); for (const t of s.plus.keys()) added.add(t); for (const t of s.minus.keys()) gone.add(t); }
+    const docs = sig.map((s, i) => {
+      if (!s) return null;
+      const d = new Map();
+      const light = prose(files[i].path) ? 0.5 : 1;
+      for (const [t, c] of s.plus) d.set(t, (d.get(t) || 0) + c * light * (t[0] === 'I' ? (old.has(t) || gone.has(t) ? 1 : (T.fresh ?? 2.5)) : (T.word ?? 1)));
+      for (const [t, c] of s.minus) d.set(t, (d.get(t) || 0) + c * light * (t[0] === 'I' ? (old.has(t) || added.has(t) ? 0.6 : 1.5) : 0.3));
+      for (const t of s.where) d.set(t, (d.get(t) || 0) + (T.where ?? 1.5));
+      return d.size ? d : null;
+    });
+    const semanticIndex = buildTermIndex(docs, files.map((f) => f.path));
+    const vecs = semanticIndex.vectors;
+    const cap = Math.max(8, Math.ceil(n * (T.cap ?? 0.5)));
+    const roots = [...new Set(files.map((_, i) => find(i)))];
+    let live = roots.map((r) => members(r)).filter((m) => m.some((i) => vecs[i]));
+    const centroid = (m) => normalise(m.filter((i) => vecs[i]).reduce((acc, i) => { for (const [t, w] of vecs[i]) acc.set(t, (acc.get(t) || 0) + w); return acc; }, new Map()));
+    let cents = live.map(centroid);
+    const blocked = new Set();
+    const co = (A, B) => { if (!learn.cochange) return 0; let best = 0; for (const i of A) for (const j of B) if (files[i].path !== files[j].path) { const sc = learn.cochange.get(keyOf(i, j)) || 0; if (sc > best) best = sc; } return best; };
+    const near = (A, B) => A.some((i) => files[i].unitOf && B.some((j) => files[j].unitOf === files[i].unitOf && Math.abs(files[i].at - files[j].at) === 1));
+    const MIN = T.min ?? 0.1, GROW = T.grow ?? 0.15;
+    const bigNew = (m) => m.some((i) => isNew[i] && !isAsset(kinds[i]) && files[i].add >= 10);
+    for (;;) {
+      let best = 0, a = -1, b = -1, bestSemantic = 0, bestRatio = 1;
+      for (let x = 0; x < live.length; x++) for (let y = x + 1; y < live.length; y++) {
+        if (live[x].length + live[y].length > cap || blocked.has(live[x][0] + ':' + live[y][0])) continue;
+        // A small change that mostly talks about what a big one brings in (the two lines that import and
+        // call a new module) scores low on likeness alone, so how much of the smaller one the bigger one
+        // covers counts too.
+        const [sm, bg] = cents[x].size <= cents[y].size ? [cents[x], cents[y]] : [cents[y], cents[x]];
+        let inside = 0; for (const [t, w] of sm) if (t[0] === 'I' && bg.has(t)) inside += w * w;
+        const history = co(live[x], live[y]);
+        const adjacent = near(live[x], live[y]);
+        const freshNames = new Set();
+        for (const i of live[x]) for (const t of sig[i]?.plus.keys() || []) if (t[0] === "I" && !oldNames.has(t)) freshNames.add(t);
+        const sharedFresh = live[y].some((i) => [...(sig[i]?.plus.keys() || [])].some((t) => freshNames.has(t)));
+        const indexedOverlap = semanticIndex.mayOverlap(live[x], live[y]);
+        const semantic = indexedOverlap ? cosine(cents[x], cents[y]) : 0;
+        // Rare terms from the changed code can link a pair even without a shared identifier.
+        // The inverted index filters candidates first; the score threshold keeps generic wording out.
+        if (!sharedFresh && history < 0.5 && !adjacent && semantic < (T.semanticMin ?? 0.42)) continue;
+        const s = Math.max(semantic, (T.inside ?? 0.3) * inside) + (T.co ?? 0.15) * history + (adjacent ? (T.near ?? 0.04) : 0);
+        // The bigger a commit already is, the surer staged has to be to add to it.
+        // Two new files are each a thing of their own; likeness in wording alone shouldn't fuse them.
+        const need = MIN * (1 + GROW * Math.log2(live[x].length + live[y].length - 1)) * (bigNew(live[x]) && bigNew(live[y]) ? (T.newnew ?? 2) : 1);
+        if (s >= need && s - need > best) { best = s - need; a = x; b = y; bestSemantic = semantic; bestRatio = s / Math.max(need, 0.001); }
+      }
+      if (a < 0) break;
+      const shared = [...cents[a].keys()].filter((t) => t[0] === 'I' && cents[b].has(t)).sort((p, q) => cents[a].get(q) * cents[b].get(q) - cents[a].get(p) * cents[b].get(p))[0];
+      const nameOfTie = (t) => { for (const i of live[a]) { const v = sig[i]?.shown.get(t); if (v) return v; } return t.slice(2); };
+      const historyScore = co(live[a], live[b]);
+      const historyReason = historyScore >= 0.8 ? 'usually change together' : historyScore >= 0.5 ? 'recurring co-change pattern' : '';
+      const reason = shared ? `both touch ${nameOfTie(shared)}` : historyReason || (bestSemantic >= (T.semanticMin ?? 0.42) ? 'share rare changed terms' : 'related code');
+      const ratio = bestRatio;
+      const softConfidence = Math.max(0.62, Math.min(0.94, 0.62 + Math.max(0, ratio - 1) * 0.16));
+      const evidence = reason === 'usually change together' ? Math.max(softConfidence, 0.68 + historyScore * 0.28)
+        : reason === 'recurring co-change pattern' ? Math.max(softConfidence, 0.60 + historyScore * 0.24)
+          : reason.startsWith('both touch ') ? Math.max(softConfidence, shared ? 0.82 : 0.62)
+            : reason === 'share rare changed terms' ? 0.58 + Math.min(0.36, bestSemantic * 0.42)
+              : softConfidence;
+      union(live[a][0], live[b][0], reason, evidence);
+      if (find(live[a][0]) !== find(live[b][0])) { blocked.add(live[a][0] + ':' + live[b][0]); continue; } // kept apart: you split these before
+      live[a] = [...live[a], ...live[b]]; cents[a] = centroid(live[a]);
+      live.splice(b, 1); cents.splice(b, 1);
+    }
+  }
+  // Chunks that had no feature signal stay with their file's home chunk.
+  const alone = (i) => members(find(i)).length === 1;
+  const homeOf = new Map(files.map((f, i) => [f, i]).filter(([f]) => f.unitOf && f.home).map(([f, i]) => [f.unitOf, i]));
+  for (let i = 0; i < n; i++) if (files[i].unitOf && !files[i].home && alone(i)) union(homeOf.get(files[i].unitOf), i, 'same file');
+  // Do not collect unrelated prose files into a catch-all docs commit. Collections,
+  // includes, imports, history and content overlap above can still connect related docs.
 
   const buckets = new Map();
   files.forEach((f, i) => { const r = find(i); if (!buckets.has(r)) buckets.set(r, []); buckets.get(r).push(i); });
-  let groups = [...buckets.values()].map((idx) => ({ idx }));
+  // The merge process can form a large group through a chain of individually weak
+  // semantic links. Keep only components connected by sufficiently strong evidence;
+  // this prevents one broad file or common phrase from bridging separate commits.
+  const splitWeakBridges = (idx) => {
+    const membersInGroup = new Set(idx), localParent = new Map(idx.map((i) => [i, i]));
+    const localFind = (i) => { const p = localParent.get(i); if (p === i) return i; const r = localFind(p); localParent.set(i, r); return r; };
+    // Hunk-level plans may contain several independently parsed chunks from one file.
+    // Keep those together by default; only file-to-file links decide whether the
+    // larger commit should split.
+    const firstByPath = new Map();
+    for (const i of idx) {
+      const p = files[i].path;
+      if (firstByPath.has(p)) localParent.set(localFind(i), localFind(firstByPath.get(p)));
+      else firstByPath.set(p, i);
+    }
+    for (const edge of linkEvidence) {
+      if (edge.confidence < MIN_GROUP_LINK_EVIDENCE || !membersInGroup.has(edge.a) || !membersInGroup.has(edge.b)) continue;
+      const a = localFind(edge.a), b = localFind(edge.b);
+      if (a !== b) localParent.set(b, a);
+    }
+    const parts = new Map();
+    for (const i of idx) { const root = localFind(i); if (!parts.has(root)) parts.set(root, []); parts.get(root).push(i); }
+    return [...parts.values()];
+  };
+  let groups = [...buckets.values()].flatMap((idx) => splitWeakBridges(idx).map((part) => ({ idx: part })));
 
-  // Small, unconnected single-file edits become one "small tweaks" commit.
-  const small = groups.filter((g) => g.idx.length === 1 && !coll[g.idx[0]] && files[g.idx[0]].status !== 'A' && files[g.idx[0]].add + files[g.idx[0]].del <= 12);
-  if (small.length > 1) {
-    groups = groups.filter((g) => !small.includes(g));
-    groups.push({ idx: small.flatMap((g) => g.idx), tweaks: true });
-  }
+  // Leave unrelated small edits separate. They only share a commit when another signal connects them.
 
   return groups.map((g, k) => {
-    const fs_ = g.idx.map((i) => files[i]);
+    const byP = new Map();
+    for (const i of g.idx) {
+      const f = files[i], c = byP.get(f.path);
+      if (!c) byP.set(f.path, { ...f, ids: f.unitOf ? [f.hunk] : null });
+      else { c.diff += '\n' + f.diff; c.add += f.add; c.del += f.del; c.ids.push(f.hunk); }
+    }
+    const fs_ = [...byP.values()];
+    const hunks = {};
+    for (const f of fs_) if (f.ids && f.ids.length < f.units) hunks[f.path] = f.ids;
     const reasons = new Set(g.idx.flatMap((i) => [...why[i]]));
-    const label = g.tweaks ? 'Small tweaks' : labelFor(fs_);
-    const msg = messageFor(fs_, label, g.tweaks, learn.verbs, learn.tense);
+    // The names this commit's changes share across files (new ones first): what it's about, in the code's own words.
+    const seenIn = new Map(), shownAs = new Map();
+    const onePath = new Set(g.idx.map((i) => files[i].path)).size === 1;
+    for (const i of g.idx) if (sig[i]) for (const t of new Set([...sig[i].plus.keys(), ...sig[i].minus.keys()])) if (t[0] === 'I') { if (!seenIn.has(t)) { seenIn.set(t, new Set()); shownAs.set(t, sig[i].shown.get(t) || t.slice(2)); } seenIn.get(t).add(onePath ? i : files[i].path); }
+    const isFresh = (t) => !oldNames.has(t);
+    const ties = [...seenIn]
+      .filter(([t, ps]) => ps.size >= 2 && (isFresh(t) || /[-_]/.test(t)) && !/^I:(z-index|prefers-|min-|max-|data-theme$)/.test(t))
+      .sort((a, b) => (isFresh(b[0]) - isFresh(a[0])) || (b[1].size - a[1].size) || (b[0].length - a[0].length))
+      .slice(0, 5).map(([t]) => shownAs.get(t));
+    const label = labelFor(fs_);
+    const msg = messageFor(fs_, label, false, learn.verbs, learn.tense, learn.emojiForType);
+    const distinctPaths = new Set(fs_.map((f) => f.path)).size;
+    // Score the weakest edge needed to connect the group. A pile of strong links must not hide
+    // one speculative attachment; singleton files have no grouping decision to score.
+    const confidence = distinctPaths <= 1 ? 1 : (() => {
+      const nodes = new Map([...new Set(fs_.map((f) => f.path))].map((p) => [p, p]));
+      const root = (p) => { while (nodes.get(p) !== p) { nodes.set(p, nodes.get(nodes.get(p))); p = nodes.get(p); } return p; };
+      const edges = linkEvidence.filter((edge) => g.idx.includes(edge.a) && g.idx.includes(edge.b) && files[edge.a].path !== files[edge.b].path)
+        .sort((a, b) => b.confidence - a.confidence);
+      let used = 0, weakest = 1;
+      for (const edge of edges) {
+        const a = files[edge.a].path, b = files[edge.b].path, ra = root(a), rb = root(b);
+        if (ra === rb) continue;
+        nodes.set(rb, ra); weakest = Math.min(weakest, edge.confidence); used++;
+        if (used === distinctPaths - 1) break;
+      }
+      return used === distinctPaths - 1 ? weakest : 0.52;
+    })();
+    const review = distinctPaths > 1 && confidence < CONFIDENCE_TARGET;
+    // The hubs left on their own, and notes on their own, get a message that says what they are.
+    const names = list([...new Set(fs_.map((f) => (/index\.html?$/.test(f.path) ? 'the page' : nameOf(f.path).toLowerCase())))].slice(0, 3)) + (fs_.length > 3 ? ' and more' : '');
+    if (g.idx.every((i) => hub[i])) Object.assign(msg, { type: 'feat', emoji: '✨', gitmoji: `Wired the new parts into ${names}`, conventional: `wire the new parts into ${names}` });
+    else if (g.idx.length > 1 && g.idx.every((i) => prose(files[i].path))) {
+      const verb = g.idx.every((i) => isNew[i]) ? 'Added' : 'Updated';
+      Object.assign(msg, { type: 'docs', emoji: '📝', gitmoji: `${verb} ${names}`, conventional: `${verb === 'Added' ? 'add' : 'update'} ${names}` });
+    }
+    if (learn.tense === 'imperative') msg.gitmoji = toImperative(msg.gitmoji);
     return {
       id: 'g' + (k + 1),
       title: label,
       files: fs_.map((f) => f.path),
-      why: g.tweaks ? 'small edits that stand alone' : [...reasons].slice(0, 3).join(' · ') || 'one file',
+      ...(Object.keys(hunks).length ? { hunks } : {}),
+      size: fs_.reduce((s, f) => s + f.add + f.del, 0),
+      why: ([...reasons].slice(0, 3).join('·') || 'one file') + (review ? '· weak links; check this grouping' : ''),
+      confidence,
+      review,
+      ...(ties.length ? { ties } : {}),
       ...msg,
     };
-  }).sort((a, b) => size(b, files) - size(a, files));
+  }).sort((a, b) => b.size - a.size);
 }
-const size = (g, files) => g.files.reduce((s, p) => { const f = files.find((x) => x.path === p); return s + (f ? f.add + f.del : 0); }, 0);
 
 const titleCase = (s) => s.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 const COLLECTION_LABEL = { books: 'Book notes', blogs: 'Blog posts', posts: 'Blog posts', microblogs: 'Microblogs', projects: 'Projects', visuals: 'Visuals', works: 'Work', freebies: 'Freebies', resources: 'Resources' };
@@ -275,8 +612,8 @@ function labelFor(fs_) {
     const second = new Set(fs_.map((f) => f.path.split('/').slice(0, 3).join('/')));
     return second.size === 1 ? titleCase(path.basename([...second][0])) : titleCase([...tops][0].slice(1));
   }
-  const fresh = fs_.filter((f) => f.status === 'A').map((f) => stemOf(f.path)).filter((s) => !WEAK_STEMS.has(s));
-  if (fresh.length) return titleCase(mode(fresh));
+  const t = topicOf(fs_);
+  if (t) return t[0].toUpperCase() + t.slice(1);
   const biggest = [...fs_].sort((a, b) => b.add + b.del - (a.add + a.del))[0];
   return titleCase(stemOf(biggest.path)) || biggest.area;
 }
@@ -288,276 +625,296 @@ function titleOf(f) {
   const t = f.diff && f.diff.match(/^[+ ]title:\s*["']?(.+?)["']?\s*$/m);
   return t ? t[1] : titleCase(stemOf(f.path));
 }
-const list = (xs) => (xs.length <= 2 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
 // type, scope, conventional subject (imperative), gitmoji subject (past tense, like the user's history)
-const EMOJI = { feat: '✨', fix: '🐛', style: '💄', perf: '⚡️', refactor: '♻️', docs: '📝', chore: '🔧', remove: '🔥', content: '📝' };
-const TO_IMP = { Added: 'Add', Fixed: 'Fix', Updated: 'Update', Removed: 'Remove', Refined: 'Refine', Polished: 'Polish', Renamed: 'Rename', Moved: 'Move', Improved: 'Improve', Changed: 'Change', Created: 'Create', Deleted: 'Delete', Cleaned: 'Clean', Made: 'Make', Tweaked: 'Tweak', Replaced: 'Replace', Restyled: 'Restyle', Reworked: 'Rework', Wrote: 'Write' };
-export const toImperative = (s) => s.replace(/^[A-Z][a-z]+/, (w) => TO_IMP[w] || w).replace(/\b(updated|added|removed|fixed) (\d)/g, (m, w, d) => `${TO_IMP[w[0].toUpperCase() + w.slice(1)].toLowerCase()} ${d}`);
+const EMOJI = { feat: '✨', fix: '🐛', style: '💄', perf: '⚡️', refactor: '♻️', docs: '📝', chore: '🔧', build: '⬆️', test: '✅', ci: '👷', remove: '🔥', content: '📝' };
+const TO_IMP = { Added: 'Add', Fixed: 'Fix', Updated: 'Update', Removed: 'Remove', Refined: 'Refine', Polished: 'Polish', Renamed: 'Rename', Moved: 'Move', Improved: 'Improve', Changed: 'Change', Created: 'Create', Deleted: 'Delete', Cleaned: 'Clean', Made: 'Make', Tweaked: 'Tweak', Replaced: 'Replace', Restyled: 'Restyle', Reworked: 'Rework', Wrote: 'Write', Increased: 'Increase', Reduced: 'Reduce', Bumped: 'Bump', Tidied: 'Tidy', Simplified: 'Simplify', Wired: 'Wire', Hooked: 'Hook' };
+export const toImperative = (s) => s
+  .replace(/^[A-Z][a-z]+/, (w) => TO_IMP[w] || w)
+  .replace(/(\band |, )([a-z]+ed|wrote|made)\b/g, (m, pre, w) => { const k = w[0].toUpperCase() + w.slice(1); return TO_IMP[k] ? pre + TO_IMP[k].toLowerCase() : m; });
 
-function messageFor(fs_, label, tweaks, verbs, tense) {
-  const m = messageForPast(fs_, label, tweaks, verbs);
+function messageFor(fs_, label, tweaks, verbs, tense, emojiForType) {
+  const m = messageForPast(fs_, label, tweaks, verbs, emojiForType);
   if (tense === 'imperative') m.gitmoji = toImperative(m.gitmoji);
   return m;
 }
 
-function messageForPast(fs_, label, tweaks, verbs) {
+function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
   const collName = fs_.map((f) => collectionOf(f.path)).find(Boolean);
   const top = fs_[0].path.split('/')[0];
   const toolFolder = top.startsWith('.') && fs_.every((f) => f.path.startsWith(top + '/'));
-  const scope = toolFolder ? top.slice(1) : collName && fs_.every((f) => collectionOf(f.path)) ? collName : label.toLowerCase().replace(/\s+/g, '-');
+  const scope = toolFolder ? top.slice(1) : collName && fs_.every((f) => collectionOf(f.path)) ? collName : slugOf(label);
   const added = fs_.filter((f) => f.status === 'A');
   const deleted = fs_.filter((f) => f.status === 'D');
   const coll = fs_.every((f) => collectionOf(f.path));
-  const ext = new Set(fs_.map((f) => path.extname(f.path).toLowerCase()));
-  const onlyStyles = [...ext].every((e) => /\.(s?css|sass|less)$/.test(e));
-  let type, conv, gm, emoji;
+  const kinds = fs_.map((f) => kindOf(f.path));
+  const onlyStyles = kinds.every((k) => k === 'style');
+  const facts = fs_.flatMap(factsFor).sort((x, y) => y.w - x.w);
+  const said = facts.filter((x) => x.verb);
+  const intentNotes = facts.filter((x) => x.note).map((x) => x.note).join(' ');
+  const fixNote = intentNotes.match(/\b(?:fix(?:es|ed)?|bug|broken|crash|regression|prevent(?:s|ed)?)\b[^.!?;]{0,100}/i)?.[0];
+  const perfNote = intentNotes.match(/\b(?:performance|faster|speed(?:up)?|slow(?:er|down)?|optim(?:i|iz)(?:e|ed|ation))\b[^.!?;]{0,100}/i)?.[0];
+  const where = WEAK_STEMS.has(label.toLowerCase()) || /^(small tweaks|project setup|misc)$/i.test(label) ? '' : label.toLowerCase();
+  const onlyTests = fs_.every((f) => /(^|\/)(?:__tests__|tests?|specs?)\/|(^|\/)(?:test|spec)\.[^.]+$|(?:\.|-)(?:test|spec)\.[^.]+$/i.test(f.path));
+  const onlyDocs = !coll && fs_.every((f) => ['doc', 'text'].includes(kindOf(f.path)) || /(^|\/)(readme|changelog|contributing)(\.[^/]+)?$/i.test(f.path));
+  const onlyCi = fs_.every((f) => /(^|\/)(\.github\/workflows|\.circleci|\.buildkite)(\/|$)|(^|\/)(Jenkinsfile|\.gitlab-ci\.yml)$/i.test(f.path));
+  const onlyIgnoreRules = fs_.every((f) => /(^|\/)\.gitignore$|(^|\/)\.dockerignore$/i.test(f.path));
+  const onlyReleaseTooling = fs_.every((f) => /(^|\/)(release|publish|version)(\.[cm]?[jt]s|\.sh)?$/i.test(f.path));
+  const onlyTerminalTooling = fs_.every((f) => /(^|\/)(tui|cli|terminal)(\.[cm]?[jt]s)?$/i.test(f.path));
+  const dependencyFiles = fs_.every((f) => /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|go\.mod|go\.sum|Gemfile|Gemfile\.lock|requirements[^/]*\.txt|Pipfile|Pipfile\.lock)$/i.test(f.path));
+  const dependencyChange = dependencyFiles && fs_.some((f) => /dependencies|devDependencies|optionalDependencies|requirements|\brequire\b|gem\s/i.test(f.diff || ''));
+  let type, gm, emoji, conv;
+  const asset = assetSubject(fs_);
 
-  if (toolFolder && !tweaks) {
+  if (onlyIgnoreRules) {
+    type = 'chore'; emoji = '🙈';
+    gm = `${deleted.length === fs_.length ? 'Removed' : added.length === fs_.length ? 'Added' : 'Updated'} ignore rules`;
+  } else if (onlyCi) {
+    type = 'ci'; emoji = '👷';
+    gm = `${deleted.length === fs_.length ? 'Removed' : added.length === fs_.length ? 'Added' : 'Updated'} CI workflow${fs_.length > 1 ? 's' : ''}`;
+  } else if (onlyTests) {
+    type = 'test'; emoji = '✅';
+    const target = /^(test|tests|spec|specs)$/i.test(label) ? 'the change' : label.toLowerCase();
+    gm = `${deleted.length === fs_.length ? 'Removed' : added.length === fs_.length ? 'Added' : 'Updated'} tests for ${target}`;
+  } else if (onlyReleaseTooling) {
+    type = 'chore'; emoji = '🔖';
+    gm = `${deleted.length === fs_.length ? 'Removed' : added.length === fs_.length ? 'Added' : 'Updated'} release tooling`;
+  } else if (onlyTerminalTooling) {
+    type = 'chore'; emoji = '🔧';
+    gm = `${deleted.length === fs_.length ? 'Removed' : added.length === fs_.length ? 'Added' : 'Updated'} terminal helpers`;
+  } else if (toolFolder && !tweaks) {
     const kind = /skills?$/.test(fs_[0].path.split('/')[1] || '') ? ' skill' : '';
     type = 'chore'; emoji = EMOJI.chore;
-    const name = label.toLowerCase();
-    conv = added.length === fs_.length ? `add ${name}${kind}` : `update ${name}${kind}`;
-    gm = (added.length === fs_.length ? 'Added ' : 'Updated ') + name + kind;
-  } else if (tweaks) {
-    const names = [...new Set(fs_.map((f) => titleCase(stemOf(f.path)).toLowerCase()))].slice(0, 3);
-    const more = fs_.length > 3 ? ' and more' : '';
-    type = onlyStyles || [...ext].every((e) => /\.(s?css|html|liquid|svg)$/.test(e)) ? 'style' : 'chore';
-    conv = `polish ${list(names)}${more}`;
-    gm = `Polished ${list(names)}${more}`;
-  } else if (coll) {
+    gm = (added.length === fs_.length ? 'Added ' : 'Updated ') + label.toLowerCase() + kind;
+  } else if (kinds.every((k) => k === 'junk')) {
+    type = 'chore'; emoji = '🙈';
+    gm = `${deleted.length === fs_.length ? 'Removed' : 'Added'} ${list([...new Set(fs_.map((f) => path.basename(f.path)))])}`;
+  } else if (dependencyChange) {
+    type = 'build'; emoji = added.length === fs_.length ? '➕' : deleted.length === fs_.length ? '➖' : '⬆️';
+    gm = `${added.length === fs_.length ? 'Added' : deleted.length === fs_.length ? 'Removed' : 'Updated'} dependencies`;
+    const names = facts.filter((f) => f.kind === 'config' && f.text?.includes('dependenc')).map((f) => f.text.replace(/ dependenc(?:y|ies)$/, ''));
+    if (names.length && gm.length + names[0].length < 58) gm += `: ${names[0]}`;
+  } else if (fixNote) {
+    type = 'fix'; emoji = /security|vulnerab|permission|credential|secret/i.test(fixNote || '') ? '🔒️' : /crash|data loss|urgent|production/i.test(fixNote || '') ? '🚑️' : '🐛';
+    const detail = fixNote?.replace(/^(?:fix(?:es|ed)?|bug|broken|crash|regression|prevent(?:s|ed)?)\s*(?:for|when|that|where|if)?\s*/i, '').trim();
+    gm = detail ? `Fixed ${detail}` : `Fixed ${where || label.toLowerCase()} edge cases`;
+  } else if (perfNote) {
+    type = 'perf'; emoji = '⚡️';
+    gm = `Improved ${perfNote}`;
+  } else if (onlyDocs) {
+    type = 'docs'; emoji = '📝';
+    const action = deleted.length === fs_.length ? 'Removed' : added.length === fs_.length ? 'Added' : 'Updated';
+    const subject = /^(readme|changelog|contributing|docs?)$/i.test(label) ? 'documentation' : label.toLowerCase();
+    gm = `${action} ${subject}`;
+  } else if (asset) {
+    ({ type, emoji } = asset);
+    gm = `${asset.verb} ${asset.what}`;
+  } else if (coll && !tweaks) {
     const mds = fs_.filter((f) => /\.(md|markdown|html)$/i.test(f.path));
     const newDocs = mds.filter((f) => f.status === 'A');
-    const what = label === 'Book notes' ? 'notes for' : '';
+    const book = label === 'Book notes';
     if (newDocs.length) {
       const names = newDocs.map(titleOf);
       type = 'feat';
-      const subj = names.length > 3 ? `${names.length} ${label.toLowerCase()}` : `${what ? what + ' ' : ''}${list(names)}`;
-      conv = `add ${subj}`;
-      gm = `Added ${label === 'Book notes' && names.length <= 3 ? 'book notes for ' + list(names) : subj}`;
+      gm = `Added ${names.length > 3 ? `${names.length} ${label.toLowerCase()}` : book ? 'book notes for ' + list(names) : list(names)}`;
       const edited = mds.filter((f) => f.status !== 'A');
-      if (edited.length) { conv += `, update ${edited.length} more`; gm += `, updated ${edited.length} more`; }
+      if (edited.length) gm += `, updated ${edited.length} more`;
     } else {
       const names = (mds.length ? mds : fs_).map(titleOf);
-      type = 'docs';
-      emoji = '📝';
-      const subj = names.length > 3 ? `${names.length} ${label.toLowerCase()}` : `${what ? what + ' ' : ''}${list(names)}`;
-      conv = `update ${subj}`;
-      gm = `Updated ${label === 'Book notes' && names.length <= 3 ? 'book notes for ' + list(names) : subj}`;
+      type = 'docs'; emoji = '📝';
+      gm = `Updated ${names.length > 3 ? `${names.length} ${label.toLowerCase()}` : book ? 'book notes for ' + list(names) : list(names)}`;
+    }
+    if (gm.length > 68) {
+      const newN = newDocs.length, editN = mds.length - newN, n = label.toLowerCase();
+      gm = newN ? `Added ${newN} ${n}${editN ? `, updated ${editN} more` : ''}` : `Updated ${editN} ${n}`;
     }
   } else if (fs_.every((f) => f.status === 'R')) {
     type = 'refactor'; emoji = '🚚';
-    conv = `move ${label.toLowerCase()}`; gm = `Moved ${label.toLowerCase()}`;
-  } else if (fs_.every((f) => f.status === 'M' && /\.(md|markdown|txt)$/i.test(f.path)) && fs_.reduce((s, f) => s + f.add + f.del, 0) <= 6) {
+    gm = `Moved ${label.toLowerCase()}`;
+  } else if (fs_.every((f) => f.status === 'M' && /\.(md|markdown|txt)$/i.test(f.path) && f.add && f.del && Math.abs(f.add - f.del) <= 1) && fs_.reduce((s, f) => s + f.add + f.del, 0) <= 6) {
     type = 'docs'; emoji = '✏️';
-    conv = `fix typos in ${label.toLowerCase()}`; gm = `Fixed typos in ${label.toLowerCase()}`;
+    gm = `Fixed typos in ${label.toLowerCase()}`;
   } else if (deleted.length === fs_.length) {
     type = 'refactor'; emoji = EMOJI.remove;
-    conv = `remove ${label.toLowerCase()}`; gm = `Removed ${label.toLowerCase()}`;
-  } else if (added.length) {
+    gm = `Removed ${label.toLowerCase()}`;
+  } else if (added.some((f) => !isAsset(kindOf(f.path))) && !tweaks) {
+    // Something new: name the thing, not the files it touched.
     type = 'feat';
-    const wired = fs_.length - added.length;
-    conv = `add ${label.toLowerCase()}${wired ? ' and wire it into the site' : ''}`;
-    gm = `Added ${label.toLowerCase()}${wired ? ` and wired it into ${wired} existing file${wired > 1 ? 's' : ''}` : ''}`;
-  } else if (onlyStyles) {
+    const fresh = added.filter((f) => !isAsset(kindOf(f.path))).sort((x, y) => y.add - x.add);
+    const many = added.length >= 3 && commonDir(added.map((f) => f.path));
+    const thing = many ? label.toLowerCase() : thingFor(fresh[0], fs_);
+    const about = many ? null : aboutOf(fresh[0], thing);
+    gm = `Added ${about?.subject || thing}`;
+    const extra = said.find((x) => x.w >= 6 && !gm.includes(x.text) && !sameFact(gm, x));
+    if (extra && gm.length + extra.text.length < 60) gm = joinFact(gm, extra);
+  } else if (said.length && said[0].w >= 6) {
+    // A clear single change: a font swap, a weight change.
+    const f0 = said[0];
+    type = f0.kind === 'style' ? 'style' : 'feat';
+    gm = `${f0.verb} ${f0.text}${where && f0.kind === 'style' && !/ with /.test(f0.text) ? ` for ${where}` : ''}`;
+    const next = said.find((x) => x !== f0 && x.w >= 4 && !sameFact(gm, x));
+    if (next && gm.length + next.text.length < 60) gm = joinFact(gm, next);
+  } else if (onlyStyles || (kinds.every((k) => ['style', 'markup', 'icon', 'graphic'].includes(k)) && !facts.some((x) => x.kind === 'code'))) {
     type = 'style';
-    conv = `refine ${label.toLowerCase()} styles`; gm = `Refined ${label.toLowerCase()} styles`;
+    const topics = [...new Set(facts.flatMap((x) => x.topics || []))].slice(0, 2);
+    const adds = said.find((x) => x.verb === 'Added');
+    if (tweaks) gm = `Polished ${list([...new Set(fs_.map((f) => nameOf(f.path).toLowerCase()))].slice(0, 3))}${fs_.length > 3 ? ' and more' : ''}`;
+    else if (adds && !topics.length) gm = `${adds.verb} ${adds.text}`;
+    else {
+      const place = where || list([...new Set(fs_.flatMap(contextsOf))].slice(0, 2));
+      gm = `Refined ${topics.length ? list(topics) : 'styles'}${place ? ` ${topics.length ? 'in' : 'for'} ${place}` : ''}`;
+    }
+  } else if (tweaks) {
+    type = 'chore';
+    const best = said.find((x) => x.w >= 4);
+    const names = [...new Set(fs_.map((f) => nameOf(f.path).toLowerCase()))].slice(0, 3);
+    gm = best && fs_.length <= 2 ? `${best.verb} ${best.text}` : `Tidied ${list(names)}${fs_.length > 3 ? ' and more' : ''}`;
   } else {
-    type = 'refactor';
-    conv = `update ${label.toLowerCase()}`; gm = `Updated ${label.toLowerCase()}`;
+    // Changes to existing code: say what was added or taken out.
+    const add = fs_.reduce((s, f) => s + f.add, 0), del = fs_.reduce((s, f) => s + f.del, 0);
+    const best = said.find((x) => x.kind === 'code' || x.kind === 'markup' || x.kind === 'doc' || x.kind === 'config') || said[0];
+    // A comment you wrote with the change usually says it best: "Updated app server: restart only when …"
+    const note = facts.find((x) => x.note && `Updated ${label}: ${x.note}`.length <= 72 && x.note.split(/\s+/).length >= 4 && !/^(a|an|the|this|that|it)\s/i.test(x.note));
+    if (note && (!best || best.w < 6) && fs_.length <= 2) { type = 'feat'; gm = `Updated ${where || label.toLowerCase()}: ${/^[A-Z](?![A-Z])/.test(note.note) ? note.note[0].toLowerCase() + note.note.slice(1) : note.note}`; }
+    else if (best && best.verb === 'Added') { type = 'feat'; gm = `Added ${best.text}${where && best.kind === 'code' && !best.text.includes(where) ? ` to ${where}` : ''}`; }
+    else if (best && best.verb === 'Removed') { type = 'refactor'; emoji = '🔥'; gm = `Removed ${best.text}${where ? ` from ${where}` : ''}`; }
+    else if (best) { type = best.kind === 'doc' ? 'docs' : best.kind === 'config' ? 'chore' : 'feat'; gm = `${best.verb} ${best.text}`; }
+    else if (del > add * 2 && del > 20) { type = 'refactor'; gm = `Simplified ${label.toLowerCase()}`; }
+    else if (facts.some((x) => x.fixy) && add < 40) { type = 'fix'; gm = `Fixed ${label.toLowerCase()} edge cases`; }
+    else {
+      type = kinds.every((k) => k === 'doc' || k === 'text') ? 'docs' : 'feat';
+      const ctx = [...new Set(fs_.flatMap(contextsOf))].filter((c) => c !== label.toLowerCase()).slice(0, 2);
+      gm = ctx.length ? `Updated ${list(ctx)}${where && fs_.length === 1 ? ` in ${where}` : ''}` : `Updated ${label.toLowerCase()}`;
+    }
+    const next = said.find((x) => x !== best && x.w >= 4 && !gm.includes(x.text) && !sameFact(gm, x));
+    if (next && gm.length + next.text.length < 58) gm = joinFact(gm, next);
   }
-  emoji = emoji || EMOJI[type];
-  // Speak like the repo: swap generic verbs for the one you use most for this kind of change.
+  const fallbackEmoji = EMOJI[type];
+  emoji = emojiForType?.[type] && (!emoji || emoji === fallbackEmoji) ? emojiForType[type] : emoji || fallbackEmoji;
+  const emojiSuggestions = recommendEmojis({ type, emoji, files: fs_, facts, subject: gm, emojiForType });
+  emoji = emojiSuggestions[0] || emoji;
+  // Apply the repository's preferred verb after context selects the emoji.
   const v = verbs && verbs[emoji];
   if (v && !/^(Updated|Added)$/.test(v) && /^(Updated|Refined|Polished)\b/.test(gm) && v !== gm.split(' ')[0]) gm = gm.replace(/^\w+/, v);
-  // Keep first lines under ~72 chars: fall back to counts when names run long.
-  if (coll && !tweaks) {
-    const newN = fs_.filter((f) => f.status === 'A' && /\.(md|markdown|html)$/i.test(f.path)).length;
-    const editN = fs_.filter((f) => f.status !== 'A' && /\.(md|markdown|html)$/i.test(f.path)).length;
-    const noun = label.toLowerCase();
-    const prefix = `${type}(${scope}): `;
-    if (prefix.length + conv.length > 72) conv = newN ? `add ${newN} ${noun}${editN ? `, update ${editN}` : ''}` : `update ${editN} ${noun}`;
-    if (gm.length > 68) gm = newN ? `Added ${newN} ${noun}${editN ? `, updated ${editN} more` : ''}` : `Updated ${editN} ${noun}`;
-  }
-  const body = fs_.length > 1 ? fs_.map((f) => `- ${f.status === 'A' ? 'Add' : f.status === 'D' ? 'Remove' : 'Update'} ${f.path}`).slice(0, 12).join('\n') : '';
-  return { type, scope: tweaks ? '' : scope, emoji, conventional: conv, gitmoji: gm, body, source: 'guess' };
+  gm = gm.replace(/\s+/g, ' ').trim();
+  if (gm.length > 72) gm = gm.slice(0, 71).replace(/\s+\S*$/, '') + '…';
+  conv = toImperative(gm).replace(/^\w/, (c) => c.toLowerCase());
+  return { type, scope: tweaks ? '' : scope, emoji, emojiSuggestions, conventional: conv, gitmoji: gm, body: bodyFor(fs_, facts, gm), source: 'guess' };
 }
 
-// ---------- learning from history (no AI) ----------
-const learnCache = new Map(); // dir -> { head, commits }
-const LEAD_EMOJI = /^\s*((?:\p{Extended_Pictographic}|\p{Emoji_Component})(?:️|‍|\p{Extended_Pictographic})*)\s*([A-Z][a-z]+)/u;
-
-async function historyFor(git, dir) {
-  const head = (await git(dir, ['rev-parse', 'HEAD']).catch(() => '')).trim();
-  const c = learnCache.get(dir);
-  if (c && c.head === head) return c;
-  const raw = head ? await git(dir, ['log', '-n', '2000', '--no-merges', '--name-only', '--format=%x1e%s']).catch(() => '') : '';
-  const commits = raw.split('\x1e').filter(Boolean).map((chunk) => {
-    const [subject, ...files] = chunk.split('\n');
-    return { subject, files: files.filter(Boolean) };
-  });
-  // Verbs you use after each emoji, e.g. 💄 → "Refined"
-  const counts = {};
-  for (const cm of commits.slice(0, 600)) {
-    const m = cm.subject.match(LEAD_EMOJI);
-    if (!m || !/ed$/.test(m[2])) continue;
-    const e = m[1].replace(/️/g, '');
-    (counts[e] ||= {})[m[2]] = ((counts[e] || {})[m[2]] || 0) + 1;
-  }
-  const verbs = {};
-  for (const [e, vs] of Object.entries(counts)) {
-    const best = Object.entries(vs).sort((a, b) => b[1] - a[1])[0];
-    if (best && best[1] >= 3) { verbs[e] = best[0]; verbs[e + '️'] = best[0]; }
-  }
-  // Past tense ("Added …") or imperative ("Add …")? Go with whatever this repo mostly uses.
-  let past = 0, imp = 0;
-  for (const cm of commits.slice(0, 300)) {
-    const w = (cm.subject.replace(/^[^A-Za-z]*(?:\w+(?:\([^)]*\))?!?:\s*)?/, '').match(/^[A-Za-z]+/) || [''])[0].toLowerCase();
-    if (/^(added|fixed|updated|removed|refined|polished|renamed|moved|improved|changed|created|deleted|cleaned|made|used|bumped|implemented|replaced|tweaked)$/.test(w)) past++;
-    else if (/^(add|fix|update|remove|refine|polish|rename|move|improve|change|create|delete|clean|make|use|bump|implement|replace|tweak|refactor)$/.test(w)) imp++;
-  }
-  const tense = imp > past ? 'imperative' : 'past';
-  const out = { head, commits, verbs, tense };
-  learnCache.set(dir, out);
-  return out;
+// Rank a short, context-aware set. The chosen emoji leads; concrete change evidence
+// comes next, then repository style and the familiar category defaults.
+function recommendEmojis({ type, emoji, files, facts, subject, emojiForType }) {
+  const text = [subject, ...facts.filter((f) => f.w >= 4).flatMap((f) => [f.text, ...(f.topics || [])])]
+    .filter(Boolean).join(' ').toLowerCase();
+  const ranked = new Map();
+  const add = (value, score) => ranked.set(value, Math.max(ranked.get(value) || 0, score));
+  const learned = emojiForType?.[type];
+  if (learned) add(learned, 95);
+  if (emoji) add(emoji, 100);
+  const defaults = { feat: ['✨', '🚸', '🎉'], fix: ['🐛', '🩹', '🚑️'], style: ['💄', '💫', '📱'], perf: ['⚡️'], refactor: ['♻️', '🚚', '🔥'], docs: ['📝', '💬', '💡'], chore: ['🔧', '🍱', '🙈'], build: ['📦️', '⬆️', '➕', '➖'], test: ['✅', '🧪'], ci: ['👷', '💚'] };
+  for (const [i, value] of (defaults[type] || ['✨']).entries()) add(value, 40 - i);
+  const cues = [
+    [/accessib|keyboard|screen reader|usability|navigation/i, '🚸', ['feat']],
+    [/validat|invalid input|input check/i, '🦺', ['feat', 'fix']],
+    [/analytic|telemetry|tracking|metrics/i, '📈', ['feat']],
+    [/easter egg|hidden feature|surprise/i, '🥚', ['feat']],
+    [/concurren|parallel|thread(?:ing)?/i, '🧵', ['feat', 'perf', 'refactor']],
+    [/security|vulnerab|permission|credential|secret/i, '🔒️', ['fix']],
+    [/crash|urgent|production hotfix/i, '🚑️', ['fix']],
+    [/typo|spelling/i, '✏️', ['docs', 'fix']],
+    [/animation|transition|motion/i, '💫', ['style', 'feat']],
+    [/responsive|mobile|viewport/i, '📱', ['style', 'feat']],
+    [/format|prettier|indentation/i, '🎨', ['style', 'refactor']],
+    [/performance|faster|speed|optim(?:i|iz)/i, '⚡️', ['perf']],
+    [/dead code|unused|remove code/i, '⚰️', ['refactor']],
+    [/rename|renamed|move file|moved file/i, '🚚', ['refactor']],
+    [/architecture|module boundary|server split/i, '🏗️', ['refactor', 'chore']],
+    [/dependency|package|lockfile/i, '📦️', ['build']],
+    [/database|schema|migration/i, '🗃️', ['build', 'chore', 'feat']],
+    [/sound|audio|chime/i, '🔊', ['feat']],
+    [/workflow|pipeline|continuous integration/i, '👷', ['ci']],
+    [/deploy|release|publish/i, '🚀', ['chore']],
+    [/font|icon|image|asset|brand/i, '🍱', ['chore', 'style']],
+    [/comment|explanation/i, '💡', ['docs']],
+    [/copy|wording|text/i, '💬', ['docs', 'feat']],
+  ];
+  for (const [re, value, types] of cues) if (types.includes(type) && re.test(text)) add(value, 120);
+  return [...ranked].sort((a, b) => b[1] - a[1]).map(([value]) => value).slice(0, 6);
 }
 
-function cochangeFor(commits, paths) {
-  const want = new Set(paths);
-  const per = new Map(), pair = new Map();
-  for (const cm of commits) {
-    if (cm.files.length > 30) continue; // big sweeps say little about what belongs together
-    const hit = cm.files.filter((f) => want.has(f));
-    for (const f of hit) per.set(f, (per.get(f) || 0) + 1);
-    for (let i = 0; i < hit.length; i++) for (let j = i + 1; j < hit.length; j++) {
-      const k = hit[i] < hit[j] ? hit[i] + '\0' + hit[j] : hit[j] + '\0' + hit[i];
-      pair.set(k, (pair.get(k) || 0) + 1);
-    }
+// "Added sky view" + Added "Akt font" -> "Added sky view and Akt font"
+const sameFact = (gm, x) => { const a = x.text.toLowerCase().split(/\s+/).slice(0, 3).join(' '); return gm.toLowerCase().includes(a); };
+const joinFact = (gm, x) => gm.split(' ')[0] === x.verb ? `${gm} and ${x.text}` : `${gm} and ${x.verb.toLowerCase()} ${x.text}`;
+const slugOf = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+// Body: what changed, in words, one line each. Files only where nothing better can be said.
+function bodyFor(fs_, facts, subject) {
+  facts = [...facts];
+  if (fs_.length < 2 && facts.filter((x) => x.verb).length < 2) return '';
+  const out = [];
+  const seen = new Set([subject.toLowerCase()]);
+  const push = (line) => {
+    const k = line.toLowerCase(), core = k.replace(/^- /, '').replace(/ \([^)]*\)$/, '');
+    if (seen.has(k) || [...seen].some((x) => x.includes(core))) return;
+    seen.add(k); out.push(line);
+  };
+  for (const x of facts) {
+    // Private helper names are implementation details, not useful commit notes.
+    if (x.kind === 'code') continue;
+    if (x.note) {
+      // Source comments explain implementation choices; commit bodies should describe effects.
+      continue;
+    } else if (x.verb && x.w >= 4) push(`- ${x.verb} ${x.text}`);
+    else if (x.topics?.length && x.w >= 3) push(`- Refined ${list(x.topics.slice(0, 3))}`);
   }
-  const out = new Map();
-  for (const [k, c] of pair) {
-    const [a, b] = k.split('\0');
-    const score = c / Math.min(per.get(a), per.get(b));
-    if (c >= 3 && score >= 0.5) out.set(k, score);
+  const hasCode = fs_.some((f) => kindOf(f.path) === 'script' || kindOf(f.path) === 'markup');
+  if (hasCode) for (let i = out.length - 1; i >= 0; i--) {
+    const source = facts.find((x) => x.kind === 'doc' && out[i].toLowerCase().includes(String(x.text || '').toLowerCase()));
+    if (source) out.splice(i, 1);
   }
-  return out;
+  const assets = fs_.filter((f) => isAsset(kindOf(f.path)));
+  if (assets.length > 1 && assets.length < fs_.length) { const a = assetSubject(assets); if (a) push(`- ${a.verb} ${a.what}`); }
+  const covered = new Set(facts.map((x) => x.file));
+  for (const f of fs_) {
+    if (covered.has(f.path) || isAsset(kindOf(f.path)) && assets.length > 1) continue;
+    if (f.status === 'A' && WEAK_STEMS.has(stemOf(f.path).toLowerCase())) continue;
+    if (f.status === 'M' && !(collectionOf(f.path) && /\.(md|markdown|html)$/i.test(f.path))) continue; // "Updated index.html" adds nothing
+    const what = collectionOf(f.path) && /\.(md|markdown|html)$/i.test(f.path) ? titleOf(f) : f.status === 'A' ? thingFor(f, fs_) : nameOf(f.path).toLowerCase();
+    push(`- ${f.status === 'A' ? 'Added' : f.status === 'D' ? 'Removed' : 'Updated'} ${what}`);
+  }
+  return out.slice(0, 4).join('\n');
 }
 
-// Corrections you make by moving files, kept outside your repos.
+// ---------- indexed history (no AI) ----------
+async function historyFor(git, dir, indexDir, priorStyle) {
+  const indexed = await indexHistory({ git, dir, indexDir });
+  return { ...indexed, ...historyStyle(indexed.commits, priorStyle) };
+}
+
 function loadLearned(store) { try { return JSON.parse(fs.readFileSync(store, 'utf8')); } catch { return {}; } }
 function saveLearned(store, data) { try { fs.writeFileSync(store, JSON.stringify(data, null, 2)); } catch {} }
 
-// ---------- Claude Code (optional) ----------
-let claudePath;
-function findClaude() {
-  if (claudePath !== undefined) return Promise.resolve(claudePath);
-  const cmd = process.env.CHANGES_CLAUDE || 'claude';
-  return new Promise((resolve) => {
-    execFile('/bin/sh', ['-lc', `command -v ${cmd}`], (err, out) => {
-      const p = (out || '').trim();
-      claudePath = !err && p ? p : null;
-      resolve(claudePath);
-    });
-  });
-}
-
-function claudeOnce(args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(claudePath, args, { cwd: os.tmpdir(), stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = '';
-    const timer = setTimeout(() => { child.kill(); reject(new Error('Claude took too long')); }, 180000);
-    child.stdout.on('data', (d) => (out += d));
-    child.stderr.on('data', (d) => (err += d));
-    child.on('error', (e) => { clearTimeout(timer); reject(e); });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0) return reject(new Error((err || out).trim() || `claude exited with ${code}`));
-      resolve(out);
-    });
-  });
-}
-
-async function runClaude(prompt) {
-  const model = process.env.CHANGES_CLAUDE_MODEL ?? 'sonnet';
-  let out;
-  try {
-    out = await claudeOnce(['-p', prompt, '--output-format', 'json', ...(model ? ['--model', model] : [])]);
-  } catch (e) {
-    out = await claudeOnce(['-p', prompt]); // older or restricted CLIs: plain text answer
+function correctionFeedback(groups, files, learned) {
+  const current = new Set(files.map((f) => f.path));
+  const memberships = new Map();
+  for (let i = 0; i < groups.length; i++) for (const file of groups[i].files) {
+    if (!memberships.has(file)) memberships.set(file, new Set());
+    memberships.get(file).add(i);
   }
-  let text = out;
-  try { const w = JSON.parse(out); if (typeof w.result === 'string') text = w.result; } catch {}
-  const a = text.indexOf('{'), b = text.lastIndexOf('}');
-  try { return JSON.parse(text.slice(a, b + 1)); } catch { throw new Error('Could not read Claude’s answer'); }
-}
-
-function diffBlock(files) {
-  let budget = MAX_PROMPT;
-  return files.map((f) => {
-    const head = `### ${f.status} ${f.path}${f.from ? ` (from ${f.from})` : ''}  +${f.add} -${f.del}${f.binary ? ' (binary)' : ''}`;
-    const room = Math.max(0, Math.min(f.diff.length, budget, 4000));
-    budget -= room;
-    return head + (room ? '\n```diff\n' + f.diff.slice(0, room) + '\n```' : '');
-  }).join('\n\n');
-}
-
-const STYLE_RULES = `Write two subjects for every commit:
-- "conventional": Conventional Commits, imperative, lowercase start, no period, <= 72 chars including the "type(scope): " prefix you choose. Types: feat, fix, style, perf, refactor, docs, chore, build, ci, test.
-- "gitmoji": the owner's own style, without the emoji (it is added separately): past tense, capitalised, plain words, e.g. "Added design tips feature with dynamic display in avatar interaction". <= 72 chars.
-Pick "emoji" from gitmoji (✨ feature, 🐛 fix, 💄 UI/style, ⚡️ performance, ♻️ refactor, 📝 docs/content, 🔥 remove, 🔧 config, 🎉 big milestone, 💫 animation, 🍱 assets, ✏️ typo, 🚚 move/rename).
-"body": optional, up to 4 short "- " lines saying what changed and why; empty string if the subject says it all.
-Describe what the change does for the site, not file names.`;
-
-async function claudeSuggest(files, recent) {
-  const prompt = `You are splitting a developer's uncommitted changes into clean, separate git commits.
-Group files that belong to one logical change: one feature with its styles, scripts and the files that hook it in; content additions (e.g. new book notes with their images) on their own; small unrelated tweaks together. A file appears in exactly one group. Prefer a few meaningful commits over many tiny ones.
-
-${STYLE_RULES}
-
-Recent commit subjects in this repo, for tone:
-${recent.map((s) => '- ' + s).join('\n')}
-
-Changes:
-${diffBlock(files)}
-
-Answer with JSON only:
-{"groups":[{"title":"short name of the change","why":"one short phrase on why these files belong together","type":"feat","scope":"books","emoji":"✨","conventional":"feat(books): add notes for …","gitmoji":"Added …","body":"","files":["path", "..."]}]}`;
-  const res = await runClaude(prompt);
-  const known = new Set(files.map((f) => f.path));
-  const seen = new Set();
-  const groups = (res.groups || []).map((g, k) => {
-    const fl = (g.files || []).filter((p) => known.has(p) && !seen.has(p));
-    fl.forEach((p) => seen.add(p));
-    return normaliseAi(g, 'c' + (k + 1), fl);
-  }).filter((g) => g.files.length);
-  const left = files.map((f) => f.path).filter((p) => !seen.has(p));
-  if (left.length) groups.push({ id: 'c-rest', title: 'Not grouped', why: 'Claude left these out', files: left, ...messageFor(files.filter((f) => left.includes(f.path)), 'Misc', true) });
-  return groups;
-}
-
-async function claudeMessage(files, recent) {
-  const prompt = `Write a commit message for exactly these changes, as one commit.
-
-${STYLE_RULES}
-
-Recent commit subjects in this repo, for tone:
-${recent.map((s) => '- ' + s).join('\n')}
-
-Changes:
-${diffBlock(files)}
-
-Answer with JSON only:
-{"title":"short name of the change","type":"feat","scope":"","emoji":"✨","conventional":"feat(scope): …","gitmoji":"Added …","body":""}`;
-  return normaliseAi(await runClaude(prompt), null, files.map((f) => f.path));
-}
-
-function normaliseAi(g, id, files) {
-  let conv = String(g.conventional || '').trim();
-  let type = g.type || 'chore', scope = g.scope || '';
-  const m = conv.match(/^(\w+)(?:\(([^)]*)\))?!?:\s*(.*)$/);
-  if (m) { type = m[1]; scope = m[2] || ''; conv = m[3]; }
-  const gm = String(g.gitmoji || '').replace(/^(?:\p{Extended_Pictographic}|️|‍|\s)+/u, '').trim();
-  return { ...(id ? { id } : {}), title: g.title || 'Change', why: g.why || '', type, scope, emoji: g.emoji || EMOJI[type] || '✨', conventional: conv, gitmoji: gm, body: g.body || '', files, source: 'claude' };
+  const labels = new Map();
+  for (const key of learned.together || []) labels.set(key, true);
+  for (const key of learned.apart || []) labels.set(key, false);
+  let known = 0, matched = 0;
+  for (const [key, expected] of labels) {
+    const [a, b] = key.split('\0');
+    if (!a || !b || a === b || !current.has(a) || !current.has(b)) continue;
+    known++;
+    const left = memberships.get(a) || new Set(), right = memberships.get(b) || new Set();
+    const actual = [...left].some((i) => right.has(i));
+    if (actual === expected) matched++;
+  }
+  return { known, matched, accuracy: known ? matched / known : null };
 }
 
 // ---------- committing ----------
@@ -599,9 +956,86 @@ async function commitWithTempIndex(dir, picked, byPath, partial, message) {
   }
 }
 
+// ---------- discarding ----------
+// Throwing changes away, safely: every file is copied to .git/staged-trash/<id>/ first, so the last
+// discard can be undone (and the last few are still there by hand if you need them).
+const TRASH_KEEP = 12;
+async function gitDir(dir) {
+  const g = (await run(dir, ['rev-parse', '--git-dir'])).trim();
+  return path.isAbsolute(g) ? g : path.join(dir, g);
+}
+async function discardChanges(dir, byPath, files, partial) {
+  const root = path.join(await gitDir(dir), 'staged-trash');
+  const id = Date.now().toString(36);
+  const trash = path.join(root, id);
+  const entries = [];
+  const keep = (p) => {
+    const full = path.join(dir, p);
+    const exists = fs.existsSync(full) && fs.statSync(full).isFile();
+    if (exists) { fs.mkdirSync(path.dirname(path.join(trash, p)), { recursive: true }); fs.copyFileSync(full, path.join(trash, p)); }
+    entries.push({ path: p, exists });
+  };
+  let hasHead = true;
+  try { await run(dir, ['rev-parse', '--verify', 'HEAD']); } catch { hasHead = false; }
+  for (const p of files) {
+    const f = byPath.get(p);
+    if (!f) continue;
+    if (f.status === 'U') throw new Error(`${p} has a merge conflict. Sort that out in your editor first.`);
+    keep(p);
+    if (f.from) keep(f.from);
+    const inHead = hasHead && !f.untracked && f.status !== 'A' && !f.from;
+    if (inHead) {
+      await run(dir, ['checkout', 'HEAD', '--', p]);
+    } else {
+      await run(dir, ['rm', '--cached', '-q', '--ignore-unmatch', '--', p]).catch(() => {});
+      fs.rmSync(path.join(dir, p), { force: true });
+      if (f.from && hasHead) await run(dir, ['checkout', 'HEAD', '--', f.from]).catch(() => {});
+    }
+  }
+  for (const [p, ids] of Object.entries(partial || {})) {
+    if (!byPath.has(p) || !ids.length) continue;
+    const diff = await run(dir, ['diff', 'HEAD', '--no-color', '-U3', '--', p]);
+    const { header, hunks } = parseHunks(diff);
+    const want = new Set(ids);
+    const chosen = hunks.filter((h) => want.has(h.id));
+    if (chosen.length !== want.size) throw new Error(`${p} changed since you looked. Refresh and try again.`);
+    keep(p);
+    const patch = [...header, ...chosen.flatMap((h) => [h.head, ...h.lines])].join('\n') + '\n';
+    await run(dir, ['apply', '-R', '--recount', '-'], { input: patch });
+  }
+  // Only the newest few discards are kept.
+  try {
+    const old = fs.readdirSync(root).sort().reverse().slice(TRASH_KEEP);
+    for (const o of old) fs.rmSync(path.join(root, o), { recursive: true, force: true });
+  } catch {}
+  return { id, trash, entries };
+}
+function restoreDiscard(dir, d) {
+  for (const e of d.entries) {
+    const full = path.join(dir, e.path);
+    if (e.exists) { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.copyFileSync(path.join(d.trash, e.path), full); }
+    else fs.rmSync(full, { force: true });
+  }
+  fs.rmSync(d.trash, { recursive: true, force: true });
+}
+
 // ---------- routes ----------
-export function commitRoutes({ git, makeAreaFn, repoDir, onCommitted, store }) {
+export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted, store }) {
   const lastCommitByTool = new Map(); // repo -> sha this tool created most recently
+  const lastDiscard = new Map(); // repo -> what the last discard threw away
+  let styleCache = { at: 0, profile: null };
+  let stylePromise = null;
+  let engineStatsCache = { at: 0, value: null };
+  async function userStyle() {
+    if (styleCache.profile && Date.now() - styleCache.at < 5 * 60_000) return styleCache.profile;
+    if (!stylePromise) stylePromise = (async () => {
+      const repos = listRepos ? await listRepos().catch(() => []) : [];
+      const profile = await styleAcrossRepos({ git, repos, indexDir: path.join(path.dirname(store), 'group-index') });
+      styleCache = { at: Date.now(), profile };
+      return profile;
+    })().finally(() => { stylePromise = null; });
+    return stylePromise;
+  }
 
   const readJson = (req) => new Promise((resolve, reject) => {
     let b = '';
@@ -613,8 +1047,70 @@ export function commitRoutes({ git, makeAreaFn, repoDir, onCommitted, store }) {
     return (await git(dir, ['log', '-20', '--no-merges', '--format=%s']).catch(() => '')).split('\n').filter(Boolean);
   }
 
+  async function analyseRepo(name, dir, priorStyle, allLearned = loadLearned(store)) {
+    const files = await readChanges(git, dir, makeAreaFn(dir));
+    const hist = await historyFor(git, dir, path.join(path.dirname(store), 'group-index'), priorStyle);
+    const learned = allLearned[hist.repoId] || allLearned[name] || {};
+    const groups = suggestGroups(files, {
+      cochange: cochangeFor(hist, files.map((f) => f.path), priorStyle.crossRepoPairs),
+      together: new Set(learned.together || []),
+      apart: new Set(learned.apart || []),
+      verbs: hist.verbs, tense: hist.tense,
+      emojiForType: { ...hist.emojiForType, ...(learned.emojiByType || {}) },
+    });
+    return { files, hist, learned, groups };
+  }
+
   return async function handle(req, res, url, send) {
     if (!url.pathname.startsWith('/api/changes')) return false;
+    if (url.pathname === '/api/changes/engine-stats' && req.method === 'GET') {
+      if (engineStatsCache.value && Date.now() - engineStatsCache.at < 15000) {
+        send(res, 200, JSON.stringify(engineStatsCache.value));
+        return true;
+      }
+      const profile = await userStyle();
+      const learned = loadLearned(store);
+      let together = 0, apart = 0, emojiMappings = 0;
+      for (const value of Object.values(learned)) {
+        together += value.together?.length || 0;
+        apart += value.apart?.length || 0;
+        emojiMappings += Object.keys(value.emojiByType || {}).length;
+      }
+      const repos = listRepos ? await listRepos().catch(() => []) : [];
+      const pending = [];
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < repos.length) {
+          const repo = repos[cursor++], name = repo.name || path.basename(repo.dir || '');
+          try {
+            const status = await git(repo.dir, ['status', '--porcelain=v1', '-z', '-uall']);
+            if (!status) continue;
+            const result = await analyseRepo(name, repo.dir, profile, learned);
+            const decisions = result.groups.filter((group) => group.files.length > 1);
+            const decisionsWeight = decisions.reduce((sum, group) => sum + group.files.length * (group.files.length - 1) / 2, 0);
+            pending.push({ repo: name, groups: decisions.length, weight: decisionsWeight,
+              weightedConfidence: decisions.reduce((sum, group) => sum + group.confidence * group.files.length * (group.files.length - 1) / 2, 0),
+              reviewGroups: decisions.filter((group) => group.review).length });
+          } catch {}
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, repos.length) }, worker));
+      const currentWeight = pending.reduce((sum, item) => sum + item.weight, 0);
+      const stats = {
+        engine: 'Commit Compass',
+        repositories: profile.indexedRepos, commits: profile.indexedCommits, indexedFiles: profile.indexedFiles,
+        messageSamples: profile.commits, recurringPathPairs: profile.crossRepoPairs.size,
+        learnedTogether: together, learnedApart: apart, learnedEmojiMappings: emojiMappings,
+        style: { format: profile.format, tense: profile.tense, averageSubjectLength: profile.averageSubjectLength },
+        currentScore: currentWeight ? pending.reduce((sum, item) => sum + item.weightedConfidence, 0) / currentWeight : null,
+        currentScoreDecisions: pending.reduce((sum, item) => sum + item.groups, 0),
+        currentScoreRepos: pending.filter((item) => item.groups).length,
+        currentScoreReviewGroups: pending.reduce((sum, item) => sum + item.reviewGroups, 0),
+      };
+      engineStatsCache = { at: Date.now(), value: stats };
+      send(res, 200, JSON.stringify(stats));
+      return true;
+    }
     const name = url.searchParams.get('repo') || '';
     const dir = await repoDir(name);
     if (!dir) { send(res, 404, JSON.stringify({ error: 'No such repo' })); return true; }
@@ -628,43 +1124,77 @@ export function commitRoutes({ git, makeAreaFn, repoDir, onCommitted, store }) {
 
     try {
       if (sub === '/' && req.method === 'GET') {
-        const files = await readChanges(git, dir, makeAreaFn(dir));
-        const hist = await historyFor(git, dir);
-        const learned = loadLearned(store)[name] || {};
-        const groups = suggestGroups(files, {
-          cochange: cochangeFor(hist.commits, files.map((f) => f.path)),
-          together: new Set(learned.together || []),
-          apart: new Set(learned.apart || []),
-          verbs: hist.verbs, tense: hist.tense,
-        });
+        const priorStyle = await userStyle();
+        const allLearned = loadLearned(store);
+        const { files, hist, learned, groups } = await analyseRepo(name, dir, priorStyle, allLearned);
         const branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim();
         return ok({
           repo: name, branch,
-          files: files.map(({ content, ...f }) => f),
+          files: files.map(({ content, ...f }) => (f.hunks ? { ...f, hunks: f.hunks.map(({ all, ...h }) => h) } : f)),
           groups,
-          claude: !!(await findClaude()),
+          grouping: { engine: 'commit-compass', confidenceTarget: CONFIDENCE_TARGET, index: { schema: hist.schema, status: hist.status, commits: hist.commits.length, files: hist.indexedFiles, updatedAt: hist.indexedAt }, style: hist.style, feedback: correctionFeedback(groups, files, learned) },
           canUndo: lastCommitByTool.has(name),
+          canUndoDiscard: lastDiscard.has(name),
           verbs: hist.verbs, tense: hist.tense,
         }), true;
       }
-      if (sub === '/suggest' && req.method === 'POST') {
-        if (!(await findClaude())) return fail('Claude Code is not installed on this Mac', 400), true;
-        const files = await readChanges(git, dir, makeAreaFn(dir));
-        return ok({ groups: await claudeSuggest(files, await recentSubjects(dir)) }), true;
-      }
-      if (sub === '/message' && req.method === 'POST') {
-        if (!(await findClaude())) return fail('Claude Code is not installed on this Mac', 400), true;
+      if (sub === '/message-local' && req.method === 'POST') {
+        // The built-in writer, for just these files: used by "Rewrite" when no AI is around.
         const body = await readJson(req);
         const want = new Set(body.files || []);
         const files = (await readChanges(git, dir, makeAreaFn(dir))).filter((f) => want.has(f.path));
         if (!files.length) return fail('Pick at least one file', 400), true;
-        return ok(await claudeMessage(files, await recentSubjects(dir))), true;
+        const hist = await historyFor(git, dir, path.join(path.dirname(store), 'group-index'), await userStyle());
+        const learnedAll = loadLearned(store), learned = learnedAll[hist.repoId] || learnedAll[name] || {};
+        const tweaks = files.length > 1 && files.every((f) => f.status !== 'A' && f.add + f.del <= 12);
+        return ok({ title: labelFor(files), ...messageFor(files, tweaks ? 'Small tweaks' : labelFor(files), tweaks, hist.verbs, hist.tense, { ...hist.emojiForType, ...(learned.emojiByType || {}) }) }), true;
+      }
+      if (sub === '/context' && req.method === 'GET') {
+        // What an on-device model needs to write in your voice: recent subjects and their tense.
+        const hist = await historyFor(git, dir, path.join(path.dirname(store), 'group-index'), await userStyle());
+        return ok({ recent: await recentSubjects(dir), tense: hist.tense }), true;
+      }
+      if (sub === '/discard' && req.method === 'POST') {
+        const body = await readJson(req);
+        const current = parseStatus(await git(dir, ['status', '--porcelain=v1', '-z', '-uall']));
+        const byPath = new Map(current.map((f) => [f.path, f]));
+        const files = (body.files || []).filter((p) => byPath.has(p));
+        const partial = body.partial || {};
+        if (!files.length && !Object.keys(partial).length) return fail('Those files have no changes any more.', 409), true;
+        const d = await discardChanges(dir, byPath, files, partial);
+        lastDiscard.set(name, d);
+        onCommitted && onCommitted(name);
+        return ok({ discarded: d.entries.length, id: d.id }), true;
+      }
+      if (sub === '/discard-undo' && req.method === 'POST') {
+        const d = lastDiscard.get(name);
+        if (!d || !fs.existsSync(d.trash)) return fail('Nothing to bring back.', 409), true;
+        restoreDiscard(dir, d);
+        lastDiscard.delete(name);
+        onCommitted && onCommitted(name);
+        return ok({ restored: d.entries.length }), true;
+      }
+      if (sub === '/learn-style' && req.method === 'POST') {
+        const body = await readJson(req);
+        const type = String(body.type || ''), emoji = String(body.emoji || '');
+        const types = ['feat', 'fix', 'style', 'perf', 'refactor', 'docs', 'chore', 'build', 'test', 'ci'];
+        if (!types.includes(type) || emoji.length > 12 || !/\p{Extended_Pictographic}/u.test(emoji)) return fail('Choose a valid commit type and emoji', 400), true;
+        const root = (await git(dir, ['rev-parse', '--show-toplevel']).catch(() => dir)).trim() || dir;
+        const repoId = repoIdForPath(root), all = loadLearned(store);
+        const learned = (all[repoId] ||= {});
+        learned.emojiByType ||= {};
+        learned.emojiByType[type] = emoji;
+        saveLearned(store, all);
+        engineStatsCache = { at: 0, value: null };
+        return ok({ saved: true }), true;
       }
       if (sub === '/learn' && req.method === 'POST') {
         // { file, from: [paths left behind], to: [paths joined] }
         const body = await readJson(req);
         const all = loadLearned(store);
-        const r = (all[name] ||= { together: [], apart: [] });
+        const root = (await git(dir, ['rev-parse', '--show-toplevel']).catch(() => dir)).trim() || dir;
+        const repoId = repoIdForPath(root), old = all[name] || {};
+        const r = (all[repoId] ||= { together: [...(old.together || [])], apart: [...(old.apart || [])] });
         const k = (a, b) => (a < b ? a + '\0' + b : b + '\0' + a);
         const tog = new Set(r.together), ap = new Set(r.apart);
         for (const o of body.from || []) { const key = k(body.file, o); ap.add(key); tog.delete(key); }
