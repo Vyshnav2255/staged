@@ -555,8 +555,8 @@ function render() {
   if (PANE_VIEWS.includes(v)) {
     const el = pane(v);
     el.hidden = false;
-    if (v === 'today') return mountToday(el, ctxFor(v));
     if (v === 'readme') return mountReadme(el);
+    if (v === 'settings') return openSettingsPane(el);
     if (state.repo === 'all') return pickRepoPane(el, v);
     if (v === 'commit') return mountCommit(el, ctxFor(v));
     if (v === 'tree') return mountTree(el, ctxFor(v));
@@ -570,6 +570,18 @@ function render() {
   const listEl = $('#list');
   listEl.classList.toggle('all-repos', state.repo === 'all');
   listEl.innerHTML = v === 'week' ? renderWeek(list) : v === 'feature' ? renderFeature(list) : renderRelease(list);
+}
+
+// Settings is its own page. Commit and Home can open it at a section.
+let settingsSection = '', meta = null;
+function openSettings(section = '') {
+  if (!GLOBAL_VIEWS.includes(state.view)) state.lastView = state.view;
+  settingsSection = section; state.view = 'settings'; render(); if (!section) scrollTo({ top: 0 });
+}
+async function openSettingsPane(el) {
+  if (!meta) meta = await Promise.all([api('/api/changes/engines').catch(() => ({})), api('/api/update').catch(() => ({}))]).then(([e, u]) => ({ claude: !!e.claude, version: u.current || '' }));
+  const section = settingsSection; settingsSection = '';
+  await mountSettings(el, { ...meta, section, onChange: () => refreshCommit(), onRepos: () => load(false) });
 }
 
 function pickRepoPane(el, v) {
