@@ -2,7 +2,7 @@
 import { esc } from './ui.js';
 import { icon } from './icons.js';
 
-let wrap = null, items = [], sel = 0, getItems = null;
+let wrap = null, items = [], sel = 0, getItems = null, returnFocus = null, shellWasInert = false;
 
 export function initPalette(itemsFn) {
   getItems = itemsFn;
@@ -13,16 +13,25 @@ export function initPalette(itemsFn) {
 
 export function open() {
   if (wrap) return;
+  returnFocus = document.activeElement;
+  const shell = document.querySelector('.shell');
+  shellWasInert = !!shell?.inert;
   wrap = document.createElement('div');
   wrap.className = 'pal-wrap';
-  wrap.innerHTML = `<div class="pal" role="dialog" aria-label="Command bar">
-    <input class="pal-input" placeholder="Jump to a repo, view or commit…" autocomplete="off" spellcheck="false">
-    <div class="pal-list" role="listbox"></div>
+  wrap.innerHTML = `<div class="pal" role="dialog" aria-modal="true" aria-label="Command bar">
+    <input class="pal-input" type="search" role="combobox" aria-label="Search commands" aria-autocomplete="list" aria-expanded="true" aria-controls="palette-options" placeholder="Jump to a repo, view or commit…" autocomplete="off" spellcheck="false">
+    <div class="pal-list" id="palette-options" role="listbox" aria-label="Command results"></div>
     <div class="pal-foot mono muted"><span>${icon('ArrowUp01', 12)}${icon('ArrowDown01', 12)} move</span><span>${icon('ArrowMoveDownLeft', 12)} open</span><span>esc close</span></div>
   </div>`;
   document.body.appendChild(wrap);
   requestAnimationFrame(() => wrap.classList.add('is-open'));
   const input = wrap.querySelector('input');
+  wrap.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    // The search field is the palette's only tab stop; keep focus inside the modal.
+    e.preventDefault();
+    input.focus();
+  });
   input.addEventListener('input', () => { sel = 0; render(input.value); });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); paint(); }
@@ -35,13 +44,18 @@ export function open() {
   wrap.querySelector('.pal-list').addEventListener('mousemove', (e) => { const r = e.target.closest('[data-i]'); if (r && +r.dataset.i !== sel) { sel = +r.dataset.i; paint(); } });
   render('');
   input.focus();
+  if (shell) shell.inert = true;
 }
 
 function close() {
   if (!wrap) return;
   const w = wrap; wrap = null;
+  const shell = document.querySelector('.shell');
+  if (shell) shell.inert = shellWasInert;
   w.classList.remove('is-open');
   setTimeout(() => w.remove(), 150);
+  if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus();
+  returnFocus = null;
 }
 
 function score(text, q) {
@@ -71,9 +85,12 @@ function paint() {
   list.innerHTML = items.length ? items.map((it, i) => {
     const head = it.group !== lastGroup ? `<div class="pal-group mono">${esc(it.group)}</div>` : '';
     lastGroup = it.group;
-    return `${head}<div class="pal-item ${i === sel ? 'is-sel' : ''}" data-i="${i}" role="option" aria-selected="${i === sel}">
+    return `${head}<div id="palette-option-${i}" class="pal-item ${i === sel ? 'is-sel' : ''}" data-i="${i}" role="option" aria-selected="${i === sel}">
       <span class="pal-label">${esc(it.label)}</span>${it.hint ? `<span class="pal-hint mono">${esc(it.hint)}</span>` : ''}</div>`;
   }).join('') : '<div class="pal-empty muted">Nothing matches</div>';
+  const input = wrap.querySelector('.pal-input');
+  if (items.length) input.setAttribute('aria-activedescendant', `palette-option-${sel}`);
+  else input.removeAttribute('aria-activedescendant');
   list.querySelector('.is-sel')?.scrollIntoView({ block: 'nearest' });
 }
 
