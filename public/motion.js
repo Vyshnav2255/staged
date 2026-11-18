@@ -67,6 +67,71 @@ export function initSegs() {
   all(false);
 }
 
+// One shared highlight glides between repository rows. The list is rendered
+// repeatedly, so events are delegated from the stable #repos host.
+export function initFluidHover(root) {
+  if (!root || root.dataset.fluidHoverBound) return;
+  root.dataset.fluidHoverBound = 'true';
+
+  let active = null;
+  let focused = null;
+  const getItem = (node) => node instanceof Element ? node.closest('.repo-list .repo[data-repo]') : null;
+  const setActive = (item) => {
+    const list = item?.closest('.repo-list') || root.querySelector('.repo-list');
+    const highlight = list?.querySelector('.repo-hover');
+    if (!list || !highlight) return;
+    if (!item || item.hidden || !list.contains(item)) {
+      active?.removeAttribute('data-fluid-hover-active');
+      active = null;
+      list.classList.remove('has-fluid-hover');
+      delete list.dataset.fluidHoverActiveIndex;
+      return;
+    }
+    if (active !== item) {
+      active?.removeAttribute('data-fluid-hover-active');
+      active = item;
+      active.setAttribute('data-fluid-hover-active', '');
+    }
+    const box = item.getBoundingClientRect();
+    const frame = list.getBoundingClientRect();
+    const x = box.left - frame.left + list.scrollLeft;
+    const y = box.top - frame.top + list.scrollTop;
+    highlight.style.width = `${box.width}px`;
+    highlight.style.height = `${box.height}px`;
+    highlight.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    list.dataset.fluidHoverActiveIndex = String([...list.querySelectorAll('.repo[data-repo]:not([hidden])')].indexOf(item));
+    list.classList.add('has-fluid-hover');
+  };
+
+  root.addEventListener('pointerover', (event) => {
+    if (event.pointerType !== 'mouse') return;
+    const item = getItem(event.target);
+    if (item && item !== getItem(event.relatedTarget)) setActive(item);
+  });
+  root.addEventListener('pointerout', (event) => {
+    if (event.pointerType !== 'mouse') return;
+    const from = getItem(event.target);
+    if (!from || getItem(event.relatedTarget)) return;
+    setActive(focused && root.contains(focused) ? focused : null);
+  });
+  root.addEventListener('focusin', (event) => {
+    const item = getItem(event.target);
+    if (item) { focused = item; setActive(item); }
+  });
+  root.addEventListener('focusout', (event) => {
+    const item = getItem(event.target);
+    if (!item || getItem(event.relatedTarget)) return;
+    focused = null;
+    if (!root.querySelector('.repo-list:hover')) setActive(null);
+  });
+  addEventListener('resize', () => { if (active && root.contains(active)) setActive(active); });
+  root.addEventListener('scroll', () => { if (active && root.contains(active)) setActive(active); }, true);
+  new MutationObserver(() => {
+    if (active && (!root.contains(active) || active.hidden)) setActive(null);
+    else if (active) setActive(active);
+  }).observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+}
+
 // Numbers glide to their new value.
 const last = new Map();
 export function countUp(el, to, key, fmt = (n) => String(Math.round(n))) {

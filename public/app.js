@@ -135,7 +135,7 @@ function renderSidebar() {
     </button>
   </div>
   <div class="side-sec"><span class="side-sec-h mono">Repos <b>${repos.length}</b></span>${repos.length > 6 ? `<label class="side-filter">${icon('Search01', 13)}<input id="repoFilter" type="search" placeholder="Filter" value="${esc(state.sideQ || '')}" autocomplete="off" spellcheck="false" aria-label="Filter repos"></label>` : ''}</div>
-  <div class="repo-list">`;
+  <div class="repo-list scroll-fade"><i class="repo-hover" aria-hidden="true"></i>`;
   for (const r of repos) {
     const meta = [r.last ? ago(r.last) : 'no commits', r.dirty ? `${r.dirty} uncommitted` : ''].filter(Boolean).join(' · ');
     const hide = state.sideQ && !r.name.toLowerCase().includes(state.sideQ.toLowerCase());
