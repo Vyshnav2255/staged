@@ -26,12 +26,22 @@ export async function api(path, body) {
 }
 
 let toastT;
-export function toast(msg) {
+// A short note at the bottom. With an action (like Undo) it stays a little longer and has a button.
+export function toast(msg, { action, onAction, ms } = {}) {
   const t = document.getElementById('toast');
   t.textContent = msg;
+  t.classList.toggle('has-action', !!action);
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-btn'; b.type = 'button'; b.textContent = action;
+    b.addEventListener('click', () => { hide(); onAction?.(); }, { once: true });
+    t.append(b);
+  }
   t.hidden = false;
+  t.classList.remove('is-out');
   clearTimeout(toastT);
-  toastT = setTimeout(() => (t.hidden = true), 2200);
+  const hide = () => { clearTimeout(toastT); t.classList.add('is-out'); toastT = setTimeout(() => (t.hidden = true), exitFallbackMs('fast')); };
+  toastT = setTimeout(hide, ms || (action ? 6000 : 2200));
 }
 
 export function copy(text, msg = 'Copied') {
@@ -43,17 +53,19 @@ export function modal({ title, body, actions = '', wide = false, side = false, o
   const wrap = document.createElement('div');
   wrap.className = 'modal-wrap' + (side ? ' is-side' : '');
   wrap.innerHTML = `<div class="modal ${wide ? 'is-wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+    <button type="button" class="modal-handle" aria-label="Close sheet"></button>
     <header class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn modal-x" aria-label="Close">${icon('Cancel01', 16)}</button></header>
-    <div class="modal-body">${body}</div>
+    <div class="modal-body scroll-fade">${body}</div>
     ${actions ? `<footer class="modal-foot">${actions}</footer>` : ''}
   </div>`;
   document.body.appendChild(wrap);
   requestAnimationFrame(() => wrap.classList.add('is-open'));
   const prev = document.activeElement;
   const close = () => {
+    wrap.classList.add('is-closing');
     wrap.classList.remove('is-open');
     document.removeEventListener('keydown', onKey, true);
-    setTimeout(() => wrap.remove(), 180);
+    setTimeout(() => wrap.remove(), exitFallbackMs('slow'));
     prev && prev.focus && prev.focus();
     onClose && onClose();
   };
@@ -61,6 +73,7 @@ export function modal({ title, body, actions = '', wide = false, side = false, o
   document.addEventListener('keydown', onKey, true);
   wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); });
   wrap.querySelector('.modal-x').addEventListener('click', close);
+  wrap.querySelector('.modal-handle').addEventListener('click', close);
   setTimeout(() => (wrap.querySelector('[autofocus]') || wrap.querySelector('input, textarea, button.btn-primary'))?.focus(), 30);
   return { el: wrap, close };
 }
