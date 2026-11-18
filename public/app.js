@@ -217,7 +217,7 @@ function renderStats(list) {
   const delta = (k, invert) => {
     if (!b) return '<div class="stat-delta">all time</div>';
     const d = a[k] - b[k];
-    if (!b[k] && !a[k]) return '<div class="stat-delta">—</div>';
+    if (!b[k] && !a[k]) return '<div class="stat-delta">–</div>';
     const cls = d === 0 ? '' : (d > 0) !== !!invert ? 'up' : 'down';
     const txt = k === 'fixShare' ? `${d > 0 ? '+' : ''}${d} pts` : `${d > 0 ? '+' : ''}${fmt.format(d)}`;
     return `<div class="stat-delta mono ${cls}">${d === 0 ? 'same as' : txt + ' vs'} previous ${state.range}</div>`;

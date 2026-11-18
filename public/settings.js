@@ -198,7 +198,7 @@ function pagePanel() {
       </div>`;
     }).join('')}</div>
     ${stored.length ? `<div class="ai-store"><div class="set-row-main"><b>On disk</b><span class="muted">${bytes(stored.reduce((s, x) => s + x.bytes, 0))} of in-page models. Delete any you don't use.</span></div>
-      <div class="set-store">${stored.map((x) => `<div class="set-store-row"><span class="set-store-name">${esc(x.key ? ai.MODELS[x.key].label : x.id.split('/').pop())}${x.key ? '' : ' <span class="set-tag is-old mono">no longer offered</span>'}</span><span class="mono muted">${x.bytes ? bytes(x.bytes) : '—'}</span><button class="text-btn is-danger-soft sm" data-delete="${esc(x.id)}" ${busy ? 'disabled' : ''}>${icon('Delete02', 13)}Delete</button></div>`).join('')}
+      <div class="set-store">${stored.map((x) => `<div class="set-store-row"><span class="set-store-name">${esc(x.key ? ai.MODELS[x.key].label : x.id.split('/').pop())}${x.key ? '' : ' <span class="set-tag is-old mono">no longer offered</span>'}</span><span class="mono muted">${x.bytes ? bytes(x.bytes) : '–'}</span><button class="text-btn is-danger-soft sm" data-delete="${esc(x.id)}" ${busy ? 'disabled' : ''}>${icon('Delete02', 13)}Delete</button></div>`).join('')}
       ${stored.length > 1 ? `<div class="set-store-row is-all"><span></span><span></span><button class="text-btn is-danger-soft sm" data-delete="*" ${busy ? 'disabled' : ''}>Delete all</button></div>` : ''}</div></div>` : ''}`;
 }
 // While a download runs, the bar follows staged's server; closing the page doesn't stop it.
