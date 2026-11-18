@@ -315,7 +315,8 @@ export function contextsOf(f) {
     const m = l.match(/^@@[^@]*@@\s*(.*)$/);
     if (!m || !m[1]) continue;
     const c = m[1];
-    const fn = c.match(/(?:function\s*\*?\s*|const\s+|let\s+|class\s+|def\s+)([A-Za-z_$][\w$]*)/);
+    const fn = c.match(/(?:function\s*\*?\s*|const\s+|let\s+|class\s+|def\s+|fn\s+|func\s+)([A-Za-z_$][\w$]*)/)
+      || c.match(/(?:^|\s)(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:\{|=>)?\s*$/);
     const css = c.match(/^\s*([.#]?[a-z][\w-]*)[^{]*\{/i);
     const n = fn ? fn[1] : css && kindOf(f.path) === 'style' ? css[1].replace(/^[.#]/, '') : null;
     if (n && n.length > 2) names.push(n);

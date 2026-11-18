@@ -639,6 +639,34 @@ function messageFor(fs_, label, tweaks, verbs, tense, emojiForType) {
   return m;
 }
 
+const WEAK_CONTEXTS = new Set(['load', 'render', 'draw', 'handle', 'onclick', 'onchange', 'init', 'update', 'main', 'index', 'constructor', 'anonymous', 'default', 'exports']);
+function usefulContexts(f) {
+  return [...new Set(contextsOf(f))].filter((name) => !WEAK_CONTEXTS.has(name.toLowerCase())).slice(0, 2);
+}
+function visibleCopy(f) {
+  const added = [], removed = [];
+  for (const line of (f.diff || '').split('\n')) {
+    if (!/^[+-]/.test(line) || /^(\+\+\+|---)/.test(line)) continue;
+    const target = line[0] === '+' ? added : removed, text = line.slice(1);
+    const add = (value) => {
+      const clean = value.replace(/&(?:amp|lt|gt|quot|#39);/g, ' ').replace(/\s+/g, ' ').trim();
+      // Words people read, not code that happens to sit between > and < (a.length > 0 && b < 2).
+      if (clean.length >= 4 && clean.length <= 88 && /[A-Za-z]{2}/.test(clean) && !/[=&|(){};$\[\]]|=>|\w\.\w|^--|:\s*['"]/.test(clean) && (clean.match(/[\p{L}\s]/gu) || []).length >= clean.length * 0.75 && (/\s/.test(clean) || /^\p{Lu}/u.test(clean)) && !target.includes(clean)) target.push(clean);
+    };
+    for (const m of text.matchAll(/>([^<>]{3,88})</g)) add(m[1]);
+    for (const m of text.matchAll(/(?:aria-label|placeholder|title|textContent|innerText)\s*=\s*(["'`])([^"'`]{3,88})\1/g)) add(m[2]);
+    for (const m of text.matchAll(/(?:toast|confirmDialog|alert)\s*\(\s*(["'`])([^"'`]{3,88})\1/g)) add(m[2]);
+  }
+  // Text that is only moved or re-wrapped is not a wording change.
+  const same = new Set(added.filter((x) => removed.includes(x)));
+  added.splice(0, added.length, ...added.filter((x) => !same.has(x)));
+  removed.splice(0, removed.length, ...removed.filter((x) => !same.has(x)));
+  if (added.length === 1 && removed.length === 1) return `Changed visible wording from “${removed[0]}” to “${added[0]}”`;
+  if (added.length) return `Added visible wording: “${added.slice(0, 2).join('”; “')}”`;
+  if (removed.length) return `Removed visible wording: “${removed.slice(0, 2).join('”; “')}”`;
+  return '';
+}
+
 function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
   const collName = fs_.map((f) => collectionOf(f.path)).find(Boolean);
   const top = fs_[0].path.split('/')[0];
@@ -761,7 +789,7 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
     if (tweaks) gm = `Polished ${list([...new Set(fs_.map((f) => nameOf(f.path).toLowerCase()))].slice(0, 3))}${fs_.length > 3 ? ' and more' : ''}`;
     else if (adds && !topics.length) gm = `${adds.verb} ${adds.text}`;
     else {
-      const place = where || list([...new Set(fs_.flatMap(contextsOf))].slice(0, 2));
+      const place = where || list([...new Set(fs_.flatMap(usefulContexts))].slice(0, 2));
       gm = `Refined ${topics.length ? list(topics) : 'styles'}${place ? ` ${topics.length ? 'in' : 'for'} ${place}` : ''}`;
     }
   } else if (tweaks) {
@@ -783,7 +811,7 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
     else if (facts.some((x) => x.fixy) && add < 40) { type = 'fix'; gm = `Fixed ${label.toLowerCase()} edge cases`; }
     else {
       type = kinds.every((k) => k === 'doc' || k === 'text') ? 'docs' : 'feat';
-      const ctx = [...new Set(fs_.flatMap(contextsOf))].filter((c) => c !== label.toLowerCase()).slice(0, 2);
+      const ctx = [...new Set(fs_.flatMap(usefulContexts))].filter((c) => c !== label.toLowerCase()).slice(0, 2);
       gm = ctx.length ? `Updated ${list(ctx)}${where && fs_.length === 1 ? ` in ${where}` : ''}` : `Updated ${label.toLowerCase()}`;
     }
     const next = said.find((x) => x !== best && x.w >= 4 && !gm.includes(x.text) && !sameFact(gm, x));
@@ -851,22 +879,34 @@ const slugOf = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$
 // Body: what changed, in words, one line each. Files only where nothing better can be said.
 function bodyFor(fs_, facts, subject) {
   facts = [...facts];
-  if (fs_.length < 2 && facts.filter((x) => x.verb).length < 2) return '';
+  const contextFor = usefulContexts;
+  const hasDetail = facts.some((x) => x.kind === 'code' && x.verb && x.w >= 4 || x.topics?.length && x.w >= 3)
+    || fs_.some((f) => contextFor(f).length || visibleCopy(f));
+  if (fs_.length < 2 && facts.filter((x) => x.verb).length < 2 && !hasDetail) return '';
   const out = [];
+  const covered = new Set();
   const seen = new Set([subject.toLowerCase()]);
-  const push = (line) => {
+  const push = (line, file) => {
     const k = line.toLowerCase(), core = k.replace(/^- /, '').replace(/ \([^)]*\)$/, '');
     if (seen.has(k) || [...seen].some((x) => x.includes(core))) return;
-    seen.add(k); out.push(line);
+    seen.add(k); out.push(line); if (file) covered.add(file);
   };
   for (const x of facts) {
-    // Private helper names are implementation details, not useful commit notes.
-    if (x.kind === 'code') continue;
     if (x.note) {
       // Source comments explain implementation choices; commit bodies should describe effects.
       continue;
-    } else if (x.verb && x.w >= 4) push(`- ${x.verb} ${x.text}`);
-    else if (x.topics?.length && x.w >= 3) push(`- Refined ${list(x.topics.slice(0, 3))}`);
+    } else if (x.kind === 'code' && x.verb && x.w >= 4) {
+      const f = fs_.find((item) => item.path === x.file), context = f && contextFor(f);
+      push(`- ${x.verb} ${x.text}${context?.length ? ` in ${list(context)}` : ''}`, x.file);
+    } else if (x.verb && x.w >= 4) push(`- ${x.verb} ${x.text}`, x.file);
+    else if (x.topics?.length && x.w >= 3) {
+      const f = fs_.find((item) => item.path === x.file), context = f && contextFor(f);
+      push(`- Refined ${list(x.topics.slice(0, 3))}${context?.length ? ` in ${list(context)}` : ''}`, x.file);
+    }
+  }
+  for (const f of fs_) if (!covered.has(f.path)) {
+    const copy = visibleCopy(f);
+    if (copy) push(`- ${copy}`, f.path);
   }
   const hasCode = fs_.some((f) => kindOf(f.path) === 'script' || kindOf(f.path) === 'markup');
   if (hasCode) for (let i = out.length - 1; i >= 0; i--) {
@@ -875,13 +915,18 @@ function bodyFor(fs_, facts, subject) {
   }
   const assets = fs_.filter((f) => isAsset(kindOf(f.path)));
   if (assets.length > 1 && assets.length < fs_.length) { const a = assetSubject(assets); if (a) push(`- ${a.verb} ${a.what}`); }
-  const covered = new Set(facts.map((x) => x.file));
   for (const f of fs_) {
     if (covered.has(f.path) || isAsset(kindOf(f.path)) && assets.length > 1) continue;
     if (f.status === 'A' && WEAK_STEMS.has(stemOf(f.path).toLowerCase())) continue;
     if (f.status === 'M' && !(collectionOf(f.path) && /\.(md|markdown|html)$/i.test(f.path))) continue; // "Updated index.html" adds nothing
+    const context = contextFor(f);
+    if (context.length) {
+      const verb = f.status === 'A' ? 'Added' : f.status === 'D' ? 'Removed' : 'Updated';
+      push(`- ${verb} ${list(context)} in ${nameOf(f.path).toLowerCase()}`, f.path);
+      continue;
+    }
     const what = collectionOf(f.path) && /\.(md|markdown|html)$/i.test(f.path) ? titleOf(f) : f.status === 'A' ? thingFor(f, fs_) : nameOf(f.path).toLowerCase();
-    push(`- ${f.status === 'A' ? 'Added' : f.status === 'D' ? 'Removed' : 'Updated'} ${what}`);
+    push(`- ${f.status === 'A' ? 'Added' : f.status === 'D' ? 'Removed' : 'Updated'} ${what}`, f.path);
   }
   return out.slice(0, 4).join('\n');
 }
