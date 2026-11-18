@@ -1,4 +1,4 @@
-// Health: site weight per week, images worth a look, branches and stashes.
+// Health: site weight per week, and images worth a look. Branches and stashes live on Tree.
 import { icon } from './icons.js';
 import { esc, ago, bytes, api, copy, dShort, dLong } from './ui.js';
 
@@ -19,14 +19,13 @@ export function mountHealth(el, context) {
 async function load() {
   draw();
   const r = encodeURIComponent(st.repo);
-  const [w, im, s] = await Promise.allSettled([
-    api(`/api/x/weight?repo=${r}&weeks=${st.weeks}`), api(`/api/x/images?repo=${r}`), api(`/api/x/state?repo=${r}`),
+  const [w, im] = await Promise.allSettled([
+    api(`/api/x/weight?repo=${r}&weeks=${st.weeks}`), api(`/api/x/images?repo=${r}`),
   ]);
   if (st.repo !== ctx.repo) return;
   st.weight = w.status === 'fulfilled' ? w.value.weeks : [];
   st.images = im.status === 'fulfilled' ? im.value.images : [];
-  st.state = s.status === 'fulfilled' ? s.value : null;
-  st.error = [w, im, s].find((x) => x.status === 'rejected')?.reason?.message || '';
+  st.error = [w, im].find((x) => x.status === 'rejected')?.reason?.message || '';
   draw();
 }
 
@@ -79,6 +78,7 @@ function imageSection() {
   if (!imgs) return `<section class="h-card"><h2>Images</h2><div class="loading mono">Checking images…</div></section>`;
   const flagged = imgs.filter((i) => i.issues.length);
   const saved = flagged.filter((i) => i.issues.some((x) => x.startsWith('over'))).reduce((s, i) => s + Math.max(0, i.bytes - 200 * 1024), 0);
+  if (!flagged.length) return `<p class="muted h-ok">${icon('Tick02', 14)}${imgs.length ? `All ${imgs.length} recent image${imgs.length === 1 ? ' is' : 's are'} WebP or SVG and under 250 KB.` : 'No new images in the last 6 months.'}</p>`;
   return `<section class="h-card">
     <div class="h-head"><h2>Images to check</h2><span class="mono muted">${flagged.length} of ${imgs.length} added in the last 6 months${saved ? ` · about ${bytes(saved)} to save` : ''}</span></div>
     ${flagged.length ? `<div class="img-list">${flagged.slice(0, 40).map((i) => `<div class="img-row">
@@ -91,34 +91,34 @@ function imageSection() {
   </section>`;
 }
 
-function branchSection() {
-  const s = st.state;
-  if (!s) return `<section class="h-card"><h2>Branches and stashes</h2><div class="loading mono">Reading branches…</div></section>`;
+// Shown on Tree, and only when there is something to look at: another branch, a stash, or bot branches.
+export function branchCard(s, hostName) {
+  if (!s) return '';
   const local = s.branches.filter((b) => !b.remote).sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
   const bots = s.branches.filter((b) => b.remote && b.bot).length;
   const stale = (b) => !b.current && Date.now() - Date.parse(b.date) > 30 * 864e5;
-  return `<section class="h-card">
-    <div class="h-head"><h2>Branches and stashes</h2><span class="mono muted">${local.length} local${bots ? ` · ${bots} bot branches on ${esc(ctx.host?.name || 'your remote')} hidden` : ''}</span></div>
+  if (local.length <= 1 && !s.stashes.length && !bots) return '';
+  return `<section class="h-card t-branches">
+    <div class="h-head"><h2>Branches and stashes</h2><span class="mono muted">${local.length} local${bots ? ` · ${bots} bot branches on ${esc(hostName || 'your remote')} hidden` : ''}</span></div>
     <div class="br-list">${local.map((b) => `<div class="br-row">
         <span class="br-name">${icon('GitBranch', 14)}${esc(b.name)}${b.current ? '<span class="chip">current</span>' : ''}${b.merged && !b.current ? '<span class="chip">merged</span>' : ''}${stale(b) ? '<span class="chip is-bad">stale</span>' : ''}</span>
         <span class="muted t-ellipsis" title="${esc(b.subject)}">${esc(b.subject)}</span>
         <span class="mono muted" title="${dLong.format(new Date(b.date))}">${ago(Date.parse(b.date))}</span>
         <span>${!b.current && (b.merged || stale(b)) ? `<button class="text-btn" data-copycmd="git branch ${b.merged ? '-d' : '-D'} ${esc(b.name)}" title="Copy the command to delete it">${icon('Copy01', 13)}Delete command</button>` : ''}</span>
       </div>`).join('')}</div>
-    <h3 class="h-sub">Stashes</h3>
-    ${s.stashes.length ? `<div class="br-list">${s.stashes.map((x) => `<div class="br-row">
+    ${s.stashes.length ? `<h3 class="h-sub">Stashes</h3><div class="br-list">${s.stashes.map((x) => `<div class="br-row">
         <span class="br-name">${icon('Archive02', 14)}${esc(x.ref)}</span>
         <span class="muted t-ellipsis">${esc(x.msg)}</span>
         <span class="mono muted">${ago(Date.parse(x.date))}</span>
         <span><button class="text-btn" data-copycmd="git stash show -p ${esc(x.ref)}">${icon('Copy01', 13)}Show command</button></span>
-      </div>`).join('')}</div>` : '<p class="muted">No forgotten stashes.</p>'}
+      </div>`).join('')}</div>` : ''}
   </section>`;
 }
 
 function draw() {
   if (!host || ctx.view !== 'health') return;
   host.innerHTML = `${st.error ? `<div class="cm-banner is-error"><span>${esc(st.error)}</span></div>` : ''}
-    ${weightSection()}${imageSection()}${branchSection()}`;
+    ${weightSection()}${imageSection()}`;
 }
 
 function onClick(e) {

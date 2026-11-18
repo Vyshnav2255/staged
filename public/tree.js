@@ -1,13 +1,14 @@
 // Git tree: every branch, merge and tag, drawn as lanes that grow in when you open it.
 import { icon } from './icons.js';
 import { esc, ago, dLong, api, copy, compact, reducedMotion, modal } from './ui.js';
+import { branchCard } from './health.js';
 
 const ROW = 36;      // row height
 const LANE = 16;     // lane spacing
 const PAD = 14;      // left padding inside the graph
 const LANE_COLORS = ['var(--lane-0)', 'var(--t-feature)', 'var(--t-ui)', 'var(--t-fix)', 'var(--t-refactor)', 'var(--t-perf)'];
 
-const st = { repo: null, data: null, all: true, limit: 300, open: null, hover: null, error: '' };
+const st = { repo: null, data: null, branches: null, all: true, limit: 300, open: null, hover: null, error: '' };
 let host = null, ctx = null;
 
 export function mountTree(el, context) {
@@ -18,10 +19,16 @@ export function mountTree(el, context) {
     host.addEventListener('mouseleave', () => setHover(null));
     host.dataset.treeBound = '1';
   }
-  if (st.repo !== ctx.repo) { st.repo = ctx.repo; st.data = null; st.open = null; st.limit = 300; load(); }
+  if (st.repo !== ctx.repo) { st.repo = ctx.repo; st.data = null; st.branches = null; st.open = null; st.limit = 300; load(); loadBranches(); }
   else draw(false);
 }
 
+async function loadBranches() {
+  const repo = st.repo;
+  const s = await api(`/api/x/state?repo=${encodeURIComponent(repo)}`).catch(() => null);
+  if (repo !== st.repo) return;
+  st.branches = s; if (st.data) draw(false);
+}
 async function load(animate = true) {
   host.innerHTML = '<div class="loading mono">Growing the tree…</div>';
   try {
@@ -159,7 +166,7 @@ function draw(animate) {
   const tagN = commits.filter((c) => c.refs.some((r) => r.startsWith('tag: '))).length;
   const branchN = new Set(commits.flatMap((c) => c.refs.filter((r) => !r.startsWith('tag: ')).map((r) => r.replace(/^HEAD -> /, '')))).size;
 
-  host.innerHTML = `
+  host.innerHTML = `${branchCard(st.branches, ctx.host?.name)}
     <div class="t-bar">
       <div class="seg" role="radiogroup" aria-label="Branches">
         <button data-scope="all" aria-selected="${st.all}">All branches</button>
@@ -233,6 +240,7 @@ function onOver(e) {
 }
 
 async function onClick(e) {
+  const cc = e.target.closest('[data-copycmd]'); if (cc) return copy(cc.dataset.copycmd, 'Command copied');
   let b;
   if ((b = e.target.closest('[data-scope]'))) { st.all = b.dataset.scope === 'all'; st.open = null; return load(); }
   if ((b = e.target.closest('[data-more]'))) { st.limit = Math.min(2000, st.limit + 500); return load(false); }
