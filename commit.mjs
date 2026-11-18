@@ -1065,6 +1065,25 @@ function restoreDiscard(dir, d) {
 }
 
 // ---------- routes ----------
+// Commits that are here but not on the remote yet, newest first: what the next push sends.
+async function outgoingCommits(git, dir, undoSha) {
+  const remotes = (await git(dir, ['remote']).catch(() => '')).trim();
+  if (!remotes) return { remote: false, commits: [] };
+  const upstream = (await git(dir, ['rev-parse', '--abbrev-ref', '@{u}']).catch(() => '')).trim();
+  const range = upstream ? ['@{u}..HEAD'] : ['HEAD', '--not', '--remotes'];
+  const raw = await git(dir, ['log', ...range, '-n', '40', '--format=%x1e%H%x1f%s%x1f%ct', '--shortstat']).catch(() => '');
+  const commits = raw.split('\x1e').filter((x) => x.trim()).map((block) => {
+    const [head, ...rest] = block.split('\n');
+    const [sha, subject, at] = head.split('\x1f');
+    const stat = rest.join(' ');
+    const num = (re) => +((stat.match(re) || [])[1] || 0);
+    return { sha, subject, at: +at * 1000, files: num(/(\d+) files? changed/), add: num(/(\d+) insertions?/), del: num(/(\d+) deletions?/), undo: sha === undoSha };
+  });
+  // where the remote was before this push, so a receipt can link to the whole range of changes
+  const base = upstream ? (await git(dir, ['rev-parse', '@{u}']).catch(() => '')).trim() : '';
+  return { remote: true, upstream, base, commits };
+}
+
 export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted, store }) {
   const lastCommitByTool = new Map(); // repo -> sha this tool created most recently
   const lastDiscard = new Map(); // repo -> what the last discard threw away
@@ -1156,6 +1175,36 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
       send(res, 200, JSON.stringify(stats));
       return true;
     }
+    if (url.pathname === '/api/changes/pushes' && req.method === 'GET') {
+      // Every push since a date, across all repos, read from git's own record: each time you push,
+      // git moves the remote-tracking branch and writes "update by push" in that branch's reflog.
+      const since = Math.floor((+url.searchParams.get('since') || Date.now() - 7 * 864e5) / 1000);
+      const repos = listRepos ? await listRepos().catch(() => []) : [];
+      const pushes = [];
+      await Promise.all(repos.map(async (repo) => {
+        const name = repo.name || path.basename(repo.dir || '');
+        const refs = (await git(repo.dir, ['for-each-ref', '--format=%(refname)', 'refs/remotes']).catch(() => '')).split('\n').filter((r) => r && !r.endsWith('/HEAD'));
+        for (const ref of refs) {
+          const log = (await git(repo.dir, ['reflog', 'show', '--date=unix', '--format=%H%x1f%gd%x1f%gs', ref, '--']).catch(() => '')).split('\n').filter(Boolean).map((l) => {
+            const [sha, gd, gs] = l.split('\x1f');
+            return { sha, at: +((gd.match(/@\{(\d+)\}/) || [])[1] || 0), what: gs || '' };
+          });
+          for (let i = 0; i < log.length; i++) {
+            const e = log[i];
+            if (e.at < since || !/update by push/.test(e.what)) continue;
+            const prev = log[i + 1]?.sha;
+            const range = prev ? `${prev}..${e.sha}` : e.sha;
+            const n = +(await git(repo.dir, ['rev-list', '--count', range]).catch(() => '0')).trim() || 0;
+            const stat = prev ? await git(repo.dir, ['diff', '--shortstat', prev, e.sha]).catch(() => '') : '';
+            const num = (re) => +((stat.match(re) || [])[1] || 0);
+            pushes.push({ at: e.at * 1000, repo: name, branch: ref.replace(/^refs\/remotes\//, ''), n, files: num(/(\d+) files? changed/), add: num(/(\d+) insertions?/), del: num(/(\d+) deletions?/), sha: e.sha });
+          }
+        }
+      }));
+      pushes.sort((a, b) => a.at - b.at);
+      send(res, 200, JSON.stringify({ pushes }));
+      return true;
+    }
     const name = url.searchParams.get('repo') || '';
     const dir = await repoDir(name);
     if (!dir) { send(res, 404, JSON.stringify({ error: 'No such repo' })); return true; }
@@ -1179,9 +1228,15 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
           groups,
           grouping: { engine: 'commit-compass', confidenceTarget: CONFIDENCE_TARGET, index: { schema: hist.schema, status: hist.status, commits: hist.commits.length, files: hist.indexedFiles, updatedAt: hist.indexedAt }, style: hist.style, feedback: correctionFeedback(groups, files, learned) },
           canUndo: lastCommitByTool.has(name),
+          outgoing: await outgoingCommits(git, dir, lastCommitByTool.get(name)?.sha),
           canUndoDiscard: lastDiscard.has(name),
           verbs: hist.verbs, tense: hist.tense,
         }), true;
+      }
+      if (sub === '/outgoing' && req.method === 'GET') {
+        // Just what the push panel needs, so it can follow you to every view of a repo.
+        const branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim();
+        return ok({ repo: name, branch, canUndo: lastCommitByTool.has(name), outgoing: await outgoingCommits(git, dir, lastCommitByTool.get(name)?.sha) }), true;
       }
       if (sub === '/message-local' && req.method === 'POST') {
         // The built-in writer, for just these files: used by "Rewrite" when no AI is around.

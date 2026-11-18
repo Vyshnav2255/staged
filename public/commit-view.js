@@ -223,6 +223,7 @@ export function refreshCommit() {
 
 // ---------- drawing ----------
 function drawAll() {
+  paintPanel();
   const dirty = ctx.repos.filter((r) => r.dirty).sort((a, b) => b.dirty - a.dirty);
   host.innerHTML = dirty.length
     ? `<div class="cm-repos">${dirty.map((r) => `<button class="cm-repo" data-pick="${esc(r.name)}">
@@ -374,7 +375,7 @@ const clip = (t, n) => (t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t);
 
 function draw() {
   remember();
-  if (!host || !ctx || ctx.view !== 'commit' || ctx.repo === 'all') return;
+  if (!host || !ctx || ctx.view !== 'commit' || ctx.repo === 'all') return paintPanel();
   if (cs.loading && !cs.data) { host.innerHTML = '<div class="loading mono">Reading changes…</div>'; return; }
   if (cs.error && !cs.data) { host.innerHTML = `<div class="empty"><h3>Couldn't read changes</h3><p>${esc(cs.error)}</p></div>`; return; }
   const d = cs.data;
@@ -516,65 +517,374 @@ async function warnOk(groups) {
 }
 
 function reviewAll() {
-  const order = cs.groups.filter((x) => x.files.some((p) => isOn(x, p)));
-  const m = modal({
-    title: `Review ${order.length} commits`,
-    wide: true,
-    body: `<p class="note" style="margin:0 0 12px">They'll be made top to bottom. Drag to reorder, or merge one into the commit above it.</p><ol class="rv-list"></ol>`,
-    actions: `<button class="text-btn bordered" data-cancel>Cancel</button><button class="btn-primary" data-go>Create commits</button>`,
+  const P = cs.panel;
+  P.mode = 'review'; P.order = cs.groups.filter((x) => x.files.some((p) => isOn(x, p))); P.state = new Map(); closedRepos.delete(cs.repo); P.pushed = null;
+  paintPanel(true);
+}
+async function makeAll() {
+  const P = cs.panel, order = P.order;
+  if (!(await warnOk(order))) return;
+  // keep the main list in the reviewed order too
+  cs.groups = [...order, ...cs.groups.filter((g) => !order.includes(g))];
+  P.mode = 'run'; P.shaOf = new Map();
+  // committing empties g.files, so keep the counts the rows show
+  P.count = new Map(order.map((g) => [g.id, g.files.filter((p) => isOn(g, p)).length]));
+  paintPanel();
+  await run('all', async () => {
+    for (const [i, g] of order.entries()) {
+      P.state.set(g.id, 'busy'); paintPanel();
+      const r = await commitGroup(g);
+      // each one ticks with a note a step higher than the last, so a batch plays a little run
+      P.state.set(g.id, 'done'); P.tick = g.id; P.shaOf.set(g.id, r.sha); paintPanel(); P.tick = null;
+      if (!calm()) sfxTick(i);
+      if (!calm()) await new Promise((ok) => setTimeout(ok, 180));
+    }
+    if (!calm()) await new Promise((ok) => setTimeout(ok, 380));
   });
-  const listEl = m.el.querySelector('.rv-list');
-  const paint = () => {
-    listEl.innerHTML = order.map((g, i) => {
-      const n = g.files.filter((p) => isOn(g, p)).length;
-      return `<li class="rv-item" draggable="true" data-i="${i}">
-        <span class="rv-grip" aria-hidden="true">${icon('DragDropVertical', 16)}</span>
-        <span class="cm-num mono">${i + 1}</span>
-        <span class="rv-main"><span class="rv-subj">${esc(subjectFor(g))}</span><span class="mono muted">${n} file${n > 1 ? 's' : ''}</span></span>
-        <span class="rv-tools">
-          <button class="icon-btn sm" data-up="${i}" ${i ? '' : 'disabled'} title="Move up">${icon('ArrowUp01', 14)}</button>
-          <button class="icon-btn sm" data-down="${i}" ${i < order.length - 1 ? '' : 'disabled'} title="Move down">${icon('ArrowDown01', 14)}</button>
-          <button class="text-btn" data-merge="${i}" ${i ? '' : 'disabled'} title="Fold into the commit above">Merge up</button>
-        </span>
+  // The rows you just made turn into the commits waiting to push, gliding to their new places.
+  P.mode = null; P.order = []; P.state = new Map();
+  paintPanel();
+  if (!calm()) setTimeout(sfxLand, 120);
+}
+
+// ---------- side panel ----------
+// Docked on the right, not a dialog: the commits you're about to make, then every commit that is
+// waiting to be pushed (not just the last one), and once they're pushed it empties and goes away.
+// It isn't tied to the Commit tab: while a repo has commits to push, the panel stays docked on every
+// view of that repo, and swaps to the next repo's commits when you switch. Closing it hides it for
+// that repo until you open it again from the "N to push" button in the header.
+let panelEl = null;
+const pd = { repo: null, branch: '', canUndo: false, outgoing: null, at: 0 };
+const closedRepos = new Set();
+let route = { repo: null, view: null }, onPushed = null;
+const NO_PANEL = ['readme', 'settings'];
+const onRepoView = () => !!route.repo && route.repo !== 'all' && !NO_PANEL.includes(route.view) && pd.repo === route.repo;
+// Practice cart: sample commits you can hold-to-push for real feel, with nothing committed or pushed.
+let demo = null;
+const cartKey = () => (demo ? '__practice' : route.repo);
+const outgoing = () => (demo ? demo.items : onRepoView() ? pd.outgoing?.commits || [] : []);
+export function practiceCart() {
+  const now = Date.now(), sha = () => [...crypto.getRandomValues(new Uint8Array(20))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  demo = { items: [
+    { subject: '🐛 Fixed the sidebar moving with scroll', files: 1, add: 4, del: 2, at: now - 60000 },
+    { subject: '💄 Gave the cart a printed receipt', files: 2, add: 86, del: 3, at: now - 240000 },
+    { subject: '✨ Added hold to push', files: 3, add: 112, del: 18, at: now - 600000 },
+  ].map((c) => ({ ...c, sha: sha() })) };
+  cs.panel.pushed = null; cs.panel.lastN = 3;
+  paintPanel(true);
+}
+const onCommitView = () => onRepoView() && route.view === 'commit' && !!host?.isConnected && ctx?.view === 'commit' && cs.repo === route.repo;
+// A printed sheet: this repo's push receipt, or the weekly statement (which can show anywhere).
+let stmt = null;
+const curSheet = () => stmt || (cs.panel.pushed?.repo === cartKey() ? cs.panel.pushed : null);
+export async function openStatement() {
+  let pushes = null;
+  try { pushes = (await api(`/api/changes/pushes?since=${weekOf().start}`)).pushes; } catch {}
+  const fresh = !panelEl;
+  stmt = { id: 's' + Date.now(), spec: statementSpec(pushes), printed: false };
+  paintPanel(fresh);
+}
+const panelOpen = () => !!(stmt || demo || ((cs.panel.mode && onCommitView()) || (cs.panel.pushed && cs.panel.pushed.repo === route.repo)) || (outgoing().length && !closedRepos.has(route.repo)));
+export function setPanelRoute(r, pushed) {
+  onPushed = pushed;
+  const was = route.repo;
+  route = { repo: r.repo, view: r.view, remote: r.remote || '', provider: r.provider || '' };
+  if (was !== r.repo && !cs.panel.pushed && cs.panel.mode !== 'run') { cs.panel.mode = null; cs.panel.order = []; }
+  if (r.repo && r.repo !== 'all' && !NO_PANEL.includes(r.view)) {
+    if (pd.repo !== r.repo) Object.assign(pd, { repo: r.repo, branch: '', canUndo: false, outgoing: null, at: 0 });
+    if (Date.now() - pd.at > 4000) refreshOutgoing();
+  }
+  paintPanel();
+}
+export function openPanel() { closedRepos.delete(route.repo); paintPanel(true); if (onCommitView()) draw(); }
+async function refreshOutgoing() {
+  const repo = pd.repo; pd.at = Date.now();
+  try {
+    const d = await api(`/api/changes/outgoing?repo=${encodeURIComponent(repo)}`);
+    if (pd.repo !== repo) return;
+    Object.assign(pd, { branch: d.branch, canUndo: d.canUndo, outgoing: d.outgoing, at: Date.now() });
+  } catch {}
+  paintPanel();
+}
+// The panel and the page move together on one curve: it slides in from the edge while the page
+// makes room, and slides back out while the page settles. Rows keep their place across redraws
+// (FLIP), so a new commit pushes the others down instead of the list blinking.
+const SLIDE = 'cubic-bezier(0.32, 0.72, 0, 1)';
+let lastMode = '';
+function landTarget() {
+  const dot = panelEl?.querySelector('.cmp-item .cmp-dot');
+  if (!dot) return null;
+  // While the panel is still sliding in, aim for where the dot will be, not where it is now.
+  return { isConnected: true, getBoundingClientRect() {
+    const r = dot.getBoundingClientRect();
+    const dx = panelEl ? document.documentElement.clientWidth - panelEl.offsetWidth - panelEl.getBoundingClientRect().left : 0;
+    return new DOMRect(r.left + dx, r.top, r.width, r.height);
+  } };
+}
+function paintPanel(animate = false) {
+  const show = stmt || demo || (onRepoView() && pd.outgoing && panelOpen());
+  document.body.classList.toggle('has-cmp', !!show);
+  if (!show) {
+    lastMode = '';
+    if (panelEl && !panelEl.classList.contains('is-leaving')) {
+      const el = panelEl; panelEl = null;
+      if (calm()) el.remove();
+      else { el.classList.add('is-leaving'); setTimeout(() => el.remove(), 440); }
+    }
+    return;
+  }
+  if (!panelEl) {
+    panelEl = document.createElement('aside');
+    panelEl.className = 'cmp';
+    panelEl.setAttribute('aria-label', 'Commits');
+    panelEl.addEventListener('click', onPanelClick);
+    panelEl.addEventListener('dragstart', onPanelDrag);
+    panelEl.addEventListener('dragover', onPanelDrag);
+    panelEl.addEventListener('drop', onPanelDrag);
+    panelEl.addEventListener('dragend', onPanelDrag);
+    panelEl.addEventListener('pointerdown', (e) => { const b = e.target.closest('[data-cmp-push]'); if (b && e.button === 0) { e.preventDefault(); b.focus(); startCharge(b); } });
+    panelEl.addEventListener('keydown', (e) => { const b = e.target.closest('[data-cmp-push]'); if (b && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); if (!e.repeat) startCharge(b); } });
+    panelEl.addEventListener('keyup', (e) => { if ((e.key === ' ' || e.key === 'Enter') && charge) charge.finish(false); });
+    document.body.appendChild(panelEl);
+    animate = true;
+  }
+  const P = cs.panel, out = outgoing(), remote = demo ? true : pd.outgoing?.remote;
+  const mode = curSheet() ? 'sheet' : (!demo && onCommitView() && P.mode) || 'out', prevMode = lastMode, switched = !animate && mode !== prevMode;
+  lastMode = mode;
+  // A printing receipt must not be redrawn halfway through, so later repaints leave it alone.
+  if (mode === 'sheet' && prevMode === 'sheet' && panelEl.dataset.rcpt === curSheet().id) return;
+  const before = new Map();
+  if (!animate) for (const li of panelEl.querySelectorAll('.cmp-item[data-k]')) before.set(li.dataset.k, li.getBoundingClientRect().top);
+  const prevProg = P.prog ?? 0;
+  let prog = null;
+  const branch = esc(demo ? 'practice' : pd.branch || 'HEAD'), upstream = esc(demo ? 'nowhere (practice)' : pd.outgoing?.upstream || 'the remote');
+  let title, sub, list, foot = '', body = null;
+  const sheet = curSheet();
+  if ((P.mode === 'review' || P.mode === 'run') && onCommitView() && !demo) {
+    const n = P.order.length, done = [...P.state.values()].filter((x) => x === 'done').length;
+    if (P.mode === 'run') prog = n ? done / n : 0;
+    title = P.mode === 'run' ? `Adding ${Math.min(done + 1, n)} of ${n} to the cart` : `Add ${n} to the cart`;
+    sub = P.mode === 'run' ? 'Hang on, this takes a moment' : 'Top to bottom. Drag to change the order.';
+    list = P.order.map((g, i) => {
+      const k = P.state.get(g.id), files = P.mode === 'run' && P.count?.has(g.id) ? P.count.get(g.id) : g.files.filter((p) => isOn(g, p)).length;
+      const mark = k === 'done' ? `<i class="cmp-dot is-done">${icon('Tick02', 11)}</i>` : k === 'busy' ? '<i class="cmp-dot is-busy"></i>' : `<span class="cm-num mono">${i + 1}</span>`;
+      return `<li class="cmp-item ${k ? 'is-' + k : ''} ${P.tick === g.id ? 'is-tick' : ''}" ${P.mode === 'review' ? 'draggable="true"' : ''} data-i="${i}" data-k="${esc(P.shaOf?.get(g.id) || g.id)}">
+        ${P.mode === 'review' ? `<span class="rv-grip" aria-hidden="true">${icon('DragDropVertical', 14)}</span>` : ''}${mark}
+        <span class="cmp-main"><span class="cmp-subj">${esc(subjectFor(g))}</span><span class="mono muted">${files} file${files === 1 ? '' : 's'}</span></span>
+        ${P.mode === 'review' ? `<span class="cmp-tools">
+          <button class="icon-btn sm" data-cmp-up="${i}" ${i ? '' : 'disabled'} title="Move up" aria-label="Move up">${icon('ArrowUp01', 13)}</button>
+          <button class="icon-btn sm" data-cmp-down="${i}" ${i < n - 1 ? '' : 'disabled'} title="Move down" aria-label="Move down">${icon('ArrowDown01', 13)}</button>
+          <button class="icon-btn sm" data-cmp-merge="${i}" ${i ? '' : 'disabled'} title="Fold into the commit above" aria-label="Merge into the commit above">${icon('GitMerge', 13)}</button>
+        </span>` : ''}
       </li>`;
     }).join('');
-    m.el.querySelector('[data-go]').textContent = `Create ${order.length} commit${order.length > 1 ? 's' : ''}`;
+    foot = P.mode === 'review'
+      ? `<button class="text-btn bordered" data-cmp-cancel>Cancel</button><button class="btn-primary" data-cmp-go>${icon('ShoppingCartAdd01', 15)}Add ${n} to cart</button>`
+      : `<button class="btn-primary" disabled>Committing…</button>`;
+  } else if (sheet) {
+    // Pushed (or a weekly statement): no header, the paper says it all. Just a save and a close,
+    // floating in the corner, and the printer the paper comes out of.
+    const arrive = sheet.printed ? '' : ' is-arrive';
+    body = `<div class="cmp-float">
+        <button class="cmp-fbtn" data-rcpt-save title="Save as image">${icon('Image01', 15)}<span>Save image</span></button>
+        <button class="cmp-fbtn is-icon" data-cmp-close title="Close" aria-label="Close">${icon('Cancel01', 14)}</button>
+      </div>
+      <div class="rcpt-wrap ${arrive ? 'is-printing' : ''}"><div class="rcpt-feed">${specHtml(sheet.spec)}</div></div>
+      <div class="prn ${arrive ? 'is-on' : ''}" aria-hidden="true"><span class="prn-slot"><i></i></span><span class="prn-face">${MARK.replace('<svg ', '<svg class="prn-mark" ').replace('width="22" height="22"', 'width="14" height="14"')}<span class="prn-name">staged</span><span class="prn-grille"></span><i class="prn-led"></i></span></div>`;
+  } else {
+    const n = out.length;
+    // The panel is your cart: commits drop in as you make them, and pushing is checking out.
+    const bump = n > (P.lastN ?? n) ? ' is-bump' : '';
+    P.lastN = n;
+    title = `Cart<span class="cmp-count${bump}">${n}</span>`;
+    sub = remote ? `${branch} → ${upstream}` : `${branch} · no remote yet`;
+    const tf = out.reduce((s, c) => s + (c.files || 0), 0), ta = out.reduce((s, c) => s + (c.add || 0), 0), td = out.reduce((s, c) => s + (c.del || 0), 0);
+    list = out.map((c, i) => `<li class="cmp-item is-out ${c.sha === P.fresh ? 'is-fresh' : ''}" data-k="${c.sha}">
+        <i class="cmp-dot" aria-hidden="true"></i>
+        <span class="cmp-main"><span class="cmp-subj" title="${esc(c.subject)}">${esc(c.subject)}</span><span class="mono muted">${c.sha.slice(0, 7)}${c.files ? ` · ${c.files} file${c.files === 1 ? '' : 's'}` : ''} · ${ago(c.at)}</span></span>
+        ${i === 0 && c.undo && pd.canUndo && onCommitView() && !demo ? `<button class="text-btn sm" data-cmp-undo ${cs.busy ? 'disabled' : ''} title="Put this commit's changes back">Undo</button>` : ''}
+      </li>`).join('');
+    // Pushing is a big moment, so it's a hold, not a click: the bar charges, each commit lights up
+    // from the oldest, and letting go early drains it back.
+    const total = `<div class="cmp-total"><span>Total</span><span class="mono">${n} commit${n === 1 ? '' : 's'} · ${tf} file${tf === 1 ? '' : 's'} · <b class="a">+${ta}</b> <b class="d">−${td}</b></span></div>`;
+    if (remote) foot = total + (P.pushing
+      ? `<button class="btn-primary cmp-push is-pushing is-approved" disabled>${icon('ArrowUp02', 15)}<span class="cmp-lbl">Pushing…</span></button>`
+      : `<button class="btn-primary cmp-push" data-cmp-push ${cs.busy ? 'disabled' : ''} aria-label="Hold to push ${n} commit${n === 1 ? '' : 's'}"><i class="cmp-charge" aria-hidden="true"></i><span class="cmp-lbl"><span class="cmp-lbl-idle">Hold to push</span><span class="cmp-lbl-hold">Keep holding…</span></span></button>`);
+  }
+  const html = `${sheet ? '' : `<header class="cmp-head">
+      <div class="cmp-titles"><h3>${title}</h3><p class="mono">${sub}</p></div>
+      ${mode === 'out' ? `<button class="icon-btn sm" data-stmt title="This week's statement" aria-label="This week's statement">${icon('ReceiptText', 15)}</button>` : ''}
+      ${P.mode === 'run' ? '' : `<button class="icon-btn sm cmp-x" data-cmp-close aria-label="Close">${icon('Cancel01', 14)}</button>`}
+      ${prog != null ? '<i class="cmp-prog" aria-hidden="true"></i>' : ''}</header>`}
+    ${body ?? `<ol class="cmp-list scroll-fade">${list}</ol>`}
+    ${foot ? `<footer class="cmp-foot">${foot}</footer>` : ''}`;
+  // Nothing changed (several refreshes land after a commit): leave the DOM alone so running animations finish.
+  if (!animate && !switched && html === panelEl.__html) return;
+  panelEl.__html = html;
+  panelEl.classList.toggle('is-sheet', !!sheet);
+  panelEl.innerHTML = html;
+  P.prog = prog;
+  panelEl.dataset.rcpt = sheet ? sheet.id : '';
+  if (sheet && !sheet.printed) { sheet.printed = true; printReceipt(); }
+  else if (sheet) panelEl.querySelector('.rcpt-stamp')?.classList.add('is-on');
+  const bar = panelEl.querySelector('.cmp-prog');
+  if (bar) { bar.style.transform = `scaleX(${prog})`; if (!calm()) bar.animate([{ transform: `scaleX(${prevProg})` }, { transform: `scaleX(${prog})` }], { duration: 520, easing: SLIDE }); }
+  if (!calm()) {
+    if (animate) panelEl.animate([{ transform: 'translateX(100%)' }, { transform: 'none' }], { duration: 480, easing: SLIDE });
+    let n = 0;
+    // A commit just made: its row opens a slot at the top and the rows below are pushed down by it
+    // (no separate slide for them), then it fades in as the commit's dot lands.
+    const fresh = !animate && !switched ? panelEl.querySelector('.cmp-item.is-fresh') : null;
+    if (fresh) {
+      const h = fresh.offsetHeight;
+      fresh.style.overflow = 'hidden';
+      fresh.animate([{ height: '0px', paddingTop: '0px', paddingBottom: '0px', marginTop: '0px', marginBottom: '0px' }, { height: h + 'px' }], { duration: 560, delay: 200, easing: SLIDE, fill: 'backwards' }).finished.then(() => { fresh.style.overflow = ''; }, () => {});
+      fresh.animate([{ opacity: 0, transform: 'translateY(-8px) scale(.98)' }, { opacity: 1, transform: 'none' }], { duration: 460, delay: 520, easing: SLIDE, fill: 'backwards' });
+    }
+    for (const li of panelEl.querySelectorAll('.cmp-item')) {
+      if (fresh) break;
+      const was = before.get(li.dataset.k);
+      if (was != null) {
+        const dy = was - li.getBoundingClientRect().top;
+        if (Math.abs(dy) > 1) li.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 520, easing: SLIDE });
+      } else if ((animate || switched) && !li.classList.contains('is-fresh')) {
+        li.animate([{ opacity: 0, transform: 'translateX(18px)' }, { opacity: 1, transform: 'none' }], { duration: 420, delay: (animate ? 160 : 40) + n++ * 45, easing: SLIDE, fill: 'backwards' });
+      }
+    }
+  }
+  // keep the new row marked for a moment, so a repaint right after a commit doesn't restart its entrance
+  if (P.fresh && !P.freshT) P.freshT = setTimeout(() => { P.fresh = null; P.freshT = null; }, 1600);
+}
+let dragI = null;
+function onPanelDrag(e) {
+  const P = cs.panel; if (P.mode !== 'review') return;
+  const li = e.target.closest?.('.cmp-item');
+  if (e.type === 'dragstart') { dragI = +li.dataset.i; li.classList.add('is-drag'); e.dataTransfer.effectAllowed = 'move'; }
+  else if (e.type === 'dragover') { e.preventDefault(); for (const x of panelEl.querySelectorAll('.cmp-item')) x.classList.toggle('is-over', x === li); }
+  else if (e.type === 'drop') { e.preventDefault(); if (!li || dragI == null) return; const [g] = P.order.splice(dragI, 1); P.order.splice(+li.dataset.i, 0, g); dragI = null; paintPanel(); }
+  else { dragI = null; paintPanel(); }
+}
+function onPanelClick(e) {
+  const P = cs.panel, t = (q) => e.target.closest(q);
+  let b;
+  if (t('[data-cmp-close]') && curSheet()) return tearReceipt();
+  if (t('[data-stmt]')) return openStatement();
+  if (t('[data-cmp-close]')) { if (P.mode === 'review') { P.mode = null; P.order = []; } P.pushed = null; if (demo) demo = null; else closedRepos.add(route.repo); paintPanel(); return onCommitView() ? draw() : undefined; }
+  if ((b = t('[data-rcpt-save]')) && curSheet()) {
+    b.disabled = true;
+    return shareSpec(curSheet().spec).then(({ copied }) => toast(copied ? 'Saved to Downloads and copied. Paste it into a post.' : 'Saved to Downloads'), (err) => toast(err.message)).finally(() => { b.disabled = false; });
+  }
+  if (t('[data-cmp-cancel]')) { P.mode = null; P.order = []; paintPanel(); return draw(); }
+  if (t('[data-cmp-go]')) return makeAll();
+  if ((b = t('[data-cmp-up]'))) { const i = +b.dataset.cmpUp; [P.order[i - 1], P.order[i]] = [P.order[i], P.order[i - 1]]; return paintPanel(); }
+  if ((b = t('[data-cmp-down]'))) { const i = +b.dataset.cmpDown; [P.order[i + 1], P.order[i]] = [P.order[i], P.order[i + 1]]; return paintPanel(); }
+  if ((b = t('[data-cmp-merge]'))) {
+    const i = +b.dataset.cmpMerge; const [g] = P.order.splice(i, 1);
+    P.order[i - 1].files.push(...g.files); cs.groups = cs.groups.filter((x) => x !== g);
+    if (P.order.length < 2) { P.mode = null; P.order = []; }
+    paintPanel(); return draw();
+  }
+  if (t('[data-cmp-undo]')) {
+    return run('undo', async () => {
+      await api(`/api/changes/undo?repo=${encodeURIComponent(cs.repo)}`, {});
+      toast('Undid the last commit. Its files are back in your changes.');
+    });
+  }
+}
+
+// ---------- hold to push ----------
+const HOLD_PUSH = 1200;
+let charge = null;
+function startCharge(btn) {
+  const P = cs.panel;
+  if (charge || P.pushing || btn.disabled) return;
+  const t0 = performance.now();
+  // oldest first: they leave in the order they were made
+  const rows = [...panelEl.querySelectorAll('.cmp-item.is-out')].reverse();
+  const fill = btn.querySelector('.cmp-charge');
+  btn.classList.add('is-charging'); panelEl.classList.add('is-charging');
+  const fa = calm() ? null : fill?.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], { duration: HOLD_PUSH, easing: 'cubic-bezier(.5, 0, .75, 1)', fill: 'forwards' });
+  const timers = rows.map((li, i) => setTimeout(() => { li.classList.add('is-armed'); sfxTick(i); }, ((i + 1) / (rows.length + 1)) * HOLD_PUSH * 0.9));
+  timers.push(setTimeout(() => btn.classList.add('is-ready'), HOLD_PUSH * 0.72));
+  timers.push(setTimeout(() => finish(true), HOLD_PUSH));
+  const early = () => finish(false);
+  const finish = (go) => {
+    if (charge?.finish !== finish) return;
+    charge = null;
+    timers.forEach(clearTimeout);
+    removeEventListener('pointerup', early); removeEventListener('pointercancel', early); btn.removeEventListener('pointerleave', early); removeEventListener('blur', early);
+    btn.classList.remove('is-ready'); panelEl?.classList.remove('is-charging');
+    if (go) return pushNow(btn);
+    btn.classList.remove('is-charging');
+    for (const li of rows) li.classList.remove('is-armed');
+    const held = performance.now() - t0;
+    if (fa) {
+      const m = new DOMMatrixReadOnly(getComputedStyle(fill).transform);
+      fa.cancel();
+      fill.animate([{ transform: `scaleX(${m.a})` }, { transform: 'scaleX(0)' }], { duration: 380, easing: SLIDE });
+    }
+    if (held > 160) sfxDrain();
+    // a tap instead of a hold: the button gives a little shake so you know to keep pressing
+    if (held < 300 && !calm()) btn.animate([{ transform: 'none' }, { transform: 'translateX(-3px)' }, { transform: 'translateX(3px)' }, { transform: 'translateX(-1.5px)' }, { transform: 'none' }], { duration: 340, easing: 'ease-out' });
   };
-  paint();
-  let dragI = null;
-  listEl.addEventListener('dragstart', (e) => { const li = e.target.closest('.rv-item'); dragI = +li.dataset.i; li.classList.add('is-drag'); e.dataTransfer.effectAllowed = 'move'; });
-  listEl.addEventListener('dragover', (e) => { e.preventDefault(); const li = e.target.closest('.rv-item'); for (const x of listEl.children) x.classList.toggle('is-over', x === li); });
-  listEl.addEventListener('drop', (e) => {
-    e.preventDefault(); const li = e.target.closest('.rv-item'); if (!li || dragI == null) return;
-    const to = +li.dataset.i; const [g] = order.splice(dragI, 1); order.splice(to, 0, g); dragI = null; paint();
-  });
-  listEl.addEventListener('dragend', () => { dragI = null; for (const x of listEl.children) x.classList.remove('is-drag', 'is-over'); });
-  m.el.addEventListener('click', async (e) => {
-    let b;
-    if ((b = e.target.closest('[data-up]'))) { const i = +b.dataset.up; [order[i - 1], order[i]] = [order[i], order[i - 1]]; paint(); }
-    else if ((b = e.target.closest('[data-down]'))) { const i = +b.dataset.down; [order[i + 1], order[i]] = [order[i], order[i + 1]]; paint(); }
-    else if ((b = e.target.closest('[data-merge]'))) {
-      const i = +b.dataset.merge; const [g] = order.splice(i, 1);
-      order[i - 1].files.push(...g.files); cs.groups = cs.groups.filter((x) => x !== g); paint(); draw();
-    }
-    else if (e.target.closest('[data-cancel]')) m.close();
-    else if (e.target.closest('[data-go]')) {
-      if (!(await warnOk(order))) return;
-      m.close();
-      // keep the main list in the reviewed order too
-      cs.groups = [...order, ...cs.groups.filter((g) => !order.includes(g))];
-      run('all', async () => {
-        const done = [];
-        for (const g of order) {
-          done.push(await commitGroup(g));
-          cs.banner = { html: `Committed ${done.length} of ${order.length}…` };
-          draw();
-        }
-        cs.banner = { kind: 'commit', html: `Made ${done.length} commit${done.length > 1 ? 's' : ''}: ${done.map((r) => `<span class="mono muted">${r.sha.slice(0, 7)}</span> ${esc(r.subject)}`).join(' · ')}`, undo: done.length === 1, push: true };
-        celebrate();
-      });
-    }
-  });
+  charge = { finish };
+  addEventListener('pointerup', early); addEventListener('pointercancel', early); btn.addEventListener('pointerleave', early); addEventListener('blur', early);
+}
+async function pushNow(btn) {
+  const P = cs.panel, practice = !!demo, repo = cartKey(), items = outgoing().slice();
+  P.pushing = true; panelEl?.classList.add('is-sending');
+  btn.classList.remove('is-charging'); btn.classList.add('is-pushing', 'is-launch');
+  // Card accepted: the reader beeps, then the commits fly off to the remote.
+  const lbl = btn.querySelector('.cmp-lbl');
+  btn.classList.add('is-approved');
+  if (lbl) lbl.innerHTML = `${icon('Tick02', 14)}Approved`;
+  if (!calm()) { sfxApproved(); await new Promise((ok) => setTimeout(ok, 420)); }
+  if (lbl) lbl.textContent = 'Pushing…';
+  const upstream = practice ? 'nowhere (practice)' : pd.outgoing?.upstream || 'the remote', branch = practice ? 'practice' : pd.branch;
+  try {
+    await Promise.all([practice ? new Promise((ok) => setTimeout(ok, 600)) : api(`/api/x/push?repo=${encodeURIComponent(repo)}`, {})]);
+    let no = 1;
+    try { const k = `staged-push-no:${repo}`; no = (+localStorage.getItem(k) || 0) + 1; localStorage.setItem(k, String(no)); } catch {}
+    const link = practice ? '' : compareUrl(route.remote, route.provider, pd.outgoing?.base, items[0]?.sha);
+    const R = { id: String(Date.now()), items, repo, name: practice ? 'practice' : repo, upstream, branch, at: Date.now(), practice, no, link };
+    R.spec = receiptSpec(R);
+    if (!practice) logPush(R);
+    P.pushed = R;
+  } catch (e) { toast(e.message); }
+  P.pushing = false; panelEl?.classList.remove('is-sending');
+  paintPanel();
+  if (practice) return;
+  await refreshOutgoing();
+  if (onCommitView()) loadChanges(cs.repo, { keep: true });
+  onPushed?.();
+}
+// The receipt glides up out of the printer at the bottom of the panel in one smooth pass, like a
+// laser printer: it warms up, feeds the page out evenly, eases to a stop, then gets stamped.
+function printReceipt() {
+  const wrap = panelEl?.querySelector('.rcpt-wrap'), paper = panelEl?.querySelector('.rcpt'), prn = panelEl?.querySelector('.prn');
+  const stamp = () => { const st = panelEl?.querySelector('.rcpt-stamp'); if (!st) return; st.classList.add('is-on'); if (!calm()) { st.classList.add('is-slam'); sfxStamp(); } };
+  const done = () => { wrap?.classList.remove('is-printing'); prn?.classList.remove('is-on'); if (!calm()) { sfxBeeps(0.38); prn?.classList.add('is-beep'); setTimeout(() => prn?.classList.remove('is-beep'), 1200); } setTimeout(stamp, calm() ? 0 : 1050); };
+  if (!paper || calm()) return done();
+  // the paper feeds at a steady speed, like a real printer, so a longer receipt takes longer
+  // (about 4.5ms a pixel), and the motor sound runs exactly as long as the paper moves
+  const warm = 380, ms = Math.round(Math.max(900, Math.min(7000, paper.offsetHeight * 4.5)));
+  sfxLaser(warm, ms);
+  const a = warm / (warm + ms), z = (warm + ms) / (warm + ms + 120);
+  paper.animate([{ transform: 'translateY(100%)', offset: 0 }, { transform: 'translateY(100%)', offset: a * z }, { transform: 'translateY(-0.6%)', offset: z }, { transform: 'none', offset: 1 }],
+    { duration: warm + ms + 120, easing: 'linear', fill: 'backwards' }).finished.then(done, done);
+}
+// Done: the receipt is torn off and the panel slides away.
+function tearReceipt() {
+  const P = cs.panel, which = curSheet();
+  const paper = panelEl?.querySelector('.rcpt');
+  const end = () => {
+    if (curSheet() !== which) return;
+    if (which === stmt) stmt = null; else { P.pushed = null; if (which?.practice) demo = null; }
+    paintPanel(); if (onCommitView()) draw();
+  };
+  if (!paper || calm()) return end();
+  sfxTear();
+  paper.animate([{ transform: 'none', opacity: 1 }, { transform: 'translate(8px, -60px) rotate(5deg)', opacity: 0 }], { duration: 420, easing: 'cubic-bezier(.5, 0, .75, 0)', fill: 'forwards' }).finished.then(end, end);
 }
 
 async function run(id, fn) {
