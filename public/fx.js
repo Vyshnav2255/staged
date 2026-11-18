@@ -37,74 +37,77 @@ function path(p0, c1, c2, p3, steps = 16, ease = easeInOut) {
 }
 
 // Call before the view redraws. Returns land(target), to call right after the redraw.
+// Commit. The card closes in place: its content fades, then it collapses to nothing so the cards
+// below rise up naturally (the list waits for this before it redraws, so nothing jumps). As it
+// closes, a dot appears at its middle and, once the commit is made, glides to the new row in the cart.
+export function foldRepaint() {}
 export function commitFold(card) {
-  if (!card) return () => {};
-  if (calm()) return (t) => { if (t !== false) sfxLand(); };
-  const r = card.getBoundingClientRect();
-  const tops = new Map([...document.querySelectorAll('.cm-card[data-group]')].filter((c) => c !== card).map((c) => [c.dataset.group, c.getBoundingClientRect().top]));
-  const ghost = card.cloneNode(true);
-  ghost.classList.add('fx-ghost');
-  ghost.removeAttribute('data-group');
-  ghost.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'));
-  ghost.setAttribute('aria-hidden', 'true');
-  Object.assign(ghost.style, { position: 'fixed', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: 0, zIndex: 40, pointerEvents: 'none' });
-  const tint = document.createElement('i');
-  tint.className = 'fx-tint';
-  ghost.appendChild(tint);
-  document.body.appendChild(ghost);
-  // While git works, the card sinks in a touch, like a key being pressed.
-  ghost.animate([{ transform: 'none' }, { transform: 'scale(.99)' }], { duration: 260, easing: SOFT, fill: 'forwards' });
-
-  return (target) => {
-    // Nothing was committed (an error): the ghost just melts back into the card.
-    if (target === false) { ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, fill: 'forwards' }).finished.then(() => ghost.remove()); return; }
-    slideIntoPlace(tops);
-    sfxFold();
-    setTimeout(sfxLand, 790);
-    const from = center(r);
-    const t = target?.isConnected ? center(target.getBoundingClientRect()) : { x: from.x, y: from.y - 28 };
-    const dot = 10, ix = (r.width - dot) / 2, iy = (r.height - dot) / 2;
-    // 1. Close: the card shrinks to a dot at its middle, taking on the commit colour.
-    ghost.animate([
-      { clipPath: 'inset(0px 0px 0px 0px round 12px)', transform: 'scale(.99)' },
-      { clipPath: `inset(${iy * 0.7}px ${ix * 0.55}px ${iy * 0.7}px ${ix * 0.55}px round 14px)`, transform: 'scale(.99)', offset: 0.45 },
-      { clipPath: `inset(${iy}px ${ix}px ${iy}px ${ix}px round ${dot}px)`, transform: 'scale(1)' },
-    ], { duration: 420, easing: 'cubic-bezier(.65,0,.35,1)', fill: 'forwards' });
-    tint.animate([{ opacity: 0 }, { opacity: 0, offset: 0.35 }, { opacity: 1 }], { duration: 420, easing: 'ease-in', fill: 'forwards' });
-    // 2. Glide: the dot travels on a gentle arc to where the banner's dot lands.
-    const dx = t.x - from.x, dy = t.y - from.y;
-    const lift = Math.min(60, Math.abs(dy) * 0.35 + 18);
-    const pts = path({ x: 0, y: 0 }, { x: dx * 0.1, y: -lift }, { x: dx * 0.75, y: dy - lift * 0.6 }, { x: dx, y: dy }, 18);
-    const last = pts.length - 1;
-    const glide = ghost.animate(pts.map((p, i) => ({
-      translate: `${p.x.toFixed(1)}px ${p.y.toFixed(1)}px`,
-      opacity: target ? (i === last ? 0 : 1) : 1 - i / last,
-    })), { duration: 460, delay: 360, easing: 'linear', fill: 'forwards' });
-    glide.finished.then(() => ghost.remove(), () => ghost.remove());
+  const none = () => {}; none.ready = Promise.resolve();
+  if (!card) return none;
+  if (calm()) { const f = (t) => { if (t !== false) sfxLand(); }; f.ready = Promise.resolve(); return f; }
+  const r = card.getBoundingClientRect(), from = center(r);
+  const h = card.offsetHeight, mb = getComputedStyle(card).marginBottom;
+  card.style.pointerEvents = 'none';
+  sfxFold();
+  const EASE = 'cubic-bezier(.45,0,.25,1)';
+  for (const k of card.children) k.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.97)' }], { duration: 260, easing: EASE, fill: 'forwards' });
+  const collapse = card.animate([
+    { height: h + 'px', marginBottom: mb, transform: 'none', opacity: 1 },
+    { height: h + 'px', marginBottom: mb, transform: 'scale(.985)', opacity: 1, offset: 0.3 },
+    { height: '0px', marginBottom: '0px', transform: 'scale(.97)', opacity: 0, borderWidth: '0px' },
+  ], { duration: 640, easing: EASE, fill: 'forwards' });
+  const dotEl = document.createElement('i');
+  Object.assign(dotEl.style, { position: 'fixed', left: from.x - 5 + 'px', top: r.top + 18 + 'px', width: '10px', height: '10px', borderRadius: '50%', background: 'var(--logo-box)', zIndex: 41, pointerEvents: 'none', willChange: 'transform, translate, opacity' });
+  document.body.appendChild(dotEl);
+  dotEl.animate([{ transform: 'scale(0)', opacity: 0 }, { transform: 'scale(1.35)', opacity: 1, offset: 0.6 }, { transform: 'scale(1)', opacity: 1 }], { duration: 320, delay: 240, easing: 'cubic-bezier(.3,0,.3,1)', fill: 'both' });
+  // 2. Glide: as soon as the card has closed, the dot sets off for the top of the cart, where the
+  // new row is about to open (no waiting on the reload), on a gentle arc.
+  let glide = null, failed = false;
+  const fly = () => {
+    if (failed || !dotEl.isConnected) return;
+    const p0 = center(dotEl.getBoundingClientRect());
+    const tgt = document.querySelector('.cmp:not(.is-sheet) .cmp-item .cmp-dot') || document.querySelector('.cmp .cmp-head h3');
+    const t = tgt ? center(tgt.getBoundingClientRect()) : { x: p0.x, y: p0.y - 28 };
+    const dx = t.x - p0.x, dy = t.y - p0.y;
+    const lift = Math.min(70, Math.abs(dy) * 0.35 + 24);
+    const pts = path({ x: 0, y: 0 }, { x: dx * 0.15, y: -lift }, { x: dx * 0.8, y: dy - lift * 0.5 }, { x: dx, y: dy }, 32);
+    const last = pts.length - 1, GLIDE_MS = 780;
+    setTimeout(() => { if (!failed) sfxLand(); }, GLIDE_MS - 40);
+    glide = dotEl.animate(pts.map((p, i) => ({ translate: `${p.x.toFixed(1)}px ${p.y.toFixed(1)}px`, opacity: i === last ? 0 : 1 })), { duration: GLIDE_MS, easing: 'linear', fill: 'forwards' });
+    glide.finished.then(() => dotEl.remove(), () => dotEl.remove());
   };
+  collapse.finished.then(() => setTimeout(fly, 80), () => {});
+  const land = (target) => {
+    if (target !== false) return;
+    failed = true; glide?.cancel();
+    collapse.cancel(); for (const k of card.children) k.getAnimations().forEach((x) => x.cancel()); card.style.pointerEvents = '';
+    dotEl.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, fill: 'forwards' }).finished.then(() => dotEl.remove());
+  };
+  land.ready = collapse.finished.catch(() => {});
+  return land;
 }
 
 // The cards that stay glide to their new places instead of jumping.
-function slideIntoPlace(tops) {
+function slideIntoPlace(tops, wait = 140) {
   let i = 0;
   for (const c of document.querySelectorAll('.cm-card[data-group]')) {
     const was = tops.get(c.dataset.group);
     if (was == null) continue;
     const dy = was - c.getBoundingClientRect().top;
     if (Math.abs(dy) < 1 || Math.abs(dy) > innerHeight * 1.5) continue;
-    c.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 640, delay: 140 + i++ * 30, easing: SOFT, fill: 'backwards' });
+    c.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 720, delay: wait + i++ * 40, easing: SOFT, fill: 'backwards' });
   }
 }
 
 // Commits lift off the button, gather at the remote and pop.
-export function pushLaunch(from, count = 1) {
+export function pushLaunch(from, count = 1, to = null) {
   if (!from) return Promise.resolve();
   if (calm()) { sfxBurst(); return Promise.resolve(); }
   const r = from.getBoundingClientRect();
   const n = Math.max(1, Math.min(count, 6));
   const p0 = center(r);
   // The commits fly to the remote: the "open online" icon in the header when it's showing, else straight up.
-  const gh = document.querySelector('#ghLink');
+  const gh = to || document.querySelector('#ghLink');
   const ghR = gh && !gh.hidden && gh.offsetParent ? gh.getBoundingClientRect() : null;
   const near = !!ghR;
   const rise = Math.min(150, p0.y - 30);

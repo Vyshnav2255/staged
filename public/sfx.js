@@ -103,6 +103,99 @@ export function sfxLift(i, n) {
   note(hz(PENTA[i % PENTA.length]), { dur: 0.22, vol: 0.09, glide: 1.5, pan });
   if (i === 0) air({ dur: 0.5, vol: 0.035, from: 500, to: 2600 });
 }
+// A commit in a batch is made: a soft note that climbs with each one, so a batch plays a little run.
+export function sfxTick(i) {
+  note(hz(PENTA[i % PENTA.length] + 7), { dur: 0.32, vol: 0.075 });
+}
+// Let go of a hold too early: the charge drains away with a soft falling note.
+export function sfxDrain() {
+  note(hz(2), { dur: 0.22, vol: 0.05, glide: 0.6, wet: false });
+}
+// The card is accepted: the two quick bright beeps of a card reader.
+export function sfxApproved() {
+  note(hz(19), { dur: 0.09, vol: 0.06, type: 'triangle', wet: false });
+  note(hz(19), { at: 0.13, dur: 0.16, vol: 0.06, type: 'triangle', wet: false });
+}
+// A motor, the way real printers sound: a stepper motor is a fast train of tiny mechanical
+// clicks, and the printer's body rings at a few fixed pitches with each one. Built sample by
+// sample so it buzzes like the real thing instead of sounding like a pure tone.
+function motor({ at = 0, dur = 1, rate = 700, rateTo = 0, res = [2400, 4000], decay = 0.0015, vol = 0.05, noise = 0.3, jitter = 0.04, gate = null, accel = 0.08, fadeIn = 0.02, fadeOut = 0.06, lp = 7000 } = {}) {
+  const a = audio();
+  if (!a || dur <= 0) return;
+  const sr = a.sampleRate, len = Math.ceil(sr * dur), buf = a.createBuffer(1, len, sr), d = buf.getChannelData(0);
+  const klen = Math.ceil(decay * 6 * sr), w = res.map((f) => 2 * Math.PI * f / sr), shape = new Float32Array(klen);
+  let t = 0, peak = 0;
+  while (t < dur) {
+    const r = (rate + ((rateTo || rate) - rate) * (t / dur)) * Math.min(1, 0.35 + 0.65 * (t / accel));
+    if (!gate || gate(t)) {
+      const i0 = Math.floor(t * sr), amp = 0.85 + Math.random() * 0.3, ph = Math.random() * 6.28;
+      for (let k = 0; k < klen && i0 + k < len; k++) {
+        let s = noise * (Math.random() * 2 - 1);
+        for (let j = 0; j < w.length; j++) s += Math.sin(w[j] * k + ph * j) / (1 + j * 0.6);
+        d[i0 + k] += s * Math.exp(-k / (decay * sr)) * amp;
+      }
+    }
+    t += (1 / r) * (1 + (Math.random() - 0.5) * jitter);
+  }
+  for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(d[i]));
+  if (peak) for (let i = 0; i < len; i++) d[i] /= peak;
+  const T = a.currentTime + 0.01 + at;
+  const src = a.createBufferSource(); src.buffer = buf;
+  const f = a.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = lp;
+  const g = a.createGain();
+  g.gain.setValueAtTime(0, T); g.gain.linearRampToValueAtTime(vol, T + fadeIn);
+  g.gain.setValueAtTime(vol, T + Math.max(fadeIn, dur - fadeOut)); g.gain.linearRampToValueAtTime(0, T + dur);
+  src.connect(f).connect(g).connect(out); g.connect(room);
+  src.start(T);
+}
+// The printer: a label printer's light, quick feed that runs exactly as long as the paper is
+// moving (so a long receipt prints for longer), then the snip of its blade.
+export function sfxLaser(warmMs = 380, feedMs = 2000) {
+  const w = warmMs / 1000, f = feedMs / 1000;
+  motor({ at: w, dur: f, rate: 950, res: [2800, 4700], decay: 0.001, vol: 0.035, noise: 0.25, accel: 0.06 });
+  tick({ at: w + f + 0.06, vol: 0.05 }); tick({ at: w + f + 0.11, vol: 0.04 });
+}
+// The page is out: the billing counter's beep-beep-beep, a little piezo buzzer in the printer.
+// Square wave near 2.7kHz with flat, instant on/off (no soft fade), softened so it isn't shrill.
+export function sfxBeeps(at = 0) {
+  const a = audio();
+  if (!a) return;
+  const t0 = a.currentTime + 0.01 + at;
+  const o = a.createOscillator(); o.type = 'square'; o.frequency.value = 2730;
+  const bp = a.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 2730; bp.Q.value = 2.5;
+  const lp = a.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 5200;
+  const g = a.createGain(); g.gain.setValueAtTime(0, t0);
+  for (let i = 0; i < 3; i++) {
+    const s = t0 + i * 0.2;
+    g.gain.setValueAtTime(0, s); g.gain.linearRampToValueAtTime(0.032, s + 0.003);
+    g.gain.setValueAtTime(0.032, s + 0.1); g.gain.linearRampToValueAtTime(0, s + 0.104);
+  }
+  o.connect(bp).connect(lp).connect(g).connect(out);
+  o.start(t0); o.stop(t0 + 0.65);
+}
+// A tiny mechanical click: a few milliseconds of bright noise.
+function tick({ at = 0, vol = 0.04 } = {}) {
+  const a = audio();
+  if (!a) return;
+  const t = a.currentTime + 0.01 + at, len = Math.ceil(a.sampleRate * 0.012);
+  const buf = a.createBuffer(1, len, a.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+  const src = a.createBufferSource(); src.buffer = buf;
+  const f = a.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 2500;
+  const g = a.createGain(); g.gain.value = vol;
+  src.connect(f).connect(g).connect(out);
+  src.start(t);
+}
+// The rubber stamp: a dull thump with a little ink squish.
+export function sfxStamp() {
+  note(hz(-31), { dur: 0.16, vol: 0.14, type: 'sine', glide: 0.6, wet: true });
+  air({ dur: 0.07, vol: 0.06, from: 900, to: 300, q: 1.2 });
+}
+// Tearing the receipt off: a quick papery rip.
+export function sfxTear() {
+  air({ dur: 0.16, vol: 0.07, from: 2200, to: 6500, q: 0.7 });
+  air({ at: 0.05, dur: 0.12, vol: 0.05, from: 4000, to: 9000, q: 0.9 });
+}
 // A dot reaches the remote: a tiny pluck.
 export function sfxCatch(i) {
   note(hz(PENTA[(i + 3) % PENTA.length] + 12), { dur: 0.14, vol: 0.05, type: 'triangle', wet: false });

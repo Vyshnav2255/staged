@@ -1,11 +1,11 @@
 import { icon } from './icons.js';
-import { commitFold, pushLaunch, discardOut } from './fx.js';
-import * as ai from './ai.js';
+import { commitFold, discardOut, foldRepaint } from './fx.js';
 import { pickEmoji as emojiPicker } from './emoji.js';
-import { sfxWrote } from './sfx.js';
-import { modal, confirmDialog, toast } from './ui.js';
+import { sfxWrote, sfxTick, sfxLand, sfxDrain, sfxApproved, sfxLaser, sfxStamp, sfxTear, sfxBeeps } from './sfx.js';
+import { confirmDialog, toast, ago } from './ui.js';
+import { shareSpec } from './receipt-image.js';
+import { MARK, specHtml, receiptSpec, statementSpec, compareUrl, logPush, weekOf } from './receipt.js';
 const LEAD = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Component}|\uFE0F|\u200D)+\s*/u;
-import { celebrate } from './release.js';
 
 // Commit workspace: uncommitted files, grouped into suggested commits.
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -387,66 +387,42 @@ function draw() {
   if (cs.banner && !cs.banner.t) cs.banner.t = Date.now();
   const settled = cs.banner && Date.now() - cs.banner.t > 1700 ? 'is-settled' : '';
   const banner = cs.banner ? `<div class="cm-banner ${cs.banner.error ? 'is-error' : ''} ${cs.banner.kind ? 'is-' + cs.banner.kind : ''} ${settled}">
-      ${cs.banner.kind === 'commit' ? '<i class="cm-dot" aria-hidden="true"></i>' : cs.banner.kind === 'pushed' ? `<i class="cm-dot is-up" aria-hidden="true">${icon('Tick02', 12)}</i>` : ''}
       <span>${cs.banner.html}</span>
-      ${cs.banner.undo && d.canUndo ? `<button class="text-btn" data-undo>Undo</button>` : ''}
       ${cs.banner.undoDiscard && d.canUndoDiscard ? `<button class="text-btn bordered" data-undodiscard>${icon('Undo02', 14)}Bring back</button>` : ''}
-      ${cs.banner.push && ctx.remote ? `<button class="text-btn bordered ${cs.busy === 'push' ? 'is-pushing' : ''}" data-pushnow ${cs.busy ? 'disabled' : ''}>${icon('ArrowUp02', 14)}${cs.busy === 'push' ? 'Pushing…' : 'Push'}</button>` : ''}
       <button class="text-btn" data-dismiss aria-label="Dismiss">${icon('Cancel01', 14)}</button>
     </div>` : '';
 
+  paintPanel();
   if (!total) {
-    paintHost(banner + `<div class="empty"><h3>Nothing to commit</h3><p>${esc(ctx.repo)} is clean on ${esc(d.branch)}.</p></div>`);
+    paintHost(banner + (outgoing().length ? `<div class="empty cm-done">${icon('ShoppingCartCheck01', 18)}<h3>Everything is in the cart</h3><p>Hold to push when you're ready.</p></div>` : `<div class="empty"><h3>Nothing to commit</h3><p>${esc(ctx.repo)} is clean on ${esc(d.branch)}.</p></div>`));
     return;
   }
 
   paintHost(`${banner}
     <div class="cm-bar">
-      <div class="cm-summary"><b>${total} changed file${total > 1 ? 's' : ''}</b> <span class="mono muted">on ${esc(d.branch)} · <span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span> · ${cs.groups.length} suggested commit${cs.groups.length > 1 ? 's' : ''}</span></div>
+      <div class="cm-summary">
+        <h2>${cs.groups.length} commit${cs.groups.length > 1 ? 's' : ''} ready</h2>
+        <p class="mono">${total} changed file${total > 1 ? 's' : ''} · <span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span>${cs.grouping ? ' · sorting…' : ''}</p>
+      </div>
       <div class="cm-tools">
-        <button class="text-btn bordered" data-regroup ${cs.busy || cs.grouping ? 'disabled' : ''}>${icon('Refresh', 14)}${cs.grouping ? 'Regrouping…' : 'Regroup'}</button>
-        <button class="btn-primary" data-commitall ${commitable.length && !cs.busy && !cs.grouping ? '' : 'disabled'}>${commitable.length > 1 ? `Commit all ${commitable.length}` : 'Commit'}</button>
+        <button class="icon-btn cm-barmore" data-barmore aria-haspopup="menu" title="More" aria-label="More">${icon('MoreHorizontal', 16)}</button>
+        ${cs.groups.length > 1 ? `<button class="btn-primary cm-addall" data-commitall ${commitable.length && !cs.busy && !cs.grouping ? '' : 'disabled'}>${icon('ShoppingCartAdd01', 15)}<span>Add all ${commitable.length} to cart</span></button>` : ''}
       </div>
     </div>
     ${cs.error ? `<div class="cm-banner is-error"><span>${esc(cs.error)}</span></div>` : ''}
-    ${groups.map((g) => card(g, cs.groups.indexOf(g))).join('')}`);
+    <div class="cm-list">${groups.map((g) => card(g, cs.groups.indexOf(g))).join('')}<div class="cm-newdrop" data-drop="__new">${icon('Add01', 14)}Drop here for a new commit</div></div>`);
 }
 
 // Redraws that would change nothing leave the page alone, so animations in flight keep going.
 // The banner's animations pick up from where they were if it does get redrawn.
 let painted = '', paintedNode = null;
 function paintHost(html) {
-  if (html !== painted || !paintedNode || host.firstElementChild !== paintedNode) { host.innerHTML = html; painted = html; paintedNode = host.firstElementChild; }
+  if (html !== painted || !paintedNode || host.firstElementChild !== paintedNode) { host.innerHTML = html; painted = html; paintedNode = host.firstElementChild; foldRepaint(); }
   const b = host.querySelector('.cm-banner');
   if (b && cs.banner?.t) b.style.setProperty('--fx-t', `${-(Date.now() - cs.banner.t)}ms`);
 }
 
 // ---------- actions ----------
-// Writing messages: one group, or many in a row. Leaves messages you typed alone unless you ask.
-async function rewrite(g, asked = false) {
-  if (!g || cs.writing.has(g.id)) return;
-  const files = g.files.filter((p) => isOn(g, p)).map((p) => viewOf(g, p)).filter(Boolean);
-  if (!files.length) return;
-  cs.writing.add(g.id); draw();
-  try {
-    const again = asked && g.source && g.source !== 'rules';
-    // staged's own message is kept as a draft for the model to improve on.
-    if (!g.draft && (!g.source || g.source === 'guess' || g.source === 'rules')) g.draft = g.gitmoji;
-    const m = await ai.write({ repo: cs.repo, files, engine: cs.engine, again, draft: g.draft || '', ties: g.ties || [] });
-    if (!cs.groups.includes(g)) return;
-    Object.assign(g, { type: m.type || g.type, scope: m.scope ?? g.scope, emoji: m.emoji || g.emoji, conventional: m.conventional || g.conventional, gitmoji: m.gitmoji || g.gitmoji, body: m.body ?? g.body, source: m.source, edited: null, aiDone: true });
-    if (m.title && /^(New changes|Everything|New commit)$/.test(g.title)) g.title = m.title;
-    if (asked || m.source !== 'rules') sfxWrote();
-  } catch (e) {
-    if (asked) toast(`Couldn't write it: ${e.message}`);
-  } finally {
-    cs.writing.delete(g.id); draw();
-    host?.querySelector(`[data-group="${CSS.escape(g.id)}"] .cm-subject`)?.classList.add('is-fresh');
-  }
-}
-async function writeMany(groups, asked) {
-  for (const g of groups) { if (asked || (g.edited == null && !g.aiDone)) await rewrite(g, asked); }
-}
 // Re-run Commit Compass against the current working tree and replace the proposed groups.
 async function regroup() {
   if (cs.grouping || cs.busy || !cs.repo) return;
