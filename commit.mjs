@@ -585,9 +585,117 @@ function suggestGroups(input, learn = {}) {
       const verb = g.idx.every((i) => isNew[i]) ? 'Added' : 'Updated';
       Object.assign(msg, { type: 'docs', emoji: '📝', gitmoji: `${verb} ${names}`, conventional: `${verb === 'Added' ? 'add' : 'update'} ${names}` });
     }
+    // What the group is built around: the new name its chunks are tied together by (scroll-fade used
+    // in nine places, a modal-handle added to markup and wired up). That is what a person would name.
+    const plain = !['fix', 'perf', 'docs', 'test', 'ci', 'chore', 'build'].includes(msg.type) && !/^Updated [^:]+: /.test(msg.gitmoji) && !msg.fromHeader;
+    if (plain && g.idx.length >= 2) {
+      const inside = new Set(g.idx), count = new Map();
+      for (const pass of [linkEvidence, nameHints]) {
+        if ([...count].some(([x, c]) => featureName(x) && (c >= 2 || featureName(x).includes(' ')))) break;
+        for (const e of pass) {
+          if (!inside.has(e.a) || !inside.has(e.b)) continue;
+          const m = e.reason.match(/^(?:uses|both add|defines|replaced by) (.+)$/);
+          if (m) count.set(m[1], (count.get(m[1]) || 0) + 1);
+        }
+      }
+      // A name scores by how many ties it makes, plus the ties of names sharing a word with it
+      // (initMotionSystem next to --motion-fast-duration), and a name of several parts beats one word.
+      const wordsOf_ = (x) => new Set(featureName(x).split(' ').filter((w) => w.length >= 4));
+      const scored = [...count].map(([x, c]) => {
+        const ws = wordsOf_(x);
+        let bonus = 0;
+        for (const [y, d] of count) if (y !== x && [...wordsOf_(y)].some((w) => ws.has(w))) bonus += d;
+        return [x, c + bonus * 0.5 + (ws.size >= 2 ? 0.75 : 0), c];
+      }).filter(([x, , c]) => featureName(x) && (c >= 2 || g.idx.length <= 3 || featureName(x).includes(' ')));
+      const multi = (x) => (featureName(x).includes(' ') ? 1 : 0);
+      const top = scored.sort((a, b) => multi(b[0]) - multi(a[0]) || b[1] - a[1] || featureName(b[0]).split(/[ -]/).length - featureName(a[0]).split(/[ -]/).length || a[0].length - b[0].length)[0];
+      const thing = top && (scored.slice(0, 3).map(([x]) => commentPhrase(x, g.idx.map((i) => files[i])) || labelPhrase(x, g.idx.map((i) => files[i]))).find(Boolean) || commentPhrase(null, g.idx.map((i) => files[i]).sort((a, b) => b.add - a.add).slice(0, 1)) || featureName(top[0]));
+      if (thing) {
+        const spots = [...new Set(fs_.map((f) => (/index\.html?$/.test(f.path) ? 'the page' : nameOf(f.path).toLowerCase())))];
+        const place = spots.length >= 4 && !/\bacross\b/.test(thing) ? ` across ${spots.length} files` : '';
+        const add = fs_.reduce((s2, f) => s2 + f.add, 0), del = fs_.reduce((s2, f) => s2 + f.del, 0);
+        const verb = del > add * 1.5 && del >= 8 ? 'Simplified' : del >= add * 0.6 && add >= 20 ? 'Reworked' : 'Added';
+        const gm = (`${verb} ${thing}${place}`.length <= 72 ? `${verb} ${thing}${place}` : `${verb} ${thing}`).replace(/^Added (a|an|one) (?=[a-z])/i, (m, art) => m);
+        const conv = msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '';
+        Object.assign(msg, { type: msg.type === 'style' ? 'style' : 'feat', gitmoji: gm, conventional: conv + (gm[0].toLowerCase() + gm.slice(1)).replace(/^added /, 'add ').replace(/^simplified /, 'simplify ').replace(/^reworked /, 'rework ') });
+        msg.emoji = verb === 'Simplified' || verb === 'Reworked' ? '♻️' : msg.type === 'style' ? '💄' : '✨';
+        if (verb === 'Simplified' || verb === 'Reworked') msg.type = 'refactor';
+      }
+    }
+    // The same edit in many places says itself: "Changed border from 1px --line to .5px --line-strong in 24 places".
+    if (g.idx.length >= 2 && reasons.has('same edit')) {
+      const sig = [...editSigs].find(([, is]) => g.idx.every((i) => is.includes(i)) || is.filter((i) => g.idx.includes(i)).length >= g.idx.length * 0.8)?.[0];
+      if (sig) {
+        const [out, inn] = sig.split(' | ').map((side) => side.split(' ').filter(Boolean).map((t) => t.slice(1).replace(/^--/, '')).filter((t) => !/^[^\w-]$/.test(t)).join(' '));
+        const props = new Map();
+        for (const i of g.idx) for (const l of (files[i].diff || '').split('\n')) if (l[0] === '+') for (const m of l.matchAll(/([a-z-]+)\s*:[^;:]*?(?=;|}|$)/g)) if (inn.split(' ').some((t) => t && new RegExp(`(^|[\\s:(,'"])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[\\s;,)'"]|$)`).test(m[0]))) props.set(m[1], (props.get(m[1]) || 0) + 1);
+        const most = Math.max(0, ...props.values());
+        const names = [...props].filter(([, c]) => c >= most * 0.3).map(([x]) => x);
+        let prop = names.length === 1 ? names[0] : '';
+        if (names.length > 1) { const head = names.map((x) => x.split('-')[0]); if (head.every((x) => x === head[0])) prop = head[0]; }
+        if (out && inn && out.length <= 32 && inn.length <= 32) {
+          // A custom property reads as words: --font-body -> body font.
+          const said = prop.startsWith('--') ? (([a, ...b]) => (/^(font|color|colour|space|spacing|radius|shadow|size|weight|line)$/.test(a) && b.length ? [...b, a] : [a, ...b]).join(' '))(prop.slice(2).split('-')) : prop;
+          const gm = `Changed ${said ? said + ' ' : ''}from ${out} to ${inn} in ${g.idx.length} places`;
+          Object.assign(msg, { type: 'style', emoji: '💄', gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + gm[0].toLowerCase() + gm.slice(1).replace(/^changed /, 'change ') });
+        }
+      }
+    }
+    // A function that gained options: toast(msg) -> toast(msg, { action, onAction, ms }).
+    if (plain && fs_.length === 1 && /^(Updated|Refined|Tidied) /.test(msg.gitmoji)) {
+      const d = fs_[0].diff || '', sigRe = /^([-+])\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/gm;
+      const before = new Map(), after = new Map();
+      for (const m of d.matchAll(sigRe)) (m[1] === '-' ? before : after).set(m[2], m[3]);
+      for (const [fn, args] of after) {
+        if (!before.has(fn)) continue;
+        const names = (s2) => new Set([...s2.matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]));
+        const was = names(before.get(fn)), gained = [...names(args)].filter((x) => !was.has(x) && !/^(true|false|null|undefined)$/.test(x));
+        if (!gained.length) continue;
+        const what = featureName(gained[0]) || gained[0];
+        const gm = `Added ${/^[aeiou]/.test(what) ? 'an' : 'a'} ${what} option to ${featureName(fn) || fn}`;
+        Object.assign(msg, { type: 'feat', emoji: '✨', gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + 'add ' + gm.slice(6) });
+        break;
+      }
+    }
+    // Mostly taking things out: the section heading you wrote over what left says what it was
+    // ("/* ---- Settings › AI: engine picker and its panel ---- */" -> "Removed the AI engine picker and its panel").
+    {
+      const add = fs_.reduce((s2, f) => s2 + f.add, 0), del = fs_.reduce((s2, f) => s2 + f.del, 0);
+      if (del >= 20 && del >= add * 3) {
+        const heads = [];
+        for (const f of fs_) for (const l of (f.diff || '').split('\n')) {
+          const m = l.match(/^-\s*(?:\/\/+|\/\*+|#+|<!--)\s*[-=*#~]{3,}\s*(.+?)\s*[-=*#~]{3,}\s*(?:\*+\/|-->)?\s*$/);
+          if (m) heads.push(m[1].replace(/^.*\s[›»>]\s/, '').replace(/:\s+/, ' ').replace(/[.:]$/, ''));
+        }
+        const head = heads.filter((h) => h.split(' ').length >= 2 && h.length <= 56 && !/[`(){}=<>\[\]]/.test(h)).sort((a, b) => b.length - a.length)[0];
+        if (head) {
+          const gm = `Removed ${/^(a|an|the|its|our|my)\s/i.test(head) ? '' : 'the '}${head}`;
+          // Conventional commits have no "remove" type: taking a feature out is a refactor, shown with 🔥.
+          Object.assign(msg, { type: 'refactor', emoji: learn.emojiForType?.remove || '🔥', gitmoji: gm, conventional: 'remove ' + gm.slice(8) });
+        }
+      }
+    }
+    // In-house intent reader for subjects that still say little. No model: it reads what the change
+    // itself says, a new file's opening comment or the request fields a handler starts accepting.
+    if (weakSubject(msg.gitmoji)) {
+      const said = readIntent(fs_);
+      if (said) Object.assign(msg, { gitmoji: said, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + said[0].toLowerCase() + said.slice(1) });
+    }
+    // A weak subject borrows the user's own words for this part of the code: past commits that
+    // touched the same files, when two of them agree on a phrase ("repo list", "sheet").
+    if (Array.isArray(learn.history) && learn.history.length && weakSubject(msg.gitmoji)) {
+      const changed = fs_.map((f) => (f.diff || '').split('\n').filter((l) => /^[-+@]/.test(l)).join('\n')).join('\n').toLowerCase();
+      const phrase = pastPhrase(learn.history, [...new Set(fs_.map((f) => f.path))], (w) => changed.includes(w.slice(0, Math.max(4, w.length - 2))));
+      if (phrase) {
+        const gm = `Updated ${phrase}`;
+        Object.assign(msg, { gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + 'update ' + phrase });
+      }
+    }
+    // Conventional subjects are imperative whatever path wrote them: "change border", "turn Today into Home".
+    if (msg.conventional) msg.conventional = msg.conventional.replace(/^((?:[a-z]+(?:\([^)]*\))?!?: )?)([a-z]+)\b/, (m, pre, w) => { const imp = TO_IMP[w[0].toUpperCase() + w.slice(1)]; return pre + (imp ? imp.toLowerCase() : w); });
     if (learn.tense === 'imperative') msg.gitmoji = toImperative(msg.gitmoji);
     return {
-      id: 'g' + (k + 1),
+      id: 'g' + (k + 1), ...(g.at != null ? { fixedAt: g.at } : {}),
       title: label,
       files: fs_.map((f) => f.path),
       ...(Object.keys(hunks).length ? { hunks } : {}),
@@ -599,6 +707,73 @@ function suggestGroups(input, learn = {}) {
       ...msg,
     };
   }).sort((a, b) => b.size - a.size);
+}
+
+
+// What a change says about itself, read without any model.
+function readIntent(fs_) {
+  // A new file that opens with a sentence about itself: "X uses deterministic local rules for ..."
+  if (fs_.length === 1 && (fs_[0].status === 'A' || fs_[0].untracked) && fs_[0].content) {
+    const head = [];
+    for (const l of fs_[0].content.split('\n').slice(0, 8)) { const t = l.trim(); if (!/^(\/\/|\/\*|\*|#(?![{!]))/.test(t)) break; head.push(t.replace(/^(\/\/+|\/\*+|\*+|#+)\s*/, '').replace(/\s*\*+\/\s*$/, '')); }
+    const first = head.join(' ').replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/)[0].replace(/[.!?:]$/, '');
+    const m = first.match(/^(.{3,40}?)\s(uses|provides|adds|holds|keeps|handles|runs|draws|renders|shows|builds|writes|reads|turns|tracks|wraps)\s(.{6,70})$/i);
+    if (m && !/[`(){}=<>\[\]]/.test(first)) {
+      const obj = m[3].replace(/\s(so|because|since|but|when|while)\s.*$/i, '');
+      const gm = /^(uses|provides|adds|holds)$/i.test(m[2]) ? `Added ${obj}` : `Added ${m[1][0].toLowerCase() + m[1].slice(1)} that ${m[2].toLowerCase()} ${obj}`;
+      if (gm.length <= 72) return gm;
+    }
+  }
+  // A handler that starts accepting new request fields: body.togetherPairs, searchParams.get('since').
+  const fresh = [], seen = new Set(), ctx = new Set();
+  for (const f of fs_) {
+    const lines = (f.diff || '').split('\n');
+    const old = lines.filter((l) => l[0] !== '+').join('\n');
+    const h = lines.find((l) => l.startsWith('@@'))?.match(/@@[^@]*@@\s*(?:export\s+)?(?:async\s+)?(?:function\s+)?([A-Za-z_$][\w$]*)/)?.[1];
+    for (const l of lines) if (l[0] === '+') for (const m of l.slice(1).matchAll(/\bbody\.([a-z][\w$]*)|searchParams\.get\(\s*['"]([\w-]+)['"]/g)) {
+      const x = m[1] || m[2];
+      if (seen.has(x) || new RegExp(`\\bbody\\.${x}\\b|['"]${x}['"]`).test(old)) continue;
+      seen.add(x); fresh.push(x); if (h) ctx.add(h);
+    }
+  }
+  if (fresh.length && fresh.length <= 3) {
+    const words = fresh.map((x) => x.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(' '));
+    const tail = words.every((w) => w.length >= 2 && w.at(-1) === words[0].at(-1)) ? words[0].at(-1) : '';
+    const named = tail ? list(words.map((w) => w.slice(0, -1).join(' '))) + ' ' + tail : list(words.map((w) => w.join(' ')));
+    const where = ctx.size === 1 ? ' in ' + [...ctx][0].replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase() : '';
+    return `Accepted ${named}${where}`;
+  }
+  return '';
+}
+
+// Subjects that say little: a bare file name, "Updated x in y", copy fallbacks, generic style passes.
+const weakSubject = (s) => !/^Updated dependencies$/.test(s) && /^(Added|Updated|Refined|Tidied) [\w.-]+$|^Updated [\w .-]+ in [\w.-]+$|^Refined styles\b|^Tidied\b/.test(s);
+const PAST_STOP = new Set('a an the and or of to for in on with by from into at as is are be this that its it our your their new more some all files file across styles style code logic page pages ui app minor small various changes update updates improvements improvement tweaks fixes bump bumps version versions dependency dependencies issues issue'.split(' '));
+const PAST_VERB = /^(added|updated|refined|fixed|removed|improved|enhanced|changed|reworked|refactored|tweaked|polished|cleaned|made|moved|renamed|replaced|implemented|created|simplified|tidied|adjusted|restyled|wrote|tracked|bumped|increased|reduced|add|update|refine|fix|remove|improve|enhance|change|rework|refactor|tweak|polish|clean|make|move|rename|replace|implement|create|simplify|adjust)$/i;
+function pastPhrase(history, paths, inDiff = () => true) {
+  const near = history.filter((c) => c && c.subject && Array.isArray(c.files) && paths.every((p) => c.files.includes(p)) && c.files.length <= paths.length + 4).slice(0, 20);
+  if (near.length < 2) return '';
+  const fileWords = new Set(near.flatMap((c) => c.files).flatMap((p) => { const b = p.split('/').pop().toLowerCase(); return [b.replace(/[^a-z]/g, ''), b.split('.')[0]]; }));
+  for (const p of paths) fileWords.delete(nameOf(p).toLowerCase());
+  const grams = (subj) => {
+    const ws = subj.replace(/^\S*\p{Extended_Pictographic}\S*\s*/u, '').replace(/^[a-z]+(\([^)]*\))?!?:\s*/, '').split(/[^\p{L}\p{N}-]+/u).filter(Boolean);
+    const out = new Set();
+    for (let i = 0; i < ws.length; i++) {
+      const a = ws[i].toLowerCase(), b = (ws[i + 1] || '').toLowerCase();
+      if (PAST_VERB.test(a)) continue;
+      const ok = (w) => w.length >= 3 && !PAST_STOP.has(w) && !/\d/.test(w) && !fileWords.has(w);
+      if (ok(a)) {
+        if (b && ok(b) && !PAST_VERB.test(b)) out.add(a + ' ' + b);
+        out.add(a);
+      }
+    }
+    return out;
+  };
+  const seen = new Map();
+  near.forEach((c, at) => { for (const g of grams(c.subject)) { const e = seen.get(g) || { n: 0, at }; e.n++; seen.set(g, e); } });
+  const best = [...seen].filter(([g, e]) => e.n >= 2 && g.includes(" ") && g.split(' ').every(inDiff) && !paths.some((p) => g === nameOf(p).toLowerCase()))
+    .sort((a, b) => (b[0].includes(' ') - a[0].includes(' ')) || b[1].n - a[1].n || a[1].at - b[1].at)[0];
+  return best ? 'the ' + best[0] : '';
 }
 
 const titleCase = (s) => s.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -628,7 +803,7 @@ function titleOf(f) {
 
 // type, scope, conventional subject (imperative), gitmoji subject (past tense, like the user's history)
 const EMOJI = { feat: '✨', fix: '🐛', style: '💄', perf: '⚡️', refactor: '♻️', docs: '📝', chore: '🔧', build: '⬆️', test: '✅', ci: '👷', remove: '🔥', content: '📝' };
-const TO_IMP = { Added: 'Add', Fixed: 'Fix', Updated: 'Update', Removed: 'Remove', Refined: 'Refine', Polished: 'Polish', Renamed: 'Rename', Moved: 'Move', Improved: 'Improve', Changed: 'Change', Created: 'Create', Deleted: 'Delete', Cleaned: 'Clean', Made: 'Make', Tweaked: 'Tweak', Replaced: 'Replace', Restyled: 'Restyle', Reworked: 'Rework', Wrote: 'Write', Increased: 'Increase', Reduced: 'Reduce', Bumped: 'Bump', Tidied: 'Tidy', Simplified: 'Simplify', Wired: 'Wire', Hooked: 'Hook' };
+const TO_IMP = { Added: 'Add', Fixed: 'Fix', Updated: 'Update', Removed: 'Remove', Refined: 'Refine', Polished: 'Polish', Renamed: 'Rename', Moved: 'Move', Improved: 'Improve', Changed: 'Change', Created: 'Create', Deleted: 'Delete', Cleaned: 'Clean', Made: 'Make', Tweaked: 'Tweak', Replaced: 'Replace', Restyled: 'Restyle', Reworked: 'Rework', Wrote: 'Write', Increased: 'Increase', Reduced: 'Reduce', Bumped: 'Bump', Tidied: 'Tidy', Simplified: 'Simplify', Wired: 'Wire', Hooked: 'Hook', Turned: 'Turn', Grouped: 'Group', Accepted: 'Accept' };
 export const toImperative = (s) => s
   .replace(/^[A-Z][a-z]+/, (w) => TO_IMP[w] || w)
   .replace(/(\band |, )([a-z]+ed|wrote|made)\b/g, (m, pre, w) => { const k = w[0].toUpperCase() + w.slice(1); return TO_IMP[k] ? pre + TO_IMP[k].toLowerCase() : m; });
@@ -651,7 +826,7 @@ function visibleCopy(f) {
     const add = (value) => {
       const clean = value.replace(/&(?:amp|lt|gt|quot|#39);/g, ' ').replace(/\s+/g, ' ').trim();
       // Words people read, not code that happens to sit between > and < (a.length > 0 && b < 2).
-      if (clean.length >= 4 && clean.length <= 88 && /[A-Za-z]{2}/.test(clean) && !/[=&|(){};$\[\]]|=>|\w\.\w|^--|:\s*['"]/.test(clean) && (clean.match(/[\p{L}\s]/gu) || []).length >= clean.length * 0.75 && (/\s/.test(clean) || /^\p{Lu}/u.test(clean)) && !target.includes(clean)) target.push(clean);
+      if (clean.length >= 4 && clean.length <= 88 && /[A-Za-z]{2}/.test(clean) && !/[=&|(){};$\[\]]|=>|\w\.\w|^--|:\s*['"]/.test(clean) && (clean.match(/[\p{L}\s]/gu) || []).length >= clean.length * 0.75 && (/\s/.test(clean) || /^\p{Lu}/u.test(clean)) && /[A-Za-z]{3}/.test(clean) && !/(^|\s)[b-hj-z](\s|$)|\s[-+*/]\s|…$|^\p{Extended_Pictographic}/u.test(clean) && !target.includes(clean)) target.push(clean);
     };
     for (const m of text.matchAll(/>([^<>]{3,88})</g)) add(m[1]);
     for (const m of text.matchAll(/(?:aria-label|placeholder|title|textContent|innerText)\s*=\s*(["'`])([^"'`]{3,88})\1/g)) add(m[2]);
