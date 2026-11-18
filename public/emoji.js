@@ -1,3 +1,5 @@
+import { exitFallbackMs } from './motion.js';
+
 // The gitmoji picker: suggested first, then your recent picks, then everything by kind.
 // Search by meaning, by :code: or by type ("fix", "style"). Arrow keys move, Enter picks.
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -94,7 +96,7 @@ export function pickEmoji(anchor, { current, type, suggested = [], onPick }) {
   const rec = recent().filter((e) => !sug.includes(e)).slice(0, 6);
   pop.innerHTML = `
     <div class="emo-search"><input class="emoji-q" placeholder="Search by meaning or :code:" spellcheck="false" autocomplete="off" aria-label="Search gitmoji"></div>
-    <div class="emo-body">
+    <div class="emo-body scroll-fade">
       <section class="emo-sec" data-fixed><h5 class="mono">Suggested</h5><div class="emo-grid">${sug.map(tile).join('')}</div></section>
       ${rec.length ? `<section class="emo-sec" data-fixed><h5 class="mono">Recent</h5><div class="emo-grid">${rec.map(tile).join('')}</div></section>` : ''}
       ${KINDS.map(([k, list]) => `<section class="emo-sec"><h5 class="mono">${k}</h5><div class="emo-grid">${list.map(tile).join('')}</div></section>`).join('')}
@@ -138,7 +140,7 @@ export function pickEmoji(anchor, { current, type, suggested = [], onPick }) {
     pop.querySelector('.emo-none').hidden = any;
     at = -1; focusAt(0);
   });
-  const close = () => { pop.classList.add('is-out'); setTimeout(() => pop.remove(), 120); removeEventListener('mousedown', outside, true); removeEventListener('keydown', esc_, true); anchor.focus?.(); };
+  const close = () => { pop.classList.add('is-out'); setTimeout(() => pop.remove(), exitFallbackMs('moderate')); removeEventListener('mousedown', outside, true); removeEventListener('keydown', esc_, true); anchor.focus?.(); };
   const outside = (e) => { if (!pop.contains(e.target) && e.target !== anchor) close(); };
   const esc_ = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   setTimeout(() => { addEventListener('mousedown', outside, true); addEventListener('keydown', esc_, true); });

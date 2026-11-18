@@ -1,6 +1,7 @@
 // ⌘K: jump to a repo, a view, an action or a commit.
 import { esc } from './ui.js';
 import { icon } from './icons.js';
+import { exitFallbackMs } from './motion.js';
 
 let wrap = null, items = [], sel = 0, getItems = null, returnFocus = null, shellWasInert = false;
 
@@ -20,7 +21,7 @@ export function open() {
   wrap.className = 'pal-wrap';
   wrap.innerHTML = `<div class="pal" role="dialog" aria-modal="true" aria-label="Command bar">
     <input class="pal-input" type="search" role="combobox" aria-label="Search commands" aria-autocomplete="list" aria-expanded="true" aria-controls="palette-options" placeholder="Jump to a repo, view or commit…" autocomplete="off" spellcheck="false">
-    <div class="pal-list" id="palette-options" role="listbox" aria-label="Command results"></div>
+    <div class="pal-list scroll-fade" id="palette-options" role="listbox" aria-label="Command results"></div>
     <div class="pal-foot mono muted"><span>${icon('ArrowUp01', 12)}${icon('ArrowDown01', 12)} move</span><span>${icon('ArrowMoveDownLeft', 12)} open</span><span>esc close</span></div>
   </div>`;
   document.body.appendChild(wrap);
@@ -53,7 +54,7 @@ function close() {
   const shell = document.querySelector('.shell');
   if (shell) shell.inert = shellWasInert;
   w.classList.remove('is-open');
-  setTimeout(() => w.remove(), 150);
+  setTimeout(() => w.remove(), exitFallbackMs('moderate'));
   if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus();
   returnFocus = null;
 }

@@ -50,7 +50,7 @@ function render(md) {
       const buf = []; i++;
       while (i < lines.length && !lines[i].startsWith('```')) buf.push(lines[i++]);
       i++;
-      out.push(`<pre class="rd-code"><span class="rd-lang mono">${esc(m[1] || 'text')}</span><code>${esc(buf.join('\n'))}</code></pre>`);
+      out.push(`<pre class="rd-code scroll-fade-x"><span class="rd-lang mono">${esc(m[1] || 'text')}</span><code>${esc(buf.join('\n'))}</code></pre>`);
       continue;
     }
     if ((m = l.match(/^(#{1,3})\s+(.*)/))) {
@@ -66,7 +66,7 @@ function render(md) {
       while (i < lines.length && /^\|/.test(lines[i])) rows.push(lines[i++]);
       const cells = (r) => r.replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
       const [head, , ...body] = rows;
-      out.push(`<div class="rd-table"><table><thead><tr>${cells(head).map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${body.map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      out.push(`<div class="rd-table scroll-fade-x"><table><thead><tr>${cells(head).map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${body.map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
       continue;
     }
     if (/^[-*]\s/.test(l)) {

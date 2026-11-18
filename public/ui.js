@@ -1,4 +1,5 @@
 import { icon } from './icons.js';
+import { exitFallbackMs } from './motion.js';
 // Small shared helpers: escaping, numbers, dates, modal, toast, API calls.
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const compact = (n) => (n >= 10000 ? (n / 1000).toFixed(0) + 'k' : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));

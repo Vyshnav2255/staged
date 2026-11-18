@@ -8,7 +8,7 @@ import { mountSettings } from './settings.js';
 import { initUpdates, checkNow } from './update.js';
 import { pushLaunch, pushButtonDone, previewCommit, previewPush } from './fx.js';
 import { soundOn, setSound } from './sfx.js';
-import { initSegs, countUp, enter } from './motion.js';
+import { initSegs, initFluidHover, initMotionSystem, countUp, enter } from './motion.js';
 import { initGlance } from './glance.js';
 import { initPalette, open as openPalette } from './palette.js';
 import { recapCard, recapFor, openStory, releasePanel, openRelease, openChangelog } from './release.js';
@@ -661,7 +661,9 @@ $('#readmeLink').innerHTML = `${icon('BookOpen01', 15)}<span>README</span>`;
 $('#settingsLink').innerHTML = `${icon('Settings02', 15)}<span>Settings</span>`;
 $('#settingsLink').addEventListener('click', () => openSettings());
 initUpdates(document.querySelector('.side'));
+initMotionSystem();
 initSegs();
+initFluidHover($('#repos'));
 initGlance($('.main'));
 $('#readmeLink').addEventListener('click', () => { if (!GLOBAL_VIEWS.includes(state.view)) state.lastView = state.view; state.view = 'readme'; render(); scrollTo({ top: 0 }); });
 

@@ -7,7 +7,7 @@ let rail, list, targets = [], sig = '', active = -1, raf = 0, gliding = 0;
 export function initGlance(main) {
   rail = document.createElement('nav');
   rail.className = 'glance'; rail.setAttribute('aria-label', 'Jump to');
-  rail.innerHTML = `<div class="gl-panel"><div class="gl-list"></div></div>`;
+  rail.innerHTML = `<div class="gl-panel"><div class="gl-list scroll-fade"></div></div>`;
   document.body.append(rail);
   list = rail.querySelector('.gl-list');
   rail.addEventListener('click', onClick);

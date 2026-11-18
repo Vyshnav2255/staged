@@ -178,7 +178,7 @@ export function openChangelog(repo, onDone) {
   const m = modal({
     title: 'Changelog', wide: true,
     body: `<p class="note" style="margin:0 0 10px">${repo.tags.length ? 'Grouped by release.' : 'No tags yet, so this groups by month.'} Writing it creates <code class="mono">CHANGELOG.md</code> in ${esc(repo.name)}; it shows up in the Commit tab for you to review and commit.</p>
-      <pre class="md-preview mono">${esc(md.slice(0, 20000))}${md.length > 20000 ? '\n…' : ''}</pre>`,
+      <pre class="md-preview mono scroll-fade">${esc(md.slice(0, 20000))}${md.length > 20000 ? '\n…' : ''}</pre>`,
     actions: `<button class="text-btn bordered" data-copymd>${icon('Copy01', 14)}Copy Markdown</button><button class="btn-primary" data-write>${icon('FileExport', 14)}Write CHANGELOG.md</button>`,
   });
   m.el.querySelector('[data-copymd]').onclick = () => copy(md, 'Changelog copied');

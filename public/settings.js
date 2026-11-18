@@ -43,7 +43,7 @@ function draw() {
       <div class="set-card">
         <div class="set-row">
           <div class="set-row-main"><b>Style</b><span class="muted">${fmt === 'conventional' ? 'feat(books): add notes for …' : fmt === 'both' ? '✨ feat(books): add notes for …' : '✨ Added book notes for …'}</span></div>
-          <div class="seg set-seg" role="radiogroup" aria-label="Message style">
+          <div class="seg set-seg scroll-fade-x" role="radiogroup" aria-label="Message style">
             ${[['gitmoji', 'Gitmoji'], ['conventional', 'Conventional'], ['both', 'Both']].map(([k, l]) => `<button role="radio" aria-checked="${fmt === k}" data-format="${k}">${l}</button>`).join('')}
           </div>
         </div>
@@ -148,7 +148,7 @@ function onlinePanel() {
   const p = onl.providers?.find((x) => x.key === onl.provider) || { label: '', note: '', keys: '', model: '' };
   const model = od.model ?? onl.model ?? '', url = od.url ?? (onl.provider === 'custom' ? onl.url : '') ?? '';
   return `${panelHead('online', 'The sharpest option, and nothing to download. staged sends only the changes it is writing about to the service you choose. Your key stays on this computer.')}
-    <div class="ai-prov" role="radiogroup" aria-label="Service">${(onl.providers || []).map((x) => `<button role="radio" aria-checked="${x.key === onl.provider}" data-provider="${x.key}">${esc(x.label)}${x.hasKey ? `<i class="ai-dot" title="Key saved"></i>` : ''}</button>`).join('')}</div>
+    <div class="ai-prov scroll-fade-x" role="radiogroup" aria-label="Service">${(onl.providers || []).map((x) => `<button role="radio" aria-checked="${x.key === onl.provider}" data-provider="${x.key}">${esc(x.label)}${x.hasKey ? `<i class="ai-dot" title="Key saved"></i>` : ''}</button>`).join('')}</div>
     <p class="ai-pnote">${esc(p.note)}${p.keys ? ` <a href="${esc(p.keys)}" target="_blank" rel="noopener">Get a key${icon('ArrowRight01', 11)}</a>` : ''}</p>
     <div class="ai-form">
       ${onl.provider === 'custom' ? `<label class="ai-field is-wide"><span>Address</span><input name="ourl" type="url" spellcheck="false" autocomplete="off" placeholder="https://api.example.com/v1" value="${esc(url)}"></label>` : ''}
@@ -225,42 +225,44 @@ function watchLocal() {
 // up), single repos added on their own, folders that aren't repos yet, and a switch per repo to hide it.
 // Compact rules-first controls and useful evidence live here, away from the commit workflow.
 function aiSection() {
-  const indexed = stats || {};
+  const x = stats || {};
   const fmt = (v) => Number(v || 0).toLocaleString();
-  const currentScore = Number.isFinite(indexed.currentScore) ? Math.round(indexed.currentScore * 100) : null;
-  const statRows = (items) => items.map(([label, value]) => `<div class="cm-engine-stat"><span>${label}</span><b class="mono">${value}</b></div>`).join('');
+  const plural = (n, one, many = one + 's') => `${fmt(n)} ${Number(n) === 1 ? one : many}`;
+  const score = Number.isFinite(x.currentScore) ? Math.round(x.currentScore * 100) : null;
+  const style = x.style || {};
+  const format = String(style.format || 'gitmoji').toLowerCase(), tense = String(style.tense || 'past').toLowerCase();
+  const verb = tense.startsWith('imp') ? 'Add' : 'Added';
+  // An example in the style it learned from you, so the numbers below mean something.
+  const sample = format.startsWith('conv') ? 'feat(ui): add a close handle to sheets'
+    : format === 'plain' ? `${verb} a close handle to sheets` : `✨ ${verb} a close handle to sheets`;
+  const fixes = Number(x.learnedTogether || 0) + Number(x.learnedApart || 0);
+  const steps = [
+    ['GitCommit', 'Reads your history', plural(x.commits, 'commit'), `across ${plural(x.repositories, 'repo')}, ${plural(x.indexedFiles, 'file')}`],
+    ['Layers01', 'Sorts the changes', plural(x.recurringPathPairs, 'file pair'), fixes ? `that change together, plus ${plural(fixes, 'fix', 'fixes')} you made` : 'that usually change together'],
+    ['PencilEdit02', 'Writes the message', `${style.averageSubjectLength ? Math.round(style.averageSubjectLength) : '–'} chars`, `on average, ${format.startsWith('conv') ? 'conventional' : format === 'plain' ? 'plain' : 'gitmoji'}, ${tense.startsWith('imp') ? 'imperative' : 'past'} tense`],
+  ];
   return `<section class="set-sec" id="set-ai">
-    <header class="set-h"><h2>Commit Compass</h2><p class="muted">Local rules group changes, learn from your Git history, and write grounded commit messages.</p></header>
-    <div class="set-card">
-      <div class="set-row"><div class="set-row-main"><b>Commit Compass rules</b><span class="muted">Always groups changes and writes the grounded first draft.</span></div><span class="cm-engine-active mono">Always on</span></div>
-    </div>
-    <div class="cm-engine-dashboard">
-      <div class="cm-engine-hero">
-        <div class="cm-engine-story">
-          <span class="cm-engine-mark">${icon('Sparkles', 16)}</span>
-          <div><span class="cm-engine-eyebrow mono">ENGINE PULSE</span><h3>Thoughtful commits, grounded in your code.</h3></div>
-          <p>Commit Compass connects related changes, learns from your Git history, and keeps its confidence visible.</p>
-        </div>
-        <div class="cm-engine-confidence">
-          <div class="cm-engine-score-head"><span>Current confidence</span><span class="cm-engine-live"><i></i>Live</span></div>
-          <div class="cm-engine-score">${currentScore == null ? '—' : `${currentScore}<small>%</small>`}</div>
-          ${currentScore == null ? '' : `<div class="cm-engine-meter" role="meter" aria-label="Current grouping confidence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${currentScore}"><i style="--score:${currentScore}%"></i></div>`}
-          <p>${currentScore == null ? 'No active multi-file grouping decisions to score.' : `Across ${fmt(indexed.currentScoreDecisions)} suggested groups in ${fmt(indexed.currentScoreRepos)} repos`}</p>
-          ${currentScore != null && indexed.currentScoreReviewGroups ? `<span class="cm-engine-review">${fmt(indexed.currentScoreReviewGroups)} groups need a closer look</span>` : ''}
+    <header class="set-h"><h2>Commit engine</h2><p class="muted">How staged sorts your changes into commits and writes their messages.</p></header>
+    <div class="set-card eng">
+      <div class="eng-head">
+        <span class="eng-mark">${icon('Target02', 18)}</span>
+        <div class="set-row-main"><b>Commit Compass</b><span class="muted">Runs on this computer and learns from your Git history. Nothing is sent anywhere.</span></div>
+        <span class="eng-on"><i></i>Ready</span>
+      </div>
+      <ol class="eng-steps">${steps.map(([ic, title, big, small], i) => `
+        <li class="eng-step">
+          <span class="eng-step-h"><span class="eng-n mono">${i + 1}</span>${icon(ic, 14)}${title}</span>
+          <strong class="eng-big">${esc(big)}</strong>
+          <span class="eng-small muted">${esc(small)}</span>
+        </li>`).join('')}
+      </ol>
+      <div class="eng-foot">
+        <div class="eng-sample"><span class="eng-label">Writes like you</span><code class="mono">${esc(sample)}</code></div>
+        <div class="eng-score">${score == null
+          ? '<span class="eng-label">Confidence</span><span class="muted">Shows with your next changes</span>'
+          : `<span class="eng-label">Confidence today</span><span class="eng-meter" role="meter" aria-label="Confidence in today's suggested commits" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${score}"><i style="--score:${score}%"></i></span><b class="mono">${score}%</b>${x.currentScoreReviewGroups ? `<span class="muted">${plural(x.currentScoreReviewGroups, 'commit')} to check</span>` : ''}`}
         </div>
       </div>
-      <div class="cm-engine-stat-cards">
-        <section class="cm-engine-stat-card"><header><b>History index</b><span>Patterns from local Git history</span></header>${statRows([
-          ['Repositories', fmt(indexed.repositories)], ['Commit examples', fmt(indexed.commits)], ['Distinct paths', fmt(indexed.indexedFiles)],
-        ])}</section>
-        <section class="cm-engine-stat-card"><header><b>Grouping signals</b><span>What connects changes</span></header>${statRows([
-          ['Recurring file pairs', fmt(indexed.recurringPathPairs)], ['Learned together', fmt(indexed.learnedTogether)], ['Learned apart', fmt(indexed.learnedApart)], ['Emoji preferences', fmt(indexed.learnedEmojiMappings)],
-        ])}</section>
-        <section class="cm-engine-stat-card"><header><b>Commit style</b><span>Learned from recent subjects</span></header>${statRows([
-          ['Preferred format', esc(indexed.style?.format || 'Learning')], ['Typical tense', esc(indexed.style?.tense || 'Learning')], ['Average length', `${fmt(Math.round(indexed.style?.averageSubjectLength || 0))} chars`],
-        ])}</section>
-      </div>
-      <div class="cm-engine-foot"><span><i></i> Local history index</span><span>Deterministic rules <i>·</i> Repository learning</span></div>
     </div>
   </section>`;
 }

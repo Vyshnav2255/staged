@@ -312,19 +312,19 @@ function chunkView(f, offH, g) {
         <span class="mono">Chunk ${i + 1}</span><span class="mono muted">${esc(h.head.replace(/^@@[^@]*@@\s?/, '') || 'line ' + (h.head.match(/\+(\d+)/) || [])[1])}</span>
         <span class="lines mono"><span class="a">+${h.add}</span> <span class="d">−${h.del}</span></span>
         <button class="cm-discard" data-discardhunk="${esc(f.path)}" data-hid="${h.id}" title="Discard this chunk" aria-label="Discard chunk ${i + 1}">${icon('Delete02', 13)}</button></label>
-      <pre class="cm-diff mono">${lines}${h.lines.length > 24 ? `\n<span class="muted">… ${h.lines.length - 24} more lines</span>` : ''}</pre>
+      <pre class="cm-diff mono scroll-fade">${lines}${h.lines.length > 24 ? `\n<span class="muted">… ${h.lines.length - 24} more lines</span>` : ''}</pre>
     </div>`;
   }).join('')}</div>`;
 }
 
 function diffView(f) {
-  if (f.binary) return `<div class="cm-diff muted">Binary file${f.bytes ? ` · ${compact(Math.round(f.bytes / 1024))} KB` : ''}</div>`;
-  if (!f.diff) return `<div class="cm-diff muted">No text changes</div>`;
+  if (f.binary) return `<div class="cm-diff muted scroll-fade">Binary file${f.bytes ? ` · ${compact(Math.round(f.bytes / 1024))} KB` : ''}</div>`;
+  if (!f.diff) return `<div class="cm-diff muted scroll-fade">No text changes</div>`;
   const lines = f.diff.split('\n').slice(0, 400).map((l) => {
     const cls = l.startsWith('@@') ? 'h' : l.startsWith('+') ? 'a' : l.startsWith('-') ? 'd' : '';
     return `<span class="${cls}">${esc(l) || ' '}</span>`;
   }).join('\n');
-  return `<pre class="cm-diff mono">${lines}</pre>`;
+  return `<pre class="cm-diff mono scroll-fade">${lines}</pre>`;
 }
 
 function card(g, i) {

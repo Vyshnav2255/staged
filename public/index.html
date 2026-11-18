@@ -18,7 +18,7 @@
   <div class="shell">
     <aside class="side">
       <a class="brand" href="#repo=all&amp;view=week" id="brandHome" title="Home"><svg class="brand-mark" viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true"><path d="M18 18H6C5.05719 18 4.58579 18 4.29289 17.7071C4 17.4142 4 16.9428 4 16C4 15.0572 4 14.5858 4.29289 14.2929C4.58579 14 5.05719 14 6 14H18C18.9428 14 19.4142 14 19.7071 14.2929C20 14.5858 20 15.0572 20 16C20 16.9428 20 17.4142 19.7071 17.7071C19.4142 18 18.9428 18 18 18Z" fill="var(--logo-box)" fill-opacity=".18" stroke="var(--logo-box)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 10H20" stroke="var(--logo-2)" stroke-width="1.75" stroke-linecap="round"/><path d="M4 6H20" stroke="var(--logo-1)" stroke-width="1.75" stroke-linecap="round"/></svg><span class="brand-word">staged</span></a>
-      <nav class="repos" id="repos" aria-label="Repositories"></nav>
+      <nav class="repos scroll-fade-x" id="repos" aria-label="Repositories"></nav>
       <div class="side-links"><button class="side-link" id="settingsLink" type="button"></button><button class="side-link" id="readmeLink" type="button"></button></div>
     </aside>
 
@@ -37,7 +37,7 @@
       </header>
 
       <div class="controls">
-        <div class="seg" id="viewSeg" role="tablist" aria-label="Group changes">
+        <div class="seg scroll-fade-x" id="viewSeg" role="tablist" aria-label="Group changes">
           <button data-v="week" role="tab">Weeks</button>
           <button data-v="feature" role="tab">Features</button>
           <button data-v="release" role="tab">Releases</button>
@@ -45,7 +45,7 @@
           <button data-v="health" role="tab">Health</button>
           <button data-v="commit" role="tab">Commit <span class="count mono" id="dirtyCount"></span></button>
         </div>
-        <div class="seg" id="rangeSeg" aria-label="Time range">
+        <div class="seg scroll-fade-x" id="rangeSeg" aria-label="Time range">
           <button data-r="4w">4w</button>
           <button data-r="12w">12w</button>
           <button data-r="1y">1y</button>

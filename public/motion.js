@@ -1,6 +1,46 @@
 // Small motion helpers used across the app. All of them step aside for reduced motion.
 const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// Shared Motion tiers for this dependency-free app. Durations and bounce mirror
+// Fluid Functionalism; CSS consumes the matching custom properties below.
+export const spring = Object.freeze({
+  fast: Object.freeze({ type: 'spring', duration: 0.08, bounce: 0, exit: Object.freeze({ duration: 0.06 }) }),
+  moderate: Object.freeze({ type: 'spring', duration: 0.16, bounce: 0, exit: Object.freeze({ duration: 0.12 }) }),
+  slow: Object.freeze({ type: 'spring', duration: 0.24, bounce: 0.12, exit: Object.freeze({ duration: 0.16 }) }),
+});
+
+export function exitFallbackMs(tier) {
+  const token = spring[tier];
+  if (!token) throw new RangeError(`Unknown motion tier: ${tier}`);
+  return Math.ceil(token.exit.duration * 1000 + 100);
+}
+
+function springEasing(bounce) {
+  const damping = bounce ? 1 - bounce * 2.5 : 1;
+  const omega = 8;
+  const valueAt = (t) => {
+    if (damping === 1) return 1 - (1 + omega * t) * Math.exp(-omega * t);
+    const damped = omega * Math.sqrt(1 - damping * damping);
+    return 1 - Math.exp(-damping * omega * t) * (
+      Math.cos(damped * t) + damping / Math.sqrt(1 - damping * damping) * Math.sin(damped * t)
+    );
+  };
+  const end = valueAt(1);
+  const points = Array.from({ length: 21 }, (_, i) => `${(valueAt(i / 20) / end).toFixed(4)} ${i * 5}%`);
+  return `linear(${points.join(', ')})`;
+}
+
+export function initMotionSystem() {
+  const style = document.documentElement.style;
+  for (const tier of Object.keys(spring)) {
+    const token = spring[tier];
+    style.setProperty(`--motion-${tier}-duration`, `${token.duration * 1000}ms`);
+    style.setProperty(`--motion-${tier}-exit-duration`, `${token.exit.duration * 1000}ms`);
+  }
+  if (!globalThis.CSS?.supports?.('transition-timing-function', 'linear(0, 1)')) return;
+  for (const tier of Object.keys(spring)) style.setProperty(`--ease-spring-${tier}`, springEasing(spring[tier].bounce));
+}
+
 // Segmented controls get a sliding thumb behind the selected button.
 function placeThumb(seg, animate) {
   const on = seg.querySelector('button[aria-selected="true"]');
