@@ -187,8 +187,10 @@ function renderHeader() {
     b.setAttribute('aria-selected', selected);
     b.tabIndex = selected || (!hasViewTab && b.dataset.v === 'week') ? 0 : -1;
   }
-  const dirty = repos.reduce((s, r) => s + (r.dirty || 0), 0);
-  $('#dirtyCount').textContent = dirty ? dirty : '';
+  // A dot while there are changes; the commit view puts the number of commits here once it has sorted them.
+  const dirty = repos.reduce((s, r) => s + (r.dirty || 0), 0), dc = $('#dirtyCount');
+  if (!dirty) { dc.textContent = ''; dc.classList.remove('is-dot'); }
+  else if (dc.dataset.repo !== state.repo || !dc.textContent) { dc.textContent = ''; dc.classList.add('is-dot'); }
   for (const b of document.querySelectorAll('#rangeSeg button')) b.setAttribute('aria-selected', b.dataset.r === state.range);
 }
 
@@ -496,37 +498,51 @@ function renderRelease(list) {
   const tagged = repos.filter((r) => r.tags.length);
   const panel = state.repo !== 'all' ? releasePanel(repos[0]) : '';
   if (!tagged.length) {
-    if (panel) return panel + `<div class="empty"><h3>No releases yet</h3><p>Hit <b>New release</b> to tag your latest commit as v0.1.0. Notes are written from your commits, and every release after that lists what changed since the one before.</p>
-      <button class="text-btn" data-goto="week">${icon('Calendar03', 14)}See weekly drops instead</button></div>`;
+    if (panel) return panel;
     return `<div class="empty">
       <h3>No releases yet</h3>
       <p>${state.repo === 'all' ? 'None of these repos has tags.' : `${esc(state.repo)} has no tags.`} Tag a commit when you ship and it shows up here as a release, with notes written from the commits since the last one.</p>
       <p style="margin-top:10px"><code>git tag v0.1 &amp;&amp; git push --tags</code></p>
-      <button class="text-btn" data-goto="week">${icon('Calendar03', 14)}See weekly drops instead</button>
     </div>`;
   }
   const keep = new Set(list.map((c) => c.sha + c.repo));
-  let html = panel;
+  let html = panel, rows = '';
+  const seenLatest = new Set();
   for (const r of tagged) {
     const sections = [];
     let cur = { name: 'Unreleased', date: null, commits: [] };
     for (const c of r.commits) {
       if (c.tags.length) {
         if (cur.commits.length || cur.name !== 'Unreleased') sections.push(cur);
-        cur = { name: c.tags[0], date: c.t, commits: [] };
+        // Several tags on one commit: the newest is its own release with nothing new in it.
+        const names = [...c.tags].sort((x, y) => y.localeCompare(x, undefined, { numeric: true }));
+        for (const n of names.slice(0, -1)) sections.push({ name: n, date: c.t, commits: [], same: names[names.length - 1] });
+        cur = { name: names[names.length - 1], date: c.t, commits: [] };
       }
       cur.commits.push(c);
     }
     sections.push(cur);
     for (const s of sections) {
       const commits = s.commits.filter((c) => keep.has(c.sha + c.repo));
-      if (!commits.length) continue;
+      if (s.name === 'Unreleased') continue; // the panel above already says what's waiting
+      if (!commits.length && !(s.same && !state.q && !state.off.size)) continue;
       const id = 'r' + hash(r.name + s.name);
       const title = (state.repo === 'all' ? r.name + ' ' : '') + s.name;
+      const open = state.expanded.has(id);
+      const isNew = s.name === 'Unreleased', latest = !isNew && !seenLatest.has(r.name);
+      if (!isNew) seenLatest.add(r.name);
       notesSource.set(id, { title, commits });
-      html += group(id, title, s.date ? dLong.format(s.date) : 'since last tag', commits);
+      rows += `<div class="rl-item${open ? ' is-open' : ''}${isNew ? ' is-new' : ''}">
+        <button class="rl-row" data-feat="${id}" aria-expanded="${open}" ${commits.length ? '' : 'disabled'}>
+          <span class="rl-name">${esc(title)}</span>${latest ? '<span class="rl-badge mono">Latest</span>' : ''}
+          <span class="rl-date mono">${s.date ? esc(dLong.format(s.date)) : ''}</span>
+          ${commits.length ? icon('ArrowRight01', 14) : '<i></i>'}
+        </button>
+        ${open ? `<div class="rl-body">${commits.map(row).join('')}<div class="more"><button class="text-btn" data-notes="${id}">${icon('Copy01', 14)}Copy notes</button></div></div>` : ''}
+      </div>`;
     }
   }
+  if (rows) html += `<div class="rl-list">${rows}</div>`;
   const untagged = repos.length - tagged.length;
   if (state.repo === 'all' && untagged) html += `<p class="note" style="margin-top:0">${untagged} other repos have no tags yet.</p>`;
   return html || emptyState();

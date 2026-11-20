@@ -393,6 +393,8 @@ function draw() {
     </div>` : '';
 
   paintPanel();
+  // The Commit tab's badge: how many commits are ready, once they are sorted.
+  { const dc = document.getElementById('dirtyCount'); if (dc && ctx.repo) { dc.dataset.repo = ctx.repo; dc.classList.toggle('is-dot', false); dc.textContent = total ? String(cs.groups.length) : ''; } }
   if (!total) {
     paintHost(banner + (outgoing().length ? `<div class="empty cm-done">${icon('ShoppingCartCheck01', 18)}<h3>Everything is in the cart</h3><p>Hold to push when you're ready.</p></div>` : `<div class="empty"><h3>Nothing to commit</h3><p>${esc(ctx.repo)} is clean on ${esc(d.branch)}.</p></div>`));
     return;
