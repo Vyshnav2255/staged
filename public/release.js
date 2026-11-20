@@ -20,18 +20,10 @@ function notesMarkdown(title, commits, withRepo) {
 // ---------- feature story ----------
 export function openStory(name, commits, repo) {
   const sorted = [...commits].sort((a, b) => a.t - b.t);
-  const first = sorted[0], last = sorted[sorted.length - 1];
-  const add = commits.reduce((s, c) => s + c.add, 0), del = commits.reduce((s, c) => s + c.del, 0);
+  const last = sorted[sorted.length - 1];
   const byMonth = new Map();
   for (const c of [...sorted].reverse()) { const k = dMonth.format(new Date(c.t)); if (!byMonth.has(k)) byMonth.set(k, []); byMonth.get(k).push(c); }
-  const busiest = [...byMonth.entries()].sort((a, b) => b[1].length - a[1].length)[0];
   const body = `<div class="story">
-    <div class="story-stats">
-      <div><div class="stat-label">Started</div><div class="mono">${dLong.format(new Date(first.t))}</div></div>
-      <div><div class="stat-label">Commits</div><div class="mono">${commits.length}</div></div>
-      <div><div class="stat-label">Lines</div><div class="mono"><span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span></div></div>
-      <div><div class="stat-label">Busiest month</div><div class="mono">${esc(busiest[0])}</div></div>
-    </div>
     <div class="story-line">
       ${[...byMonth.entries()].map(([m, cs]) => `<div class="story-month mono">${esc(m)}</div>
         ${cs.map((c) => `<div class="story-item">
@@ -94,8 +86,8 @@ export function openRelease(repo, onDone) {
     title: 'New release',
     body: `<label class="field"><span>Version</span><input class="mono" data-ver value="${esc(version)}" spellcheck="false" autofocus></label>
       <label class="field"><span>Release notes <em class="muted">from ${unreleased.length} commit${unreleased.length > 1 ? 's' : ''}${last ? ' since ' + esc(last) : ''}</em></span><textarea data-notes rows="12" class="mono">${esc(notes.trim())}</textarea></label>
-      <label class="check-row"><input type="checkbox" data-push ${repo.remote ? 'checked' : 'disabled'}> Push the tag to ${esc(hostOf(repo).name)}</label>
-      <p class="note" style="margin:0">This tags your latest commit (${esc(repo.commits[0]?.sha.slice(0, 7) || '')}) with an annotated tag. Nothing else changes.</p>`,
+      <label class="check-row"><input type="checkbox" data-push ${repo.remote ? 'checked' : 'disabled'}> ${repo.provider === 'github' ? 'Publish it on GitHub Releases' : `Push the tag to ${esc(hostOf(repo).name)}`}</label>
+      <p class="note" style="margin:0">This tags your latest commit (${esc(repo.commits[0]?.sha.slice(0, 7) || '')}) with an annotated tag${repo.provider === 'github' ? ', then publishes it as a GitHub Release with these notes' : ''}.</p>`,
     actions: `<button class="text-btn bordered" data-copynotes>${icon('Copy01', 14)}Copy notes</button><button class="btn-primary" data-create>${icon('Rocket01', 14)}Create release</button>`,
   });
   const el = m.el;
@@ -105,9 +97,9 @@ export function openRelease(repo, onDone) {
     const name = el.querySelector('[data-ver]').value.trim();
     btn.disabled = true; btn.textContent = 'Creating…';
     try {
-      await api(`/api/x/tag?repo=${encodeURIComponent(repo.name)}`, { name, notes: `${name}\n\n${el.querySelector('[data-notes]').value}`, push: el.querySelector('[data-push]').checked });
+      const r = await api(`/api/x/tag?repo=${encodeURIComponent(repo.name)}`, { name, notes: `${name}\n\n${el.querySelector('[data-notes]').value}`, body: el.querySelector('[data-notes]').value, push: el.querySelector('[data-push]').checked });
       m.close();
-      toast(`Released ${name}`);
+      toast(r.published ? `Released ${name} on GitHub` : r.release ? `Tagged ${name}. Hit Publish on GitHub to finish` : `Released ${name}`);
       celebrate();
       onDone && onDone();
     } catch (err) {
