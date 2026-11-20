@@ -97,12 +97,6 @@ export function sfxLand() {
   note(hz(14), { at: 0.07, dur: 0.75, vol: 0.1 });
 }
 
-// Push. Each commit lifts off: a little rising bloop, climbing the scale.
-export function sfxLift(i, n) {
-  const pan = n > 1 ? (i / (n - 1) - 0.5) * 0.5 : 0;
-  note(hz(PENTA[i % PENTA.length]), { dur: 0.22, vol: 0.09, glide: 1.5, pan });
-  if (i === 0) air({ dur: 0.5, vol: 0.035, from: 500, to: 2600 });
-}
 // A commit in a batch is made: a soft note that climbs with each one, so a batch plays a little run.
 export function sfxTick(i) {
   note(hz(PENTA[i % PENTA.length] + 7), { dur: 0.32, vol: 0.075 });
@@ -196,26 +190,11 @@ export function sfxTear() {
   air({ dur: 0.16, vol: 0.07, from: 2200, to: 6500, q: 0.7 });
   air({ at: 0.05, dur: 0.12, vol: 0.05, from: 4000, to: 9000, q: 0.9 });
 }
-// A dot reaches the remote: a tiny pluck.
-export function sfxCatch(i) {
-  note(hz(PENTA[(i + 3) % PENTA.length] + 12), { dur: 0.14, vol: 0.05, type: 'triangle', wet: false });
-}
-// All there: a bright little bloom with a few glints.
-export function sfxBurst() {
-  [0, 4, 7, 12].forEach((s, k) => note(hz(s + 12), { at: k * 0.035, dur: 1.1, vol: 0.075, pan: (k - 1.5) * 0.15 }));
-  for (let k = 0; k < 5; k++) note(hz(24 + PENTA[(k * 3) % PENTA.length]), { at: 0.12 + k * 0.05 + Math.random() * 0.03, dur: 0.25, vol: 0.03, type: 'triangle', pan: (Math.random() - 0.5) * 0.8 });
-  air({ dur: 0.45, vol: 0.04, from: 3000, to: 9000, q: 0.6 });
-}
 
 // Discard: a quick soft swish downwards.
 export function sfxDiscard() {
   air({ dur: 0.2, vol: 0.06, from: 3200, to: 500, q: 0.9 });
   note(hz(-5), { dur: 0.14, vol: 0.06, glide: 0.6, wet: false });
-}
-// A message has been written for you: a light two-step sparkle.
-export function sfxWrote() {
-  note(hz(19), { dur: 0.25, vol: 0.035, type: 'triangle' });
-  note(hz(24), { at: 0.06, dur: 0.35, vol: 0.03, type: 'triangle' });
 }
 
 // Changes sorted into commits: soft wooden taps as each pile settles, then a low warm landing.
