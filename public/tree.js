@@ -1,7 +1,6 @@
 // Git tree: every branch, merge and tag, drawn as lanes that grow in when you open it.
 import { icon } from './icons.js';
 import { esc, ago, dLong, api, copy, compact, reducedMotion, modal } from './ui.js';
-import { branchCard } from './health.js';
 
 const ROW = 36;      // row height
 const LANE = 16;     // lane spacing
@@ -10,6 +9,30 @@ const LANE_COLORS = ['var(--lane-0)', 'var(--t-feature)', 'var(--t-ui)', 'var(--
 
 const st = { repo: null, data: null, branches: null, all: true, limit: 300, open: null, hover: null, error: '' };
 let host = null, ctx = null;
+
+// Shown on Tree, and only when there is something to look at: another branch, a stash, or bot branches.
+function branchCard(s, hostName) {
+  if (!s) return '';
+  const local = s.branches.filter((b) => !b.remote).sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+  const bots = s.branches.filter((b) => b.remote && b.bot).length;
+  const stale = (b) => !b.current && Date.now() - Date.parse(b.date) > 30 * 864e5;
+  if (local.length <= 1 && !s.stashes.length && !bots) return '';
+  return `<section class="h-card t-branches">
+    <div class="h-head"><h2>Branches and stashes</h2><span class="mono muted">${local.length} local${bots ? ` · ${bots} bot branches on ${esc(hostName || 'your remote')} hidden` : ''}</span></div>
+    <div class="br-list">${local.map((b) => `<div class="br-row">
+        <span class="br-name">${icon('GitBranch', 14)}${esc(b.name)}${b.current ? '<span class="chip">current</span>' : ''}${b.merged && !b.current ? '<span class="chip">merged</span>' : ''}${stale(b) ? '<span class="chip is-bad">stale</span>' : ''}</span>
+        <span class="muted t-ellipsis" title="${esc(b.subject)}">${esc(b.subject)}</span>
+        <span class="mono muted" title="${dLong.format(new Date(b.date))}">${ago(Date.parse(b.date))}</span>
+        <span>${!b.current && (b.merged || stale(b)) ? `<button class="text-btn" data-copycmd="git branch ${b.merged ? '-d' : '-D'} ${esc(b.name)}" title="Copy the command to delete it">${icon('Copy01', 13)}Delete command</button>` : ''}</span>
+      </div>`).join('')}</div>
+    ${s.stashes.length ? `<h3 class="h-sub">Stashes</h3><div class="br-list">${s.stashes.map((x) => `<div class="br-row">
+        <span class="br-name">${icon('Archive02', 14)}${esc(x.ref)}</span>
+        <span class="muted t-ellipsis">${esc(x.msg)}</span>
+        <span class="mono muted">${ago(Date.parse(x.date))}</span>
+        <span><button class="text-btn" data-copycmd="git stash show -p ${esc(x.ref)}">${icon('Copy01', 13)}Show command</button></span>
+      </div>`).join('')}</div>` : ''}
+  </section>`;
+}
 
 export function mountTree(el, context) {
   host = el; ctx = context;
@@ -125,7 +148,7 @@ function draw(animate) {
   let paths = '';
   edges.forEach((e, k) => {
     const color = LANE_COLORS[e.lane % LANE_COLORS.length];
-    const delay = motion ? Math.min(e.from * 14, 900) : 0;
+    const delay = motion ? Math.min(e.from * 8, 320) : 0;
     const fade = e.to === null ? ' stroke-dasharray="3 4"' : '';
     paths += `<path class="edge ${motion ? 'grow' : ''}" data-e="${k}" data-from="${e.from}" data-to="${e.to ?? ''}" d="${edgePath(e, total)}" stroke="${color}"${fade} style="--d:${delay}ms"/>`;
   });
@@ -137,7 +160,7 @@ function draw(animate) {
     const isHead = c.sha === head;
     const merge = c.parents.length > 1;
     const tag = c.refs.some((r) => r.startsWith('tag: '));
-    const delay = motion ? Math.min(i * 14, 900) + 120 : 0;
+    const delay = motion ? Math.min(i * 8, 320) + 80 : 0;
     const shape = tag
       ? `<rect x="${x(L) - 5}" y="${y(i) - 5}" width="10" height="10" rx="2.5" transform="rotate(45 ${x(L)} ${y(i)})" fill="${color}"/>`
       : merge
