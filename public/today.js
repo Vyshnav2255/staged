@@ -76,22 +76,9 @@ function heat(a) {
     cells += `<i class="hm-c l${lv}${t === a.today ? ' is-today' : ''}" title="${f.format(t)}: ${plural(n, 'commit')}"></i>`;
   }
   return `<div class="home-panel home-heat">
-    <div class="home-panel-h"><b>Last 6 months</b><span class="mono muted">${plural(total, 'commit')} on ${plural(days, 'day')}</span></div>
+    <div class="home-panel-h"><b>Last 6 months</b></div>
     <div class="hm">${cells}</div>
     <div class="home-panel-f mono muted"><span></span><span class="hm-key">less <i class="hm-c l1"></i><i class="hm-c l2"></i><i class="hm-c l3"></i><i class="hm-c l4"></i> more</span></div>
-  </div>`;
-}
-
-function repos(a) {
-  const start = dayAt(a.ws, -7 * 11);
-  const latest = (r) => r.commits.reduce((m, c) => Math.max(m, c.t), 0);
-  const rows = (ctx.repos || []).map((r) => ({ ...r, last: latest(r) })).filter((r) => r.last >= start).sort((x, y) => y.last - x.last).slice(0, 6).map((r) => {
-    const weeks = Array.from({ length: 12 }, (_, i) => { const s = dayAt(start, i * 7), e = dayAt(s, 7); return r.commits.filter((c) => c.t >= s && c.t < e).length; });
-    return `<button class="hv-repo" data-open="${esc(r.name)}"><span class="hv-repo-name">${esc(r.name)}</span>${bars(weeks, 'is-small')}<span class="mono muted">${ago(r.last)}</span></button>`;
-  });
-  return `<div class="home-panel">
-    <div class="home-panel-h"><b>Your repos</b><span class="mono muted">last 12 weeks</span></div>
-    ${rows.length ? `<div class="hv-repos">${rows.join('')}</div>` : '<p class="muted home-none">Nothing in the last 12 weeks.</p>'}
   </div>`;
 }
 

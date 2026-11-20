@@ -1003,18 +1003,9 @@ a.brand:focus-visible { outline: 2px solid var(--logo-2); outline-offset: 2px; }
 .hv-wage { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .hv-wrow.is-old .hv-wage { color: var(--t-ui); }
 .hv-wact { display: flex; gap: 6px; justify-content: flex-end; min-width: 150px; }
-.hv-repos { display: flex; flex-direction: column; gap: 2px; }
-.hv-repo { display: grid; grid-template-columns: minmax(0, 1fr) 96px 4.5em; gap: 12px; align-items: center; padding: 6px 6px; margin: 0 -6px; border: 0; background: none; border-radius: 6px; font: inherit; font-size: 13px; color: var(--ink); text-align: left; cursor: pointer; }
-.hv-repo:hover { background: var(--hover); }
-.hv-repo .mono { font-size: 11px; text-align: right; }
-.hv-repo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.home-row { margin-bottom: 16px; }
-@media (max-width: 900px) { .hv-tiles { grid-template-columns: minmax(0, 1fr); } .hv-tile { min-height: 0; } .hv-wrow { grid-template-columns: minmax(0, 1fr) auto; } .hv-wfacts { grid-column: 1 / -1; grid-row: 2; } .hv-wage { display: none; } }
+.home-row { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 10px; margin-bottom: 16px; }
 
 /* Description toggle: quiet, so the optional description never competes with the message */
-.cm-desc-btn { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
-.cm-desc-btn:hover { color: var(--ink); }
-.cm-desc-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); opacity: .7; }
 
 /* Settings › Repos */
 
