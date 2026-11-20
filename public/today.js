@@ -99,39 +99,33 @@ function waiting() {
       <span class="hv-wage mono">${r.oldest ? `${old ? 'waiting ' : ''}${ago(r.oldest).replace(' ago', '')}` : ''}</span>
       <span class="hv-wact">
         ${r.dirty ? `<button class="btn-primary sm" data-commit="${esc(r.name)}">Commit</button>` : ''}
-        ${r.ahead ? `<button class="text-btn bordered sm ${busy === r.name ? 'is-pushing' : ''}" data-push="${esc(r.name)}" ${busy ? 'disabled' : ''}>${icon('ArrowUp02', 14)}${busy === r.name ? 'Pushing…' : 'Push'}</button>` : ''}
+        ${r.ahead ? `<button class="text-btn bordered sm" data-cart="${esc(r.name)}" title="Open the cart to push">${icon('ShoppingCart01', 14)}Cart</button>` : ''}
       </span>
     </div>`;
   };
-  return `<div class="home-head"><h3 class="h-sub">Waiting on you</h3><span class="mono muted">${plural(list.length, 'repo')}</span></div><div class="hv-wait">${list.map(row).join('')}</div>`;
+  return `<div class="home-head"><h3 class="h-sub">Waiting on you</h3></div><div class="hv-wait">${list.map(row).join('')}</div>`;
 }
 
 function loose() {
   const l = (data?.repos || []).filter((r) => r.staleBranches || r.stashes);
-  return l.length ? `<div class="home-loose"><span class="mono muted">Loose ends</span>${l.map((r) => `<button class="chip is-btn" data-health="${esc(r.name)}" title="Open health for ${esc(r.name)}">${esc(r.name)} · ${[r.staleBranches ? `${r.staleBranches} stale branch${r.staleBranches > 1 ? 'es' : ''}` : '', r.stashes ? `${r.stashes} stash${r.stashes > 1 ? 'es' : ''}` : ''].filter(Boolean).join(', ')}</button>`).join('')}</div>` : '';
+  return l.length ? `<div class="home-loose"><span class="mono muted">Loose ends</span>${l.map((r) => `<button class="chip is-btn" data-tree="${esc(r.name)}" title="See branches and stashes in ${esc(r.name)}">${esc(r.name)} · ${[r.staleBranches ? `${r.staleBranches} stale branch${r.staleBranches > 1 ? 'es' : ''}` : '', r.stashes ? `${r.stashes} stash${r.stashes > 1 ? 'es' : ''}` : ''].filter(Boolean).join(', ')}</button>`).join('')}</div>` : '';
 }
 
 function draw() {
   if (!host || host.hidden) return;
   const a = activity();
-  const html = `${story(a)}${tiles(a)}${waiting()}<div class="home-row">${heat(a)}${repos(a)}</div>${loose()}`;
+  const html = `${tiles(a)}${waiting()}<div class="home-row is-one">${heat(a)}</div>${loose()}`;
   // Only touch the page when something changed, so nothing shifts or flickers on a refresh.
   if (html === painted && host.firstElementChild) return;
   painted = html;
   host.innerHTML = html;
 }
 
-async function onClick(e) {
+function onClick(e) {
   let b;
   if ((b = e.target.closest('[data-commit]'))) return ctx.go(b.dataset.commit, 'commit');
   if ((b = e.target.closest('[data-open]'))) { const r = (data?.repos || []).find((x) => x.name === b.dataset.open); return ctx.go(b.dataset.open, r?.dirty ? 'commit' : 'week'); }
-  if ((b = e.target.closest('[data-health]'))) return ctx.go(b.dataset.health, 'health');
-  if ((b = e.target.closest('[data-push]'))) {
-    const name = b.dataset.push, r = (data?.repos || []).find((x) => x.name === name);
-    busy = name; draw();
-    const btn = host.querySelector(`[data-push="${CSS.escape(name)}"]`);
-    try { await Promise.all([api(`/api/x/push?repo=${encodeURIComponent(name)}`, {}), pushLaunch(btn, r?.ahead || 1)]); toast(`Pushed ${name}`); }
-    catch (err) { toast(err.message); }
-    busy = null; load(); ctx.onChange();
-  }
+  if ((b = e.target.closest('[data-tree]'))) return ctx.go(b.dataset.tree, 'tree');
+  // Pushing always goes through the cart (hold to push, then the receipt).
+  if ((b = e.target.closest('[data-cart]'))) return ctx.openCart(b.dataset.cart);
 }

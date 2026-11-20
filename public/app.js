@@ -1,18 +1,17 @@
 import { icon } from './icons.js';
-import { mountCommit, refreshCommit } from './commit-view.js';
+import { mountCommit, refreshCommit, setPanelRoute, openPanel, practiceCart, openStatement, applyStyle, learnedStyle } from './commit-view.js';
 import { mountTree } from './tree.js';
-import { mountHealth } from './health.js';
 import { mountHome } from './today.js';
 import { mountReadme } from './readme.js';
 import { mountSettings } from './settings.js';
-import { initUpdates, checkNow } from './update.js';
-import { pushLaunch, pushButtonDone, previewCommit, previewPush } from './fx.js';
+import { openProjectSettings } from './project.js';
+import { initUpdates } from './update.js';
+import { previewCommit } from './fx.js';
 import { soundOn, setSound } from './sfx.js';
-import { initSegs, initFluidHover, initMotionSystem, countUp, enter } from './motion.js';
-import { initGlance } from './glance.js';
+import { initSegs, initFluidHover, initMotionSystem, enter } from './motion.js';
 import { initPalette, open as openPalette } from './palette.js';
-import { recapCard, recapFor, openStory, releasePanel, openRelease, openChangelog } from './release.js';
-import { api, copy, hostOf, commitUrl } from './ui.js';
+import { openStory, releasePanel, openRelease, openChangelog } from './release.js';
+import { api, hostOf, commitUrl, esc, compact, ago, dShort, dLong, toast } from './ui.js';
 
 // ---------- constants ----------
 const TYPES = ['feature', 'ui', 'fix', 'perf', 'refactor', 'other'];
@@ -70,7 +69,6 @@ function readHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.get('repo')) state.repo = h.get('repo');
   if (VIEWS.includes(h.get('view'))) state.view = h.get('view');
-  if (h.get('view') === 'today') { state.repo = 'all'; state.view = 'week'; } // Today is part of Home now
   if (RANGES[h.get('range')]) state.range = h.get('range');
 }
 function writeHash() {
@@ -79,9 +77,7 @@ function writeHash() {
 }
 
 // ---------- data ----------
-async function load(spin) {
-  const btn = $('#refresh');
-  if (spin) btn.classList.add('spin');
+async function load() {
   try {
     const res = await fetch('/api/repos');
     const data = await res.json();
@@ -95,8 +91,6 @@ async function load(spin) {
     render();
   } catch (e) {
     $('#list').innerHTML = `<div class="empty"><h3>Couldn't read your repos</h3><p>${esc(e.message)}</p></div>`;
-  } finally {
-    btn.classList.remove('spin');
   }
 }
 
@@ -125,19 +119,16 @@ function visible() {
 // ---------- render: chrome ----------
 function renderSidebar() {
   const repos = state.data.repos;
-  const total = repos.reduce((n, r) => n + r.commits.length, 0);
-  const waiting = repos.filter((r) => r.dirty).length;
   const nameOf = (r) => `<span class="repo-name">${r.remote ? `<span class="repo-host" title="On ${esc(hostOf(r).name)}">${icon(hostOf(r).icon, 14)}</span>` : `<span class="repo-host is-local" title="Local only">${icon('Folder01', 14)}</span>`}<span class="repo-label">${esc(r.name)}</span>${r.dirty ? `<span class="repo-dirty" title="${r.dirty} uncommitted"></span>` : ''}</span>`;
   let html = `<div class="side-top">
     <button class="repo is-home" data-home aria-current="${state.repo === 'all' && !GLOBAL_VIEWS.includes(state.view)}">
       <span class="repo-name"><span class="repo-host">${icon('Home01', 14)}</span><span class="repo-label">Home</span></span>
-      <span class="repo-meta mono">${waiting ? `${waiting} repo${waiting > 1 ? 's' : ''} with work waiting` : `all clear · ${fmt.format(total)} commits`}</span>
     </button>
   </div>
-  <div class="side-sec"><span class="side-sec-h mono">Repos <b>${repos.length}</b></span>${repos.length > 6 ? `<label class="side-filter">${icon('Search01', 13)}<input id="repoFilter" type="search" placeholder="Filter" value="${esc(state.sideQ || '')}" autocomplete="off" spellcheck="false" aria-label="Filter repos"></label>` : ''}</div>
+  <div class="side-sec"><span class="side-sec-h mono">Repos</span>${repos.length > 6 ? `<label class="side-filter">${icon('Search01', 13)}<input id="repoFilter" type="search" placeholder="Filter" value="${esc(state.sideQ || '')}" autocomplete="off" spellcheck="false" aria-label="Filter repos"></label>` : ''}</div>
   <div class="repo-list scroll-fade"><i class="repo-hover" aria-hidden="true"></i>`;
   for (const r of repos) {
-    const meta = [r.last ? ago(r.last) : 'no commits', r.dirty ? `${r.dirty} uncommitted` : ''].filter(Boolean).join(' · ');
+    const meta = r.last ? ago(r.last) : 'no commits';
     const hide = state.sideQ && !r.name.toLowerCase().includes(state.sideQ.toLowerCase());
     html += `<button class="repo" data-repo="${esc(r.name)}" aria-current="${state.repo === r.name && !GLOBAL_VIEWS.includes(state.view)}" title="${esc(r.name)}"${hide ? ' hidden' : ''}>
       ${nameOf(r)}
@@ -153,33 +144,28 @@ function renderHeader() {
   const gh = $('#ghLink');
   if (state.repo === 'all') {
     $('#title').textContent = greeting();
-    const active = repos.filter((r) => r.last > Date.now() - 30 * DAY).length;
-    $('#meta').innerHTML = `<span>${icon('Calendar03', 13)}${new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</span><span>${repos.length} repos</span><span>${active} active this month</span>`;
+    $('#meta').innerHTML = `<span>${icon('Calendar03', 13)}${new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</span>`;
     gh.hidden = true;
   } else {
     const r = repos[0];
     $('#title').textContent = r.name;
-    $('#meta').innerHTML = [
-      `<span>${icon('GitBranch', 13)}${esc(r.branch)}</span>`,
-      `<span>${icon('GitCommit', 13)}${fmt.format(r.commits.length)} commits</span>`,
-      `<span>${icon('Tag01', 13)}${r.tags.length ? r.tags.length + ' tags' : 'no tags'}</span>`,
-      r.dirty ? `<span>${r.dirty} uncommitted files</span>` : '',
-      r.last ? `<span>${icon('Clock01', 13)}last commit ${ago(r.last)}</span>` : '',
-    ].join('');
+    $('#meta').innerHTML = `<span>${icon('GitBranch', 13)}${esc(r.branch)}</span>`;
     gh.hidden = !r.remote;
     gh.href = r.remote || '#';
     { const h = hostOf(r); gh.innerHTML = icon(h.icon, 16); gh.title = `Open ${r.name} on ${h.name}`; gh.setAttribute('aria-label', gh.title); }
     const rs = state.repoState && state.repoState.repo === r.name ? state.repoState : null;
-    if (rs && (rs.ahead || rs.behind)) $('#meta').innerHTML += `<span class="${rs.ahead ? 'is-ahead' : ''}">${rs.ahead ? `${icon('ArrowUp01', 13)}${rs.ahead} to push` : ''}${rs.ahead && rs.behind ? ' · ' : ''}${rs.behind ? `${icon('ArrowDown01', 13)}${rs.behind} behind` : ''}</span>`;
+    if (rs && rs.behind) $('#meta').innerHTML += `<span>${icon('ArrowDown01', 13)}${rs.behind} behind</span>`;
   }
   const push = $('#pushBtn');
   const rs2 = state.repo !== 'all' && state.repoState && state.repoState.repo === state.repo ? state.repoState : null;
   push.hidden = !(rs2 && rs2.ahead && !GLOBAL_VIEWS.includes(state.view));
-  push.innerHTML = `${icon('ArrowUp02', 15)}<span>Push ${rs2?.ahead || ''}</span>`;
+  push.innerHTML = `${icon('ShoppingCart01', 16)}<span>Cart</span><b>${rs2?.ahead || ''}</b>`;
+  push.title = 'Open the cart';
+  $('#projectBtn').hidden = state.repo === 'all' || GLOBAL_VIEWS.includes(state.view);
   $('#readmeLink').setAttribute('aria-current', state.view === 'readme');
   $('#settingsLink').setAttribute('aria-current', state.view === 'settings');
   if (state.view === 'readme') { $('#title').textContent = 'README'; $('#meta').innerHTML = '<span>How staged works</span>'; gh.hidden = true; push.hidden = true; }
-  if (state.view === 'settings') { $('#title').textContent = 'Settings'; $('#meta').innerHTML = '<span>AI, messages, sound and updates</span>'; gh.hidden = true; push.hidden = true; }
+  if (state.view === 'settings') { $('#title').textContent = 'Settings'; $('#meta').innerHTML = '<span>Repos, sound and updates</span>'; gh.hidden = true; push.hidden = true; }
   const viewTabs = [...document.querySelectorAll('#viewSeg button')];
   const hasViewTab = viewTabs.some((b) => b.dataset.v === state.view);
   for (const b of viewTabs) {
@@ -201,50 +187,39 @@ function greeting() {
 
 // ---------- render: stats ----------
 function renderStats(list) {
-  const n = RANGES[state.range];
+  const n = RANGES[range()];
   let prev = null;
   if (n !== Infinity) {
     const end = rangeStart();
     const start = end - n * WEEK;
     prev = allCommits().filter((c) => c.t >= start && c.t < end && matches(c));
   }
-  const sum = (l) => {
-    const days = new Set(l.map((c) => new Date(c.t).toDateString()));
-    const add = l.reduce((s, c) => s + c.add, 0), del = l.reduce((s, c) => s + c.del, 0);
-    const feat = l.filter((c) => c.type === 'feature').length;
-    const fix = l.filter((c) => c.type === 'fix').length;
-    return { commits: l.length, days: days.size, add, del, feat, fixShare: l.length ? Math.round((fix / l.length) * 100) : 0 };
-  };
+  const sum = (l) => ({ commits: l.length, add: l.reduce((s, c) => s + c.add, 0), del: l.reduce((s, c) => s + c.del, 0), feat: l.filter((c) => c.type === 'feature').length });
   const a = sum(list), b = prev && sum(prev);
-  const delta = (k, invert) => {
-    if (!b) return '<div class="stat-delta">all time</div>';
-    const d = a[k] - b[k];
-    if (!b[k] && !a[k]) return '<div class="stat-delta">–</div>';
-    const cls = d === 0 ? '' : (d > 0) !== !!invert ? 'up' : 'down';
-    const txt = k === 'fixShare' ? `${d > 0 ? '+' : ''}${d} pts` : `${d > 0 ? '+' : ''}${fmt.format(d)}`;
-    return `<div class="stat-delta mono ${cls}">${d === 0 ? 'same as' : txt + ' vs'} previous ${state.range}</div>`;
+  // The comparison is named once, on the first tile; the others just show the change.
+  const delta = (k, first) => {
+    if (!b) return first ? '<div class="stat-delta">all time</div>' : '';
+    const d = k === 'lines' ? (a.add + a.del) - (b.add + b.del) : a[k] - b[k];
+    const cls = d === 0 ? '' : d > 0 ? 'up' : 'down';
+    return `<div class="stat-delta mono ${cls}">${d === 0 ? 'same' : `${d > 0 ? '+' : '−'}${compact(Math.abs(d))}`}${first ? ` vs previous ${range()}` : ''}</div>`;
   };
-  const num = (k, n) => `<span class="num" data-k="${k}" data-n="${n}">${fmt.format(n)}</span>`;
   $('#stats').innerHTML = [
-    ['Commits', num('commits', a.commits), delta('commits')],
-    ['Active days', num('days', a.days), delta('days')],
-    ['Lines changed', `${compact(a.add + a.del)} <small><span style="color:var(--add)">+${compact(a.add)}</span> <span style="color:var(--del)">−${compact(a.del)}</span></small>`, b ? `<div class="stat-delta mono">${compact(b.add + b.del)} previous ${state.range}</div>` : delta()],
-    ['Features shipped', num('feat', a.feat), delta('feat')],
-    ['Fix share', `${num('fix', a.fixShare)}<small>%</small>`, delta('fixShare', true)],
+    ['Commits', fmt.format(a.commits), delta('commits', true)],
+    ['Lines changed', `${compact(a.add + a.del)} <small><span style="color:var(--add)">+${compact(a.add)}</span> <span style="color:var(--del)">−${compact(a.del)}</span></small>`, delta('lines')],
+    ['Features shipped', fmt.format(a.feat), delta('feat')],
   ].map(([l, v, d]) => `<div class="stat"><div class="stat-label">${l}</div><div class="stat-value">${v}</div>${d}</div>`).join('');
-  for (const el of $('#stats').querySelectorAll('.num')) countUp(el, +el.dataset.n, el.dataset.k, (n) => fmt.format(Math.round(n)));
 }
 
 // ---------- render: chart ----------
 function renderLegend() {
-  $('#legend').innerHTML = TYPES.map((t) =>
+  const start = rangeStart(), seen = new Set(allCommits().filter((c) => c.t >= start).map((c) => c.type));
+  $('#legend').innerHTML = TYPES.filter((t) => seen.has(t) || state.off.has(t)).map((t) =>
     `<button data-type="${t}" aria-pressed="${!state.off.has(t)}" title="Show or hide ${TYPE_LABEL[t]}"><span class="dot" style="background:var(--t-${t})"></span>${TYPE_LABEL[t]}</button>`).join('');
 }
 
 function renderChart(list) {
   const el = $('#chart');
-  const n = RANGES[state.range];
-  const allL = allCommits();
+  const n = RANGES[range()];
   const oldest = list.length ? list[list.length - 1].t : Date.now();
   const spanWeeks = n === Infinity ? Math.ceil((Date.now() - oldest) / WEEK) + 1 : n;
   const monthly = spanWeeks > 60;
@@ -266,7 +241,6 @@ function renderChart(list) {
     const i = idx.get(k);
     if (i !== undefined) data[i][c.type]++;
   }
-  void allL;
   const totals = data.map((d) => TYPES.reduce((s, t) => s + d[t], 0));
   const max = Math.max(4, ...totals);
   const step = niceStep(max);
@@ -310,10 +284,7 @@ function renderChart(list) {
     cols += `<g class="col" data-i="${i}" ${navigable ? `role="button" tabindex="${i === 0 ? 0 : -1}"` : 'role="img"'} aria-label="${esc(chartLabel)}" style="--i:${buckets.length - 1 - i}"><rect class="hit" x="${padL + i * bw}" y="${padT}" width="${bw}" height="${ih}" rx="4"/>${segs}</g>`;
     if (label && (i === buckets.length - 1 ? true : buckets.length - 1 - i >= labelEvery * 0.6)) axis += label;
   });
-  const key = [state.repo, state.range, state.view, [...state.off].join()].join('|');
-  const grow = key !== renderChart.key;
-  renderChart.key = key;
-  el.innerHTML = `<svg class="${grow ? 'is-grow' : ''}" viewBox="0 0 ${W} ${H}" role="group" aria-label="${esc($('#chartTitle').textContent)}">
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="group" aria-label="${esc($('#chartTitle').textContent)}">
     <g class="grid">${grid}</g>
     <line class="baseline" x1="${padL}" x2="${W}" y1="${y(0) + .5}" y2="${y(0) + .5}"/>
     <g>${cols}</g><g class="axis">${axis}</g></svg>`;
@@ -485,12 +456,11 @@ function renderFeature(list) {
       const shown = open ? f.commits : f.commits.slice(0, PAGE);
       html += `<div class="feat-body">${shown.map(row).join('')}
         <div class="more">${f.commits.length > PAGE ? `<button class="text-btn" data-toggle="${id}">${open ? 'Show less' : `Show ${f.commits.length - PAGE} more`}</button>` : ''}
-        <button class="text-btn" data-story="${esc(f.key)}">${icon('Note01', 14)}Read its story</button>
-        <button class="text-btn" data-notes="${id}">${icon('Layers01', 14)}Copy notes</button></div></div>`;
+        <button class="text-btn" data-story="${esc(f.key)}">${icon('Note01', 14)}Read its story</button></div></div>`;
     }
   }
   if (feats.length > 30) html += `<div class="more"><button class="text-btn" data-toggle="features">${state.open.has('features') ? 'Show fewer' : `Show all ${feats.length} areas`}</button></div>`;
-  return `<p class="note">Areas come from the folders and files each commit touched. Add a <code class="mono">.changes.json</code> to a repo to name them yourself.</p>` + html;
+  return html;
 }
 
 function renderRelease(list) {
@@ -575,8 +545,8 @@ function ctxFor(view) {
     repo: state.repo, view, q: state.q, repos: state.data.repos, remote: r?.remote || '', host: hostOf(r), commitUrl: (sha) => commitUrl(r, sha),
     pickRepo: (name) => { state.repo = name; render(); },
     go: (name, v) => { state.repo = name; state.view = v; render(); scrollTo({ top: 0 }); },
+    openCart: (name) => { state.repo = name; state.view = 'week'; state.repoState = null; render(); refreshRepoState(); scrollTo({ top: 0 }); openPanel(); },
     onChange: () => { load(false); refreshRepoState(); },
-    recap: () => recapFor(state.data.repos.flatMap((x) => x.commits)),
     openSettings,
     typeOf: (() => { const m = new Map((r?.commits || []).map((c) => [c.sha, c.type])); return (sha) => m.get(sha) || null; })(),
   };
@@ -592,6 +562,7 @@ function render() {
   if (moved) requestAnimationFrame(() => document.querySelectorAll('.main > :not(.head):not([hidden])').forEach((x) => { if (!x.matches('.controls')) enter(x); }));
   renderSidebar();
   renderHeader();
+  { const r = state.data.repos.find((x) => x.name === state.repo); setPanelRoute({ repo: state.repo, view: state.view, remote: r?.remote || '', provider: r?.provider || '' }, () => { refreshRepoState(); load(false); }); }
   const v = state.view;
   const main = document.querySelector('.main');
   for (const x of VIEWS) main.classList.toggle('is-' + x, x === v);
@@ -657,20 +628,12 @@ function notes(id) {
   }
   navigator.clipboard.writeText(md).then(() => toast('Release notes copied'), () => toast("Couldn't copy"));
 }
-let toastT;
-function toast(msg) {
-  const t = $('#toast');
-  t.textContent = msg;
-  t.hidden = false;
-  t.classList.remove('is-out');
-  clearTimeout(toastT);
-  toastT = setTimeout(() => { t.classList.add('is-out'); toastT = setTimeout(() => (t.hidden = true), 200); }, 1800);
-}
-
 // ---------- events ----------
 $('#searchIcon').innerHTML = icon('Search01', 15);
-$('#refresh').innerHTML = icon('Refresh01', 16);
-$('#cmdk').innerHTML = `${icon('Command', 14)}<span class="mono">K</span>`;
+$('#projectBtn').innerHTML = icon('Settings02', 16);
+const projectSettings = () => openProjectSettings(state.repo, { learned: learnedStyle(state.repo), onChange: () => applyStyle(state.repo) });
+$('#projectBtn').addEventListener('click', projectSettings);
+addEventListener('staged:project-settings', projectSettings);
 $('#readmeLink').innerHTML = `${icon('BookOpen01', 15)}<span>README</span>`;
 $('#settingsLink').innerHTML = `${icon('Settings02', 15)}<span>Settings</span>`;
 $('#settingsLink').addEventListener('click', () => openSettings());
@@ -678,7 +641,6 @@ initUpdates(document.querySelector('.side'));
 initMotionSystem();
 initSegs();
 initFluidHover($('#repos'));
-initGlance($('.main'));
 $('#readmeLink').addEventListener('click', () => { if (!GLOBAL_VIEWS.includes(state.view)) state.lastView = state.view; state.view = 'readme'; render(); scrollTo({ top: 0 }); });
 
 $('#repos').addEventListener('input', (e) => {
@@ -711,33 +673,22 @@ function goHome() {
   render(); scrollTo({ top: 0, behavior: 'smooth' });
 }
 $('#brandHome').addEventListener('click', (e) => { e.preventDefault(); goHome(); });
-$('#pushBtn').addEventListener('click', async () => {
-  const b = $('#pushBtn'); const was = b.innerHTML;
-  b.disabled = true; b.classList.add('is-pushing'); b.innerHTML = `${icon('ArrowUp02', 15)}<span>Pushing…</span>`;
-  try {
-    await Promise.all([api(`/api/x/push?repo=${encodeURIComponent(state.repo)}`, {}), pushLaunch(b, state.repoState?.ahead || 1)]);
-    b.innerHTML = `${icon('Tick02', 15)}<span>Pushed</span>`;
-    pushButtonDone(b, was);
-    toast(`Pushed to ${hostOf(state.data.repos.find((x) => x.name === state.repo)).name}`);
-    await new Promise((r) => setTimeout(r, 1400));
-  } catch (err) { b.classList.remove('is-pushing'); b.innerHTML = was; toast(err.message); }
-  b.disabled = false; refreshRepoState(); load(false);
-});
-$('#cmdk').addEventListener('click', () => openPalette());
+// Pushing happens in the side panel (hold to push). This button brings the panel back after you close it.
+$('#pushBtn').addEventListener('click', () => openPanel());
 initPalette((q) => {
   const items = [];
   const repos = state.data ? state.data.repos : [];
   const goRepo = (name, view) => () => { state.repo = name; if (view) state.view = view; else if (GLOBAL_VIEWS.includes(state.view)) state.view = 'week'; state.repoState = null; render(); refreshRepoState(); scrollTo({ top: 0 }); };
   items.push({ group: 'Go to', label: 'Home', hint: 'what is waiting, across every repo', run: goHome });
   items.push({ group: 'Actions', label: 'Preview commit animation', hint: 'nothing is committed', run: () => setTimeout(previewCommit, 200) });
-  items.push({ group: 'Actions', label: 'Preview push animation', hint: 'nothing is pushed', run: () => setTimeout(previewPush, 200) });
+  items.push({ group: 'Actions', label: 'Try the cart and push', hint: 'practice, nothing is pushed', run: () => setTimeout(practiceCart, 200) });
+  items.push({ group: 'Actions', label: "Print this week's statement", hint: 'every push this week, added up', run: () => setTimeout(openStatement, 200) });
   items.push({ group: 'Actions', label: soundOn() ? 'Turn sounds off' : 'Turn sounds on', hint: 'commit and push sounds', run: () => { setSound(!soundOn()); toast(soundOn() ? 'Sounds on' : 'Sounds off'); } });
-  items.push({ group: 'Actions', label: 'Check for updates', hint: 'new versions of staged', run: checkNow });
-  items.push({ group: 'Go to', label: 'Settings', hint: 'AI, models, message style, sound', run: () => openSettings() });
-  items.push({ group: 'Go to', label: 'AI settings', hint: 'who writes and groups your commits', run: () => openSettings('ai') });
+  items.push({ group: 'Go to', label: 'Settings', hint: 'Repos, sound, updates', run: () => openSettings() });
+  if (state.repo !== 'all') items.push({ group: 'Go to', label: 'Project settings', hint: `${state.repo}: commit message style`, run: projectSettings });
   items.push({ group: 'Go to', label: 'README', hint: 'how staged works', run: () => { state.view = 'readme'; render(); scrollTo({ top: 0 }); } });
   for (const r of repos) items.push({ group: 'Repos', label: r.name, hint: r.dirty ? `${r.dirty} uncommitted` : r.last ? ago(r.last) : '', run: goRepo(r.name) });
-  const views = [['week', 'By week'], ['feature', 'By feature'], ['release', 'By release'], ['tree', 'Git tree'], ['health', 'Health and site weight'], ['commit', 'Commit changes']];
+  const views = [['week', 'Weeks'], ['feature', 'Features'], ['release', 'Releases'], ['tree', 'Tree'], ['commit', 'Commit']];
   for (const [v, label] of views) items.push({ group: 'Views', label, hint: state.repo === 'all' ? '' : state.repo, run: () => { state.view = v; render(); } });
   const cur = repos.find((r) => r.name === state.repo);
   if (cur) {

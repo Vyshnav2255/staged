@@ -1,8 +1,8 @@
 import { icon } from './icons.js';
-import { commitFold, discardOut, foldRepaint } from './fx.js';
+import { commitFold, discardOut } from './fx.js';
 import { pickEmoji as emojiPicker } from './emoji.js';
-import { sfxWrote, sfxTick, sfxLand, sfxDrain, sfxApproved, sfxLaser, sfxStamp, sfxTear, sfxBeeps } from './sfx.js';
-import { confirmDialog, toast, ago } from './ui.js';
+import { sfxTick, sfxLand, sfxDrain, sfxApproved, sfxLaser, sfxStamp, sfxTear, sfxBeeps } from './sfx.js';
+import { confirmDialog, toast, ago, api } from './ui.js';
 import { shareSpec } from './receipt-image.js';
 import { MARK, specHtml, receiptSpec, statementSpec, compareUrl, logPush, weekOf } from './receipt.js';
 const LEAD = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Component}|\uFE0F|\u200D)+\s*/u;
@@ -21,28 +21,40 @@ const GITMOJI = [
   ['👷', 'ci', 'CI'], ['✅', 'test', 'Tests'], ['🔒️', 'fix', 'Security'], ['⏪️', 'revert', 'Revert'],
   ['🔀', 'chore', 'Merge'], ['🧑‍💻', 'chore', 'Developer experience'], ['🥚', 'feat', 'Easter egg'], ['🚀', 'chore', 'Deploy'],
 ];
-const GL_TYPE = { feat: 'feature', style: 'ui', fix: 'fix', perf: 'perf', refactor: 'refactor', chore: 'refactor', build: 'refactor', docs: 'other', test: 'other', ci: 'other' };
 const TYPE_EMOJI = { feat: '✨', fix: '🐛', style: '💄', perf: '⚡️', refactor: '♻️', docs: '📝', chore: '🔧', build: '📦', ci: '👷', test: '✅' };
 
 let store = {};
 try { store = JSON.parse(localStorage.getItem('changes.commit') || '{}'); } catch {}
 const save = () => { try { localStorage.setItem('changes.commit', JSON.stringify(store)); } catch {} };
+// Message style is per project: your pick for this repo, else the style its history already uses
+// (conventional or plain), else your default from Settings.
+export function learnedStyle(repo) { return cs.repo === repo ? cs.data?.grouping?.style?.format : undefined; }
+// Project settings changed this repo's style: re-read it and redraw the cards.
+export function applyStyle(repo) {
+  try { store = JSON.parse(localStorage.getItem('changes.commit') || '{}'); } catch {}
+  if (cs.repo !== repo) return;
+  cs.format = formatFor(repo, learnedStyle(repo));
+  for (const g of cs.groups) if (g.edited != null && g.editedFormat !== cs.format) g.edited = null;
+  if (host && !host.hidden) draw();
+}
+function formatFor(repo, learned) {
+  const own = store.formats?.[repo];
+  if (own) return own;
+  if (learned === 'conventional' || learned === 'plain') return learned;
+  return store.format || 'gitmoji';
+}
 
 const cs = {
   repo: null, data: null, groups: [], files: new Map(), off: new Set(), open: new Set(), bodyOpen: new Set(),
   busy: null, error: '', banner: null, format: store.format || 'gitmoji', loading: false, hunksOff: new Map(), hunkOpen: new Set(),
-  engine: 'rules', writing: new Set(), grouping: false,
+  grouping: false,
+  // The side panel: reviewing a batch before it's made, making it, then everything waiting to be pushed.
+  panel: { mode: null, order: [], state: new Map(), pushed: null, fresh: null },
 };
 let host = null, ctx = null;
 
-const api = async (path, body) => {
-  const res = await fetch(path, body ? { method: 'POST', headers: { 'content-type': 'application/json', 'x-changes': '1' }, body: JSON.stringify(body) } : {});
-  const data = await res.json().catch(() => ({ error: res.statusText }));
-  if (!res.ok || data.error) throw new Error(data.error || res.statusText);
-  return data;
-};
 
-export function subjectFor(g, format = cs.format) {
+function subjectFor(g, format = cs.format) {
   if (g.edited != null) return format === 'conventional' || format === 'plain' ? g.edited : `${g.emoji || '✨'} ${g.edited.replace(LEAD, '')}`;
   const scope = g.scope ? `(${g.scope})` : '';
   const emoji = g.emoji || TYPE_EMOJI[g.type] || '✨';
@@ -57,7 +69,7 @@ const messageFor = (g) => {
   return body ? `${subj}\n\n${body}` : subj;
 };
 
-// Each repo's plan (groups, messages written by the AI, your edits, unticked files) is kept, so
+// Each repo's plan (groups, messages, your edits, unticked files) is kept, so
 // leaving the Commit tab or switching repos and coming back picks up where you left off. Files
 // that were committed or reverted drop out; new ones land in a "New changes" card.
 const PLANS = 'staged-commit-plans';
@@ -149,26 +161,23 @@ function mergeFiles(newFiles) {
   }
 }
 
-export async function loadChanges(repo, { keep } = {}) {
+async function loadChanges(repo, { keep } = {}) {
   const same = cs.repo === repo;
   cs.repo = repo;
   cs.loading = !same || !cs.data;
-  if (!same) { cs.data = null; cs.groups = []; cs.off.clear(); cs.open.clear(); cs.bodyOpen.clear(); cs.hunksOff.clear(); cs.hunkOpen.clear(); cs.banner = null; cs.error = ''; }
+  if (!same) { cs.data = null; cs.groups = []; cs.off.clear(); cs.open.clear(); cs.bodyOpen.clear(); cs.hunksOff.clear(); cs.hunkOpen.clear(); cs.panel = { mode: null, order: [], state: new Map(), pushed: null, fresh: null }; cs.banner = null; cs.error = ''; }
   draw();
   try {
     const data = await api(`/api/changes?repo=${encodeURIComponent(repo)}`);
     if (cs.repo !== repo) return;
     cs.data = data;
-    if (!store.format) {
-      const learnedFormat = data.grouping?.style?.format;
-      cs.format = learnedFormat === 'conventional' || learnedFormat === 'plain' ? learnedFormat : 'gitmoji';
-    }
+    if (pd.repo === repo) Object.assign(pd, { branch: data.branch, canUndo: data.canUndo, outgoing: data.outgoing, at: Date.now() });
+    cs.format = formatFor(repo, data.grouping?.style?.format);
     cs.files = new Map(data.files.map((f) => [f.path, f]));
     let restored = false;
     if (keep && cs.groups.length) mergeFiles(data.files);
     else if (!(restored = restore(repo, data.files))) adoptGroups(data.groups);
     cs.error = '';
-    pickEngine().then(draw);
   } catch (e) {
     cs.error = e.message;
   }
@@ -180,10 +189,6 @@ export async function loadChanges(repo, { keep } = {}) {
 let introT;
 function intro() { host?.classList.add('is-intro'); clearTimeout(introT); introT = setTimeout(() => host?.classList.remove('is-intro'), 900); }
 
-// Settings can change the engines and the message style while this tab is closed.
-async function pickEngine() {
-  cs.engine = await ai.pick();
-}
 // Hold to discard a suggested commit: 1.5s of holding, let go to cancel. Keyboard users get the dialog.
 const HOLD_MS = 1500;
 function discardWhat(g) {
@@ -208,10 +213,9 @@ function onHold(e) {
 
 export function mountCommit(el, context) {
   host = el; ctx = context;
-  if (!host.dataset.holdBound) { host.addEventListener('pointerdown', onHold); host.dataset.holdBound = '1'; }
+  if (!host.dataset.holdBound) { host.addEventListener('pointerdown', onHold); host.addEventListener('pointerdown', dragStart); host.dataset.holdBound = '1'; }
   try { store = JSON.parse(localStorage.getItem('changes.commit') || '{}'); } catch {}
-  cs.format = store.format || 'gitmoji';
-  if (cs.data) pickEngine().then(draw);
+  cs.format = formatFor(ctx.repo, cs.repo === ctx.repo ? cs.data?.grouping?.style?.format : undefined);
   if (!host.dataset.bound) { host.addEventListener('click', onClick); host.addEventListener('input', onInput); host.addEventListener('change', onChange); host.dataset.bound = '1'; }
   if (ctx.repo === 'all') return drawAll();
   if (cs.repo !== ctx.repo || !cs.data) loadChanges(ctx.repo);
@@ -238,34 +242,31 @@ function fileRow(p, g) {
   const dirn = p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) : '';
   const base = p.slice(dirn.length);
   const on = isOn(g, p);
-  const open = cs.open.has(p);
+  const key = g.id + '|' + p; // a file split across commits opens per card, not everywhere it appears
+  const open = cs.open.has(key);
   const all = f.hunks || [];
   const hk = ownedHunks(g, p);
   const split = isSplit(g, p);
   const offH = cs.hunksOff.get(p) || new Set();
   const offN = hk.filter((h) => offH.has(h.id)).length;
   const v = viewOf(g, p);
-  const hOpen = cs.hunkOpen.has(p);
+  const hOpen = cs.hunkOpen.has(key);
   const warn = (f.warnings || []);
-  const others = cs.groups.filter((x) => x !== g);
-  return `<div class="cm-file ${on ? '' : 'is-off'}">
+  const moved = cs.justMoved === p + '|' + g.id;
+  return `<div class="cm-file ${on ? '' : 'is-off'} ${moved ? 'is-moved' : ''}" data-row="${esc(p)}" data-g="${esc(g.id)}">
+    <button class="cm-grip" data-moveopen="${esc(p)}" data-g="${esc(g.id)}" aria-haspopup="menu" title="Drag to another commit, or click to pick one" aria-label="Move ${esc(base)} to another commit"><i></i></button>
     <label class="cm-check" title="${on ? 'Leave out of this commit' : 'Include in this commit'}"><input type="checkbox" data-file="${esc(p)}" data-g="${esc(g.id)}" ${on ? 'checked' : ''}><span></span></label>
     <span class="cm-status s-${f.status}" title="${STATUS[f.status] || f.status}${f.untracked ? ' (new file)' : ''}">${f.status}</span>
-    <button class="cm-path" data-diff="${esc(p)}" aria-expanded="${open}" title="${esc(f.from ? `${f.from} → ${p}` : p)}"><span class="dir">${esc(dirn)}</span>${esc(base)}</button>
+    <button class="cm-path" data-diff="${esc(p)}" data-g="${esc(g.id)}" aria-expanded="${open}" title="${esc(f.from ? `${f.from} → ${p}` : p)}"><span class="dir">${esc(dirn)}</span>${esc(base)}</button>
     <span class="cm-extra">
       ${warn.map((w) => `<span class="chip ${w.level === 'high' ? 'is-bad' : w.level === 'mid' ? 'is-warn' : ''}" title="${esc(w.text)}">${icon('Alert02', 12)}${esc(w.text)}</span>`).join('')}
-      ${hk.length && (all.length > 1 || split) ? `<button class="chip is-btn ${offN || split ? 'is-on' : ''}" data-chunks="${esc(p)}" aria-expanded="${hOpen}" title="${split ? `This commit takes ${hk.length} of the file's ${all.length} chunks; the rest are in other commits. Click to pick.` : 'Pick which chunks of this file go in'}">${split || offN ? `${hk.length - offN} of ${all.length} chunks` : `${all.length} chunks`}</button>` : ''}
+      ${hk.length && (all.length > 1 || split) ? `<button class="chip is-btn ${offN || split ? 'is-on' : ''}" data-chunks="${esc(p)}" data-g="${esc(g.id)}" aria-expanded="${hOpen}" title="${split ? `This commit takes ${hk.length} of the file's ${all.length} chunks; the rest are in other commits. Click to pick.` : 'Pick which chunks of this file go in'}">${split || offN ? `${hk.length - offN} of ${all.length} chunks` : `${all.length} chunks`}</button>` : ''}
       <span class="lines mono">${f.binary ? '<span class="muted">binary</span>' : `<span class="a">+${compact(v.add)}</span> <span class="d">−${compact(v.del)}</span>`}</span>
     </span>
-    <button class="cm-discard" data-discard="${esc(p)}" data-g="${esc(g.id)}" title="Discard ${split ? 'these chunks of' : 'changes to'} to ${esc(base)}" aria-label="Discard changes to ${esc(base)}">${icon('Delete02', 14)}</button>
-    <span class="cm-move-wrap"><select class="cm-move" data-move="${esc(p)}" data-g="${esc(g.id)}" aria-label="Move to another commit">
-      <option value="">Move to…</option>
-      ${others.map((o) => `<option value="${esc(o.id)}">${esc(clip(subjectFor(o), 48))}</option>`).join('')}
-      <option value="__new">New commit</option>
-    </select></span>
+    <button class="cm-discard" data-discard="${esc(p)}" data-g="${esc(g.id)}" title="Discard ${split ? 'these chunks of' : 'changes to'} ${esc(base)}" aria-label="Discard changes to ${esc(base)}">${icon('Delete02', 14)}</button>
   </div>
-  ${hOpen && hk.length ? fresh(chunkView(f, offH, g), p) : ''}
-  ${open && !hOpen ? fresh(diffView(v), p) : ''}`;
+  ${hOpen && hk.length ? fresh(chunkView(f, offH, g), key) : ''}
+  ${open && !hOpen ? fresh(diffView(v), key) : ''}`;
 }
 
 // Diffs and chunk pickers open and close with their real height, so the cards below glide instead of jumping.
@@ -307,25 +308,38 @@ function chunkView(f, offH, g) {
   return `<div class="cm-chunks">${f.hunks.map((h, i) => {
     if (!own.has(h.id)) return '';
     const on = !offH.has(h.id);
-    const lines = h.lines.slice(0, 24).map((l) => `<span class="${l.startsWith('+') ? 'a' : l.startsWith('-') ? 'd' : ''}">${esc(l) || ' '}</span>`).join('\n');
     return `<div class="cm-chunk ${on ? '' : 'is-off'}">
       <label class="cm-chunk-head"><span class="cm-check"><input type="checkbox" data-hunk="${esc(f.path)}" data-g="${esc(g.id)}" data-hid="${h.id}" ${on ? 'checked' : ''}><span></span></span>
         <span class="mono">Chunk ${i + 1}</span><span class="mono muted">${esc(h.head.replace(/^@@[^@]*@@\s?/, '') || 'line ' + (h.head.match(/\+(\d+)/) || [])[1])}</span>
         <span class="lines mono"><span class="a">+${h.add}</span> <span class="d">−${h.del}</span></span>
         <button class="cm-discard" data-discardhunk="${esc(f.path)}" data-hid="${h.id}" title="Discard this chunk" aria-label="Discard chunk ${i + 1}">${icon('Delete02', 13)}</button></label>
-      <pre class="cm-diff mono scroll-fade">${lines}${h.lines.length > 24 ? `\n<span class="muted">… ${h.lines.length - 24} more lines</span>` : ''}</pre>
+      <div class="cm-dv mono">${diffRows([h.head, ...h.lines], { heads: false, max: 40 })}</div>
     </div>`;
   }).join('')}</div>`;
 }
 
+// A diff as rows: old and new line numbers, the sign, then the code. Long lines wrap instead of scrolling sideways.
+function diffRows(lines, { heads = true, max = 400 } = {}) {
+  let o = 0, n = 0, out = '', shown = 0;
+  for (const l of lines) {
+    if (l.startsWith('@@')) {
+      const m = l.match(/-(\d+)(?:,\d+)?\s+\+(\d+)/); if (m) { o = +m[1]; n = +m[2]; }
+      if (heads) out += `<div class="dl h"><span>From line ${n}</span></div>`;
+      continue;
+    }
+    if (l.startsWith('\\') || (shown >= max)) continue;
+    const k = l[0] === '+' ? 'a' : l[0] === '-' ? 'd' : '';
+    const on = k === 'a' ? '' : o++, nn = k === 'd' ? '' : n++;
+    out += `<div class="dl ${k}"><i>${on}</i><i>${nn}</i><b>${k === 'a' ? '+' : k === 'd' ? '−' : ''}</b><code>${esc(l.slice(1)) || ' '}</code></div>`;
+    shown++;
+  }
+  const more = lines.filter((l) => !l.startsWith('@@')).length - shown;
+  return out + (more > 0 ? `<div class="dl h"><span>${more} more line${more > 1 ? 's' : ''}</span></div>` : '');
+}
 function diffView(f) {
-  if (f.binary) return `<div class="cm-diff muted scroll-fade">Binary file${f.bytes ? ` · ${compact(Math.round(f.bytes / 1024))} KB` : ''}</div>`;
-  if (!f.diff) return `<div class="cm-diff muted scroll-fade">No text changes</div>`;
-  const lines = f.diff.split('\n').slice(0, 400).map((l) => {
-    const cls = l.startsWith('@@') ? 'h' : l.startsWith('+') ? 'a' : l.startsWith('-') ? 'd' : '';
-    return `<span class="${cls}">${esc(l) || ' '}</span>`;
-  }).join('\n');
-  return `<pre class="cm-diff mono scroll-fade">${lines}</pre>`;
+  if (f.binary) return `<div class="cm-diff cm-dv is-note">Binary file${f.bytes ? ` · ${compact(Math.round(f.bytes / 1024))} KB` : ''}</div>`;
+  if (!f.diff) return `<div class="cm-diff cm-dv is-note">No text changes</div>`;
+  return `<div class="cm-diff cm-dv mono">${diffRows(f.diff.replace(/\n$/, '').split('\n'))}</div>`;
 }
 
 function card(g, i) {
@@ -337,36 +351,26 @@ function card(g, i) {
   const subj = subjectFor(g);
   const highs = picked.flatMap((p) => (cs.files.get(p)?.warnings || []).filter((w) => w.level === 'high').map((w) => `${p.split('/').pop()} ${w.text}`));
   const long = subj.length > 72;
-  // The description is optional, so it stays tucked away until asked for, even when the AI wrote one.
+  // The description is optional, so it stays tucked away until asked for.
   const bodyOpen = cs.bodyOpen.has(g.id), hasBody = !!(g.body || '').trim();
-  const writing = cs.writing.has(g.id);
-  return `<section class="cm-card ${writing ? 'is-writing' : ''}" data-group="${esc(g.id)}" data-gl="${esc(subj)}" data-gl-n="${picked.length}" data-gl-unit="file" data-gl-mix="${GL_TYPE[g.type] || 'other'}:1">
+  return `<section class="cm-card" data-drop="${esc(g.id)}" data-group="${esc(g.id)}">
     <header class="cm-head">
-      <span class="cm-num mono">${i + 1}</span>
       <div class="cm-subject ${long ? 'is-long' : ''} ${cs.format === 'gitmoji' || cs.format === 'both' ? 'has-emoji' : ''}">
         ${cs.format === 'gitmoji' || cs.format === 'both' ? `<button class="cm-emoji" data-emoji="${esc(g.id)}" title="Pick a gitmoji">${esc(g.emoji || '✨')}</button>` : ''}
-        <input data-subject="${esc(g.id)}" value="${esc(cs.format === 'conventional' ? subj : subj.replace(LEAD, ''))}" spellcheck="true" aria-label="Commit message" placeholder="Write your own message" ${writing ? 'readonly' : ''}>
-        <span class="cm-subj-tools">
-          <span class="cm-count mono" title="Keep the first line under 72 characters">${subj.length}</span>
-          <button class="cm-tool" data-clear="${esc(g.id)}" title="Clear the message and write your own" aria-label="Clear message">${icon('Eraser', 14)}</button>
-          <button class="cm-tool is-ai" data-write="${esc(g.id)}" ${writing ? 'disabled' : ''} title="Rewrite this message with ${esc(ai.ENGINES[cs.engine].short)}" aria-label="Rewrite message">${icon('MagicWand01', 14)}</button>
-        </span>
+        <input data-subject="${esc(g.id)}" value="${esc(cs.format === 'conventional' ? subj : subj.replace(LEAD, ''))}" spellcheck="true" aria-label="Commit message" placeholder="Write your own message" title="Click to edit the message">
+        <span class="cm-subj-tools"><span class="cm-count mono" title="Keep the first line under 72 characters">${subj.length >= 60 ? subj.length : ''}</span></span>
       </div>
-      <span class="cm-meta mono">${picked.length}/${files.length} files · <span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span></span>
-      ${g.edited == null && g.source && g.source !== 'rules' && ai.ENGINES[g.source] ? `<span class="cm-badge mono" title="Written by ${esc(ai.ENGINES[g.source].label)}">${icon('Sparkles', 11)}${esc(ai.ENGINES[g.source].short)}</span>` : ''}
-      ${g.review ? `<span class="cm-badge is-review mono" title="Below the 90% confidence target; review this grouping before committing">Check grouping</span>` : g.confidence != null && files.length > 1 ? `<span class="cm-badge mono" title="Grouping confidence">${Math.round(g.confidence * 100)}% confidence</span>` : ''}
+      <span class="cm-head-tools">
+        ${g.review ? `<span class="cm-badge is-review" title="staged isn't sure these files belong together">Check grouping</span>` : ''}
+        ${g.edited != null ? `<button class="text-btn" data-reset="${esc(g.id)}" title="Go back to the suggested message">Reset</button>` : ''}
+        <button class="icon-btn sm cm-more" data-more="${esc(g.id)}" aria-haspopup="menu" title="More" aria-label="More for this commit">${icon('MoreHorizontal', 15)}</button>
+        <button class="${cs.groups.length > 1 ? 'btn-secondary' : 'btn-primary'} cm-add" data-commit="${esc(g.id)}" ${picked.length && !cs.busy ? '' : 'disabled'} title="Commit this and put it in the cart">${icon('ShoppingCartAdd01', 15)}<span>Add to cart</span></button>
+      </span>
     </header>
-    ${g.why && !/^grouped by/i.test(g.why) ? `<p class="cm-why">${esc(g.why)}</p>` : ''}
+    ${files.length > 1 ? `<p class="cm-sub mono">${picked.length < files.length ? `${picked.length} of ${files.length} files` : `${files.length} file${files.length > 1 ? 's' : ''}`} · <span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span></p>` : ''}
+    ${g.review && g.why && !/^grouped by/i.test(g.why) ? `<p class="cm-why">${esc(g.why)}</p>` : ''}
     ${highs.length ? `<div class="cm-alert">${icon('Alert02', 14)}<span>Heads up: ${esc(highs.slice(0, 2).join('; '))}${highs.length > 2 ? ` and ${highs.length - 2} more` : ''}.</span></div>` : ''}
-    <div class="cm-msg">
-      ${bodyOpen ? `<textarea data-body="${esc(g.id)}" rows="${Math.min(8, Math.max(2, (g.body || '').split('\n').length))}" placeholder="Optional description: what changed and why">${esc(g.body || '')}</textarea>` : ''}
-      <div class="cm-actions">
-        <button class="text-btn cm-desc-btn" data-addbody="${esc(g.id)}" aria-expanded="${bodyOpen}">${bodyOpen ? 'Hide description' : hasBody ? 'Description' : 'Add description'}${!bodyOpen && hasBody ? '<i class="cm-desc-dot" title="Has a description"></i>' : ''}</button>
-        ${g.edited != null ? `<button class="text-btn" data-reset="${esc(g.id)}" title="Go back to the suggested message">Reset message</button>` : ''}
-        <button class="text-btn is-danger-soft hold-btn" data-discardgroup="${esc(g.id)}" ${cs.busy ? 'disabled' : ''} title="Hold to throw away these changes. You can bring them back right after.">${icon('Delete02', 14)}Hold to discard</button>
-        <button class="btn-primary" data-commit="${esc(g.id)}" ${picked.length && !cs.busy ? '' : 'disabled'}>Commit ${picked.length === files.length ? '' : picked.length + ' of '}${files.length} file${files.length === 1 ? '' : 's'}${picked.some((p) => pickedHunks(g, p).length < allHunks(p).length) ? ' (partly)' : ''}</button>
-      </div>
-    </div>
+    ${bodyOpen ? `<div class="cm-msg"><textarea data-body="${esc(g.id)}" rows="${Math.min(8, Math.max(2, (g.body || '').split('\n').length))}" placeholder="Optional description: what changed and why">${esc(g.body || '')}</textarea></div>` : ''}
     <div class="cm-files">${files.map((p) => fileRow(p, g)).join('')}</div>
   </section>`;
 }
@@ -407,7 +411,7 @@ function draw() {
         <p class="mono">${total} changed file${total > 1 ? 's' : ''} · <span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span>${cs.grouping ? ' · sorting…' : ''}</p>
       </div>
       <div class="cm-tools">
-        <button class="icon-btn cm-barmore" data-barmore aria-haspopup="menu" title="More" aria-label="More">${icon('MoreHorizontal', 16)}</button>
+        <button class="text-btn bordered cm-regroup" data-regroup ${cs.busy || cs.grouping ? 'disabled' : ''} title="Sort the changes into commits again">${icon('MagicWand01', 14)}<span>Sort again</span></button>
         ${cs.groups.length > 1 ? `<button class="btn-primary cm-addall" data-commitall ${commitable.length && !cs.busy && !cs.grouping ? '' : 'disabled'}>${icon('ShoppingCartAdd01', 15)}<span>Add all ${commitable.length} to cart</span></button>` : ''}
       </div>
     </div>
@@ -419,13 +423,13 @@ function draw() {
 // The banner's animations pick up from where they were if it does get redrawn.
 let painted = '', paintedNode = null;
 function paintHost(html) {
-  if (html !== painted || !paintedNode || host.firstElementChild !== paintedNode) { host.innerHTML = html; painted = html; paintedNode = host.firstElementChild; foldRepaint(); }
+  if (html !== painted || !paintedNode || host.firstElementChild !== paintedNode) { host.innerHTML = html; painted = html; paintedNode = host.firstElementChild; }
   const b = host.querySelector('.cm-banner');
   if (b && cs.banner?.t) b.style.setProperty('--fx-t', `${-(Date.now() - cs.banner.t)}ms`);
 }
 
 // ---------- actions ----------
-// Re-run Commit Compass against the current working tree and replace the proposed groups.
+// Re-run the engine against the current working tree and replace the proposed groups.
 async function regroup() {
   if (cs.grouping || cs.busy || !cs.repo) return;
   cs.grouping = true; draw();
@@ -450,7 +454,7 @@ async function discard(what, el) {
     const r = await api(`/api/changes/discard?repo=${encodeURIComponent(cs.repo)}`, what);
     const names = [...(what.files || []), ...Object.keys(what.partial || {})].map((p) => p.split('/').pop());
     const label = what.partial && !what.files?.length && names.length === 1 ? `${Object.values(what.partial)[0].length > 1 ? 'chunks' : 'a chunk'} of ${names[0]}` : names.length === 1 ? names[0] : `${r.discarded} files`;
-    if (cs.banner?.kind !== 'commit' && cs.banner?.kind !== 'pushed') cs.banner = null;
+    cs.banner = null;
     toast(`Discarded ${label}`, { action: 'Undo', onAction: undoDiscard });
   });
 }
@@ -622,6 +626,13 @@ function paintPanel(animate = false) {
     panelEl.addEventListener('dragend', onPanelDrag);
     panelEl.addEventListener('pointerdown', (e) => { const b = e.target.closest('[data-cmp-push]'); if (b && e.button === 0) { e.preventDefault(); b.focus(); startCharge(b); } });
     panelEl.addEventListener('keydown', (e) => { const b = e.target.closest('[data-cmp-push]'); if (b && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); if (!e.repeat) startCharge(b); } });
+    // Reorder from the keyboard: Alt + up or down on a focused row.
+    panelEl.addEventListener('keydown', (e) => {
+      const li = e.target.closest?.('.cmp-item[draggable="true"]'); if (!li || !e.altKey || !/^Arrow(Up|Down)$/.test(e.key)) return;
+      const i = +li.dataset.i, j = i + (e.key === 'ArrowUp' ? -1 : 1); if (j < 0 || j >= P.order.length) return;
+      e.preventDefault(); [P.order[i], P.order[j]] = [P.order[j], P.order[i]]; paintPanel();
+      panelEl.querySelector(`.cmp-item[data-i="${j}"]`)?.focus();
+    });
     panelEl.addEventListener('keyup', (e) => { if ((e.key === ' ' || e.key === 'Enter') && charge) charge.finish(false); });
     document.body.appendChild(panelEl);
     animate = true;
@@ -642,16 +653,14 @@ function paintPanel(animate = false) {
     const n = P.order.length, done = [...P.state.values()].filter((x) => x === 'done').length;
     if (P.mode === 'run') prog = n ? done / n : 0;
     title = P.mode === 'run' ? `Adding ${Math.min(done + 1, n)} of ${n} to the cart` : `Add ${n} to the cart`;
-    sub = P.mode === 'run' ? 'Hang on, this takes a moment' : 'Top to bottom. Drag to change the order.';
+    sub = P.mode === 'run' ? 'Hang on, this takes a moment' : '';
     list = P.order.map((g, i) => {
       const k = P.state.get(g.id), files = P.mode === 'run' && P.count?.has(g.id) ? P.count.get(g.id) : g.files.filter((p) => isOn(g, p)).length;
       const mark = k === 'done' ? `<i class="cmp-dot is-done">${icon('Tick02', 11)}</i>` : k === 'busy' ? '<i class="cmp-dot is-busy"></i>' : `<span class="cm-num mono">${i + 1}</span>`;
-      return `<li class="cmp-item ${k ? 'is-' + k : ''} ${P.tick === g.id ? 'is-tick' : ''}" ${P.mode === 'review' ? 'draggable="true"' : ''} data-i="${i}" data-k="${esc(P.shaOf?.get(g.id) || g.id)}">
+      return `<li class="cmp-item ${k ? 'is-' + k : ''} ${P.tick === g.id ? 'is-tick' : ''}" ${P.mode === 'review' ? 'draggable="true" tabindex="0" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="Drag, or Alt + arrow keys, to reorder"' : ''} data-i="${i}" data-k="${esc(P.shaOf?.get(g.id) || g.id)}">
         ${P.mode === 'review' ? `<span class="rv-grip" aria-hidden="true">${icon('DragDropVertical', 14)}</span>` : ''}${mark}
         <span class="cmp-main"><span class="cmp-subj">${esc(subjectFor(g))}</span><span class="mono muted">${files} file${files === 1 ? '' : 's'}</span></span>
         ${P.mode === 'review' ? `<span class="cmp-tools">
-          <button class="icon-btn sm" data-cmp-up="${i}" ${i ? '' : 'disabled'} title="Move up" aria-label="Move up">${icon('ArrowUp01', 13)}</button>
-          <button class="icon-btn sm" data-cmp-down="${i}" ${i < n - 1 ? '' : 'disabled'} title="Move down" aria-label="Move down">${icon('ArrowDown01', 13)}</button>
           <button class="icon-btn sm" data-cmp-merge="${i}" ${i ? '' : 'disabled'} title="Fold into the commit above" aria-label="Merge into the commit above">${icon('GitMerge', 13)}</button>
         </span>` : ''}
       </li>`;
@@ -684,13 +693,13 @@ function paintPanel(animate = false) {
       </li>`).join('');
     // Pushing is a big moment, so it's a hold, not a click: the bar charges, each commit lights up
     // from the oldest, and letting go early drains it back.
-    const total = `<div class="cmp-total"><span>Total</span><span class="mono">${n} commit${n === 1 ? '' : 's'} · ${tf} file${tf === 1 ? '' : 's'} · <b class="a">+${ta}</b> <b class="d">−${td}</b></span></div>`;
+    const total = `<div class="cmp-total"><span>Total</span><span class="mono">${tf} file${tf === 1 ? '' : 's'} · <b class="a">+${ta}</b> <b class="d">−${td}</b></span></div>`;
     if (remote) foot = total + (P.pushing
       ? `<button class="btn-primary cmp-push is-pushing is-approved" disabled>${icon('ArrowUp02', 15)}<span class="cmp-lbl">Pushing…</span></button>`
       : `<button class="btn-primary cmp-push" data-cmp-push ${cs.busy ? 'disabled' : ''} aria-label="Hold to push ${n} commit${n === 1 ? '' : 's'}"><i class="cmp-charge" aria-hidden="true"></i><span class="cmp-lbl"><span class="cmp-lbl-idle">Hold to push</span><span class="cmp-lbl-hold">Keep holding…</span></span></button>`);
   }
   const html = `${sheet ? '' : `<header class="cmp-head">
-      <div class="cmp-titles"><h3>${title}</h3><p class="mono">${sub}</p></div>
+      <div class="cmp-titles"><h3>${title}</h3>${sub ? `<p class="mono">${sub}</p>` : ''}</div>
       ${mode === 'out' ? `<button class="icon-btn sm" data-stmt title="This week's statement" aria-label="This week's statement">${icon('ReceiptText', 15)}</button>` : ''}
       ${P.mode === 'run' ? '' : `<button class="icon-btn sm cmp-x" data-cmp-close aria-label="Close">${icon('Cancel01', 14)}</button>`}
       ${prog != null ? '<i class="cmp-prog" aria-hidden="true"></i>' : ''}</header>`}
@@ -754,8 +763,6 @@ function onPanelClick(e) {
   }
   if (t('[data-cmp-cancel]')) { P.mode = null; P.order = []; paintPanel(); return draw(); }
   if (t('[data-cmp-go]')) return makeAll();
-  if ((b = t('[data-cmp-up]'))) { const i = +b.dataset.cmpUp; [P.order[i - 1], P.order[i]] = [P.order[i], P.order[i - 1]]; return paintPanel(); }
-  if ((b = t('[data-cmp-down]'))) { const i = +b.dataset.cmpDown; [P.order[i + 1], P.order[i]] = [P.order[i], P.order[i + 1]]; return paintPanel(); }
   if ((b = t('[data-cmp-merge]'))) {
     const i = +b.dataset.cmpMerge; const [g] = P.order.splice(i, 1);
     P.order[i - 1].files.push(...g.files); cs.groups = cs.groups.filter((x) => x !== g);
@@ -881,11 +888,14 @@ function onClick(e) {
   if ((b = t('[data-format]'))) {
     const f = b.dataset.format;
     for (const g of cs.groups) if (g.edited != null && g.editedFormat !== f) g.edited = null;
-    cs.format = f; store.format = f; save(); return draw();
+    cs.format = f; store.formats = { ...(store.formats || {}), [cs.repo]: f }; save(); return draw();
   }
   if ((b = t('[data-emoji]'))) { const g = groupById(b.dataset.emoji); return emojiPicker(b, { current: g.emoji, type: g.type, suggested: g.emojiSuggestions, onPick: (e, type) => { g.emoji = e; if (type !== 'revert' && g.edited == null) { g.type = type; fetch(`/api/changes/learn-style?repo=${encodeURIComponent(cs.repo)}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-changes': '1' }, body: JSON.stringify({ type, emoji: e }) }).catch(() => {}); } draw(); } }); }
-  if ((b = t('[data-chunks]'))) return togglePanel(cs.hunkOpen, b.dataset.chunks, b);
-  if ((b = t('[data-diff]'))) return togglePanel(cs.open, b.dataset.diff, b);
+  if ((b = t('[data-moveopen]'))) return b.dataset.dragged ? undefined : openMoveMenu(b);
+  if ((b = t('[data-more]'))) return openMoreMenu(b);
+  if (t('[data-regroup]')) return regroup();
+  if ((b = t('[data-chunks]'))) return togglePanel(cs.hunkOpen, b.dataset.g + '|' + b.dataset.chunks, b);
+  if ((b = t('[data-diff]'))) return togglePanel(cs.open, b.dataset.g + '|' + b.dataset.diff, b);
   if ((b = t('[data-addbody]'))) {
     const id = b.dataset.addbody;
     if (cs.bodyOpen.has(id)) { cs.bodyOpen.delete(id); return draw(); }
@@ -893,15 +903,7 @@ function onClick(e) {
   }
   if ((b = t('[data-reset]'))) { groupById(b.dataset.reset).edited = null; return draw(); }
   if ((b = t('[data-dismiss]'))) { cs.banner = null; return draw(); }
-  if ((b = t('[data-write]'))) return rewrite(groupById(b.dataset.write), true);
   if ((b = t('[data-regroup]'))) return regroup();
-  if ((b = t('[data-clear]'))) {
-    const g = groupById(b.dataset.clear);
-    g.edited = ''; g.editedFormat = cs.format; g.body = ''; draw();
-    const inp = host.querySelector(`[data-subject="${CSS.escape(g.id)}"]`);
-    inp?.focus();
-    return;
-  }
   if ((b = t('[data-discard]'))) {
     const g = groupById(b.dataset.g), p = b.dataset.discard;
     return discard(g && isSplit(g, p) ? { partial: { [p]: g.hunks[p] } } : { files: [p] }, b.closest('.cm-file'));
@@ -963,7 +965,7 @@ function onInput(e) {
     g.editedFormat = cs.format;
     const full = subjectFor(g);
     const wrap = el.closest('.cm-subject');
-    wrap.querySelector('.cm-count').textContent = full.length;
+    wrap.querySelector('.cm-count').textContent = full.length >= 60 ? full.length : '';
     wrap.classList.toggle('is-long', full.length > 72);
   } else if (el.dataset.body) {
     groupById(el.dataset.body).body = el.value;
@@ -997,23 +999,120 @@ function onChange(e) {
     set.size ? cs.hunksOff.set(p, set) : cs.hunksOff.delete(p);
     return draw();
   }
-  if (el.dataset.move) {
-    const p = el.dataset.move, to = el.value;
-    if (!to) return;
-    const from = groupById(el.dataset.g) || cs.groups.find((g) => g.files.includes(p));
-    let dest = groupById(to);
-    if (to === '__new') {
-      const f = cs.files.get(p);
-      dest = { id: 'n' + Date.now(), title: 'New commit', why: '', type: 'chore', scope: '', emoji: '🔧', conventional: `update ${p.split('/').pop()}`, gitmoji: `Updated ${p.split('/').pop()}`, body: '', files: [], edited: null };
-      if (f?.status === 'A') Object.assign(dest, { type: 'feat', emoji: '✨', conventional: `add ${p.split('/').pop()}`, gitmoji: `Added ${p.split('/').pop()}` });
-      cs.groups.push(dest);
-    }
-    const learnTo = dest.files.filter((x) => x !== p);
-    give(from, dest, p);
-    cs.groups = cs.groups.filter((g) => g.files.length);
-    draw();
-    // remember this correction for next time
-    fetch(`/api/changes/learn?repo=${encodeURIComponent(cs.repo)}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-changes': '1' }, body: JSON.stringify({ file: p, from: from.files, to: learnTo }) }).catch(() => {});
-    toast('Moved. It will remember this next time.');
+}
+
+function moveFile(p, fromId, to) {
+  if (!to) return;
+  const from = groupById(fromId) || cs.groups.find((g) => g.files.includes(p));
+  let dest = groupById(to);
+  if (to === '__new') {
+    const f = cs.files.get(p);
+    dest = { id: 'n' + Date.now(), title: 'New commit', why: '', type: 'chore', scope: '', emoji: '🔧', conventional: `update ${p.split('/').pop()}`, gitmoji: `Updated ${p.split('/').pop()}`, body: '', files: [], edited: null };
+    if (f?.status === 'A') Object.assign(dest, { type: 'feat', emoji: '✨', conventional: `add ${p.split('/').pop()}`, gitmoji: `Added ${p.split('/').pop()}` });
+    cs.groups.push(dest);
   }
+  const learnTo = dest.files.filter((x) => x !== p);
+  give(from, dest, p);
+  cs.groups = cs.groups.filter((g) => g.files.length);
+  cs.justMoved = p + '|' + dest.id; clearTimeout(cs.movedT); cs.movedT = setTimeout(() => { cs.justMoved = null; }, 1200);
+  draw();
+  // remember this correction for next time
+  fetch(`/api/changes/learn?repo=${encodeURIComponent(cs.repo)}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-changes': '1' }, body: JSON.stringify({ file: p, from: from.files, to: learnTo }) }).catch(() => {});
+  toast('Moved. It will remember this next time.');
+}
+let moveMenu = null;
+function closeMoveMenu() { moveMenu?.remove(); moveMenu = null; removeEventListener('pointerdown', outsideMove, true); removeEventListener('keydown', keyMove, true); }
+const outsideMove = (e) => { if (moveMenu && !moveMenu.contains(e.target) && !e.target.closest('[data-moveopen], [data-more]')) closeMoveMenu(); };
+const keyMove = (e) => {
+  if (!moveMenu) return;
+  const items = [...moveMenu.querySelectorAll('button')], at = items.indexOf(document.activeElement);
+  if (e.key === 'Escape') { e.stopPropagation(); const back = moveMenu.opener; closeMoveMenu(); back?.focus(); }
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[(at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); }
+};
+function openMoveMenu(btn) {
+  if (moveMenu?.opener === btn) return closeMoveMenu();
+  closeMoveMenu();
+  const g = groupById(btn.dataset.g), p = btn.dataset.moveopen;
+  const others = cs.groups.filter((x) => x !== g);
+  moveMenu = document.createElement('div');
+  moveMenu.className = 'cm-menu'; moveMenu.setAttribute('role', 'menu'); moveMenu.opener = btn;
+  moveMenu.innerHTML = `<p class="cm-menu-h mono muted">Move ${esc(p.split('/').pop())} to</p>
+    ${others.map((o, i) => `<button role="menuitem" data-moveto="${esc(o.id)}"><span class="cm-num mono">${cs.groups.indexOf(o) + 1}</span><span>${esc(clip(subjectFor(o), 56))}</span></button>`).join('')}
+    <button role="menuitem" data-moveto="__new"><span class="cm-num mono">+</span><span>New commit</span></button>`;
+  document.body.appendChild(moveMenu);
+  const r = btn.getBoundingClientRect(), w = Math.min(320, innerWidth - 24);
+  Object.assign(moveMenu.style, { width: w + 'px', left: Math.max(12, Math.min(r.right - w, innerWidth - w - 12)) + 'px' });
+  const below = r.bottom + 6 + moveMenu.offsetHeight < innerHeight;
+  moveMenu.style.top = (below ? r.bottom + 6 : Math.max(12, r.top - 6 - moveMenu.offsetHeight)) + 'px';
+  if (!calm()) moveMenu.animate([{ opacity: 0, transform: `translateY(${below ? -4 : 4}px) scale(.98)` }, { opacity: 1, transform: 'none' }], { duration: 160, easing: EASE });
+  moveMenu.addEventListener('click', (e) => { const b = e.target.closest('[data-moveto]'); if (!b) return; closeMoveMenu(); moveFile(p, g?.id, b.dataset.moveto); });
+  addEventListener('pointerdown', outsideMove, true); addEventListener('keydown', keyMove, true);
+  moveMenu.querySelector('button')?.focus();
+}
+
+// The rarely used actions of a commit card, out of the way: a description, and throwing it all away.
+function openMoreMenu(btn) {
+  if (moveMenu?.opener === btn) return closeMoveMenu();
+  closeMoveMenu();
+  const g = groupById(btn.dataset.more); if (!g) return;
+  const open = cs.bodyOpen.has(g.id), has = !!(g.body || '').trim();
+  moveMenu = document.createElement('div');
+  moveMenu.className = 'cm-menu'; moveMenu.setAttribute('role', 'menu'); moveMenu.opener = btn;
+  moveMenu.innerHTML = `<button role="menuitem" data-act="desc"><span class="cm-menu-ic">${icon('Note01', 14)}</span><span>${open ? 'Hide description' : has ? 'Edit description' : 'Add description'}</span></button>
+    <button role="menuitem" data-act="discard" class="is-danger"><span class="cm-menu-ic">${icon('Delete02', 14)}</span><span>Discard these changes…</span></button>`;
+  document.body.appendChild(moveMenu);
+  const r = btn.getBoundingClientRect(), w = 220;
+  Object.assign(moveMenu.style, { width: w + 'px', left: Math.max(12, Math.min(r.right - w, innerWidth - w - 12)) + 'px' });
+  const below = r.bottom + 6 + moveMenu.offsetHeight < innerHeight;
+  moveMenu.style.top = (below ? r.bottom + 6 : Math.max(12, r.top - 6 - moveMenu.offsetHeight)) + 'px';
+  if (!calm()) moveMenu.animate([{ opacity: 0, transform: `translateY(${below ? -4 : 4}px) scale(.98)` }, { opacity: 1, transform: 'none' }], { duration: 160, easing: EASE });
+  moveMenu.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act]'); if (!b) return;
+    closeMoveMenu();
+    if (b.dataset.act === 'desc') {
+      if (cs.bodyOpen.has(g.id)) { cs.bodyOpen.delete(g.id); return draw(); }
+      cs.bodyOpen.add(g.id); draw(); return host.querySelector(`[data-body="${CSS.escape(g.id)}"]`)?.focus();
+    }
+    const files = g.files.filter((p) => cs.files.has(p));
+    confirmDialog({ title: `Discard ${files.length} file${files.length > 1 ? 's' : ''}?`, text: `Your changes to ${files.length > 1 ? 'these files' : esc(files[0])} go away. You can bring them back right after.`, ok: 'Discard', danger: true })
+      .then((go) => go && discard(discardWhat(g), host.querySelector(`[data-group="${CSS.escape(g.id)}"]`)));
+  });
+  addEventListener('pointerdown', outsideMove, true); addEventListener('keydown', keyMove, true);
+  moveMenu.querySelector('button')?.focus();
+}
+
+
+// Drag a file by its grip onto another commit (or the "new commit" strip) to move it there.
+let drag = null;
+function dragStart(e) {
+  const grip = e.target.closest('.cm-grip'); if (!grip || e.button !== 0) return;
+  const row = grip.closest('.cm-file'); if (!row) return;
+  const sx = e.clientX, sy = e.clientY;
+  const move = (ev) => {
+    if (!drag) {
+      if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+      const r = row.getBoundingClientRect();
+      const ghost = row.cloneNode(true); ghost.classList.add('cm-ghost');
+      Object.assign(ghost.style, { width: Math.min(r.width, 380) + 'px', left: r.left + 'px', top: r.top + 'px' });
+      document.body.appendChild(ghost);
+      drag = { p: row.dataset.row, from: row.dataset.g, row, ghost, dx: sx - r.left, dy: sy - r.top, over: null };
+      row.classList.add('is-lifted'); host.classList.add('is-dragging');
+      if (!calm()) ghost.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.02) rotate(-.6deg)' }], { duration: 160, easing: EASE, fill: 'forwards' });
+    }
+    drag.ghost.style.left = ev.clientX - drag.dx + 'px'; drag.ghost.style.top = ev.clientY - drag.dy + 'px';
+    drag.ghost.hidden = true; const under = document.elementFromPoint(ev.clientX, ev.clientY); drag.ghost.hidden = false;
+    let tgt = under?.closest('[data-drop]'); if (tgt && tgt.dataset.drop === drag.from) tgt = null;
+    if (tgt !== drag.over) { drag.over?.classList.remove('is-over'); tgt?.classList.add('is-over'); drag.over = tgt; }
+  };
+  const up = () => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
+    if (!drag) return; // a plain click: the grip opens the move menu
+    const d = drag; drag = null; grip.dataset.dragged = '1'; setTimeout(() => delete grip.dataset.dragged, 0);
+    host.classList.remove('is-dragging'); d.row.classList.remove('is-lifted'); d.over?.classList.remove('is-over');
+    const to = d.over?.dataset.drop;
+    if (to) { d.ghost.remove(); moveFile(d.p, d.from, to); return; }
+    const r = d.row.getBoundingClientRect(), g = d.ghost.getBoundingClientRect();
+    d.ghost.animate([{ transform: `translate(0,0)` }, { transform: `translate(${r.left - g.left}px, ${r.top - g.top}px)` }], { duration: calm() ? 0 : 220, easing: EASE }).finished.then(() => d.ghost.remove(), () => d.ghost.remove());
+  };
+  addEventListener('pointermove', move); addEventListener('pointerup', up); addEventListener('pointercancel', up);
 }
