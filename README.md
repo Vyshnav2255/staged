@@ -49,13 +49,12 @@ To ship a version (for maintainers): on GitHub, go to **Releases › Draft a new
 
 | View | What it shows |
 | --- | --- |
-| **Home** | An overview: a line on today, this week against last week, your streak, lines changed, what's **waiting on you** (files to commit and commits to push, with buttons), six months of activity and your busiest repos. Click the logo to get here. |
-| **Settings** | Repos, Commit Compass confidence and learning stats, message style, sounds and updates. |
-| **By week** | Weekly drops with a type mix, lines changed and *Copy notes* for release notes in Markdown. |
-| **By feature** | Changes grouped by the part of the site they touched. Each feature has a *story*: its timeline month by month. |
-| **By release** | Commits between git tags, with *New release* and *Changelog*. |
-| **Tree** | Every branch, merge and tag as lanes that draw themselves in. Hover a commit to light up its history; click it for the files. |
-| **Health** | Site weight per week, the biggest jump and the commit behind it, heavy images, stale branches and stashes. |
+| **Home** | This week against last week, your streak, what's **waiting on you** (files to commit and commits to push) and six months of activity. Click the logo to get here. |
+| **Settings** | Repos, sound and updates. Each repo's commit message style is in its own **Project settings** (the gear next to the repo name). |
+| **Weeks** | Weekly drops with a type mix, lines changed and *Copy notes* for release notes in Markdown. |
+| **Features** | Changes grouped by the part of the site they touched. Each feature has a *story*: its timeline month by month, which you can copy as notes. |
+| **Releases** | Commits between git tags, with *New release* and *Changelog*. |
+| **Tree** | Every branch, merge and tag as lanes. Hover a commit to light up its history; click it for the files. Other branches and stashes show above it. |
 | **Commit** | Your uncommitted files, already split into commits with messages written for you. |
 
 Commit types come from gitmoji (✨ 🎉 Feature, 💄 💫 🎨 Design, 🐛 Fix, ⚡️ Perf, ♻️ 🔥 🔧 Chore) or conventional commits (`feat:`, `fix:`…). Commits with neither are guessed from their wording and shown with a hollow dot.
@@ -76,15 +75,15 @@ Each commit has a ready message in **Gitmoji** (`✨ Added book notes for …`, 
 - Untick files, or pick individual **chunks** of a file. The rest stays in your working copy.
 - **Move** a file to another commit. staged remembers the correction next time.
 - Pick an emoji from the **gitmoji picker**: suggestions for that change first, your recent picks, then everything by kind. Search by meaning or `:code:`, arrow keys and Enter work.
-- **Rewrite** (the wand) writes one message again; **Clear** (the eraser) empties it so you can write your own.
-- A **description** is optional, so it stays tucked away. Click *Add description* under a message to write one (a faint dot means the AI already wrote one).
+- Click a message to edit it.
+- A **description** is optional, so it stays tucked away. Pick *Add description* from a commit's ⋯ menu to write one.
 - **Discard** throws away changes to a file, a single chunk or a whole suggested commit (hold the button for a whole commit). A copy goes to `.git/staged-trash/` first, and the note that pops up has **Undo**.
-- **Commit** one group, or **Commit all** to review, reorder and merge first.
-- **Undo** puts the last commit made here back into your changes. **Push** appears when GitHub or GitLab is behind.
+- **Add to cart** commits one group, or **Add all to cart** to review, reorder and merge first.
+- The **Cart** on the right holds commits waiting to be pushed. **Hold to push**, and a receipt prints. **Undo** puts the last commit made here back into your changes.
 
 Secrets files, API keys, huge files, conflict markers, `console.log` and `debugger` are flagged before you commit.
 
-## Commit Compass
+## Commit plans for scripts
 
 Coding agents and scripts can inspect the same proposed groups shown in the Commit tab without starting the web app:
 
@@ -93,14 +92,12 @@ staged plan --json
 staged plan /path/to/repo --json
 ```
 
-The command prints JSON using the `staged.commit-plan.v1` schema, including each commit subject in Gitmoji and Conventional formats, recommended emoji, group confidence and evidence, and changed file or hunk assignments. It does not commit or edit the repository. Use `--include-diff` only when an agent also needs local diff context; diffs are omitted by default. The output can be passed to an agent to review, compare with its own grouping, and suggest engine changes.
+The command prints JSON using the `staged.commit-plan.v1` schema, including each commit subject in Gitmoji and Conventional formats, recommended emoji, group confidence and evidence, and changed file or hunk assignments. It does not commit or edit the repository. Use `--include-diff` only when an agent also needs local diff context; diffs are omitted by default. The output can be passed to an agent to review, compare with its own grouping, and suggest changes to the grouping.
 
 Grouping and messages come from your files and your history: imports, `data-*` hooks, folders, past co-changes and the verbs you use after each emoji. Messages also read the diffs, so they say what changed (`Replaced Geist font with Akt`, `Added Haskoy Italic and Medium Italic fonts`, a new section or function), with a short list of the details underneath.
-Commit Compass always groups locally from rules and an incremental index of recent Git commit subjects and changed paths, plus an inverted term index for the current diff. The history index lives under `~/.config/staged/group-index/` and stores commit IDs, subjects and paths, never source contents or diffs. Each suggested group shows its confidence; multi-file groups below the 90% review threshold are flagged. Settings shows the current pair-weighted confidence across active suggestions, the history index, recurring path pairs and learned corrections. Moving files between groups teaches staged which paths belong together or apart.
+staged always groups locally from rules and an incremental index of recent Git commit subjects and changed paths, plus an inverted term index for the current diff. The history index lives under `~/.config/staged/group-index/` and stores commit IDs, subjects and paths, never source contents or diffs. Groups staged isn't sure about are marked *Check grouping*. Moving files between groups teaches staged which paths belong together or apart.
 staged also learns your message grammar across the repos it knows about, while letting a repo's own history take priority. It adapts Gitmoji/plain/conventional style, tense, common verbs and category emojis, and learns repeated path pairs across projects as a weak grouping hint. General commit guidance supplies only a fallback: coherent, independently useful changes and subjects about behavior rather than filenames.
-Commit Compass drafts messages from diffs, repo history, imports, paths and change types. Grouping and naming use deterministic local rules and repository history; no model service is required.
-
-On long pages a **glance rail** on the right shows a short line per week, feature, release or suggested commit. Hover to see the names; click one to glide there.
+It drafts messages from diffs, repo history, imports, paths and change types. Grouping and naming use deterministic local rules and repository history; no model service is required.
 
 ## Keys
 
@@ -133,4 +130,3 @@ Rules are checked in order; files that match none fall back to the guess.
 - The server only answers on `localhost`, and only to this page.
 - Commits are built in a temporary index, so anything you staged yourself elsewhere is left alone. Git hooks don't run for these commits.
 - Commit messages follow your repo: past tense (`Added …`) or imperative (`Add …`), whichever your history mostly uses.
-- Lighthouse scores need a build step, so they're not in yet.
