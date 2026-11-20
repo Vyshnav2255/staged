@@ -1,16 +1,12 @@
-// Settings: Commit Compass, repositories, message style, sound and updates.
+// Settings: repositories, sound and updates. A project's own choices (message style) live in Project settings.
 import { icon } from './icons.js';
 import { esc, toast } from './ui.js';
-import * as ai from './ai.js';
 import { soundOn, setSound, sfxGrouped } from './sfx.js';
-import { previewCommit, previewPush } from './fx.js';
+import { previewCommit } from './fx.js';
+import { practiceCart } from './commit-view.js';
 import { checkNow } from './update.js';
 
-let host = null, ctx = null, st = null, repoInfo = null, stats = null, scan = null, fresh = new Set();
-const commitStore = {
-  get() { try { return JSON.parse(localStorage.getItem('changes.commit') || '{}'); } catch { return {}; } },
-  set(v) { try { localStorage.setItem('changes.commit', JSON.stringify(v)); } catch {} },
-};
+let host = null, ctx = null, repoInfo = null, scan = null, fresh = new Set();
 
 export async function mountSettings(el, context) {
   host = el; ctx = context;
@@ -20,45 +16,25 @@ export async function mountSettings(el, context) {
 }
 
 async function refresh() {
-  st = await ai.status();
-  [stats, repoInfo] = await Promise.all([
-    fetch('/api/changes/engine-stats').then((r) => r.json()).catch(() => null),
-    fetch('/api/repos/manage').then((r) => r.json()).catch(() => null),
-  ]);
+  repoInfo = await fetch('/api/repos/manage').then((r) => r.json()).catch(() => null);
   draw();
 }
 
 function draw() {
   if (!host || host.hidden) return;
-  const fmt = commitStore.get().format || 'gitmoji';
-  // The page redraws when staged refreshes in the background; keep whatever you were typing.
-  const typing = host.contains(document.activeElement) && document.activeElement.matches('input[name]') ? { name: document.activeElement.name, value: document.activeElement.value, at: document.activeElement.selectionStart } : null;
   host.innerHTML = `
   <div class="set">
     ${reposSection()}
-    ${aiSection()}
-
-    <section class="set-sec" id="set-messages">
-      <header class="set-h"><h2>Commit messages</h2></header>
-      <div class="set-card">
-        <div class="set-row">
-          <div class="set-row-main"><b>Style</b><span class="muted">${fmt === 'conventional' ? 'feat(books): add notes for …' : fmt === 'both' ? '✨ feat(books): add notes for …' : '✨ Added book notes for …'}</span></div>
-          <div class="seg set-seg scroll-fade-x" role="radiogroup" aria-label="Message style">
-            ${[['gitmoji', 'Gitmoji'], ['conventional', 'Conventional'], ['both', 'Both']].map(([k, l]) => `<button role="radio" aria-checked="${fmt === k}" data-format="${k}">${l}</button>`).join('')}
-          </div>
-        </div>
-      </div>
-    </section>
 
     <section class="set-sec" id="set-feel">
-      <header class="set-h"><h2>Sound and motion</h2></header>
+      <header class="set-h"><h2>Sound</h2></header>
       <div class="set-card">
         <label class="set-row is-toggle">
-          <div class="set-row-main"><b>Sounds</b><span class="muted">Soft sounds when you commit, push and discard. Made on the fly, nothing to download.</span></div>
+          <div class="set-row-main"><b>Sounds</b><span class="muted">Soft sounds when you commit, push and discard.</span></div>
           <span class="switch"><input type="checkbox" data-sound ${soundOn() ? 'checked' : ''}><i></i></span>
         </label>
         <div class="set-row">
-          <div class="set-row-main"><b>Try them</b><span class="muted">Plays the moments without committing or pushing anything. Motion follows your system's reduce-motion setting.</span></div>
+          <div class="set-row-main"><b>Try them</b><span class="muted">Plays the moments without committing or pushing anything.</span></div>
           <div class="set-btns"><button class="text-btn bordered sm" data-preview="commit">Commit</button><button class="text-btn bordered sm" data-preview="push">Push</button></div>
         </div>
       </div>
@@ -281,7 +257,7 @@ function reposSection() {
   const folderRow = (f) => `<div class="rp-folder" style="--d:${n++}">
       <span class="rp-ftile">${icon(f.kind === 'repo' ? 'GitBranch' : 'Folder01', 16)}</span>
       <span class="rp-fmain"><b>${esc(short(f.path))}</b><span class="mono muted">${esc(f.path)}</span></span>
-      <span class="rp-count mono">${f.kind === 'repo' ? 'one repo' : `${count(f)} ${count(f) === 1 ? 'repo' : 'repos'}`}</span>
+      ${folders.length > 1 && f.kind !== 'repo' ? `<span class="rp-count mono">${count(f)} ${count(f) === 1 ? 'repo' : 'repos'}</span>` : '<span></span>'}
       <button class="rp-x" data-unfolder="${esc(f.path)}" ${folders.length < 2 || scan ? 'disabled' : ''} title="${folders.length < 2 ? 'staged needs at least one folder' : 'Stop looking here'}" aria-label="Remove ${esc(f.path)}">${icon('Cancel01', 14)}</button>
     </div>`;
   const repoTile = (r) => `<div class="rp-tile ${r.hidden ? 'is-off' : ''} ${fresh.has(r.path) ? 'is-new' : ''}" style="--i:${Math.max(0, [...fresh].indexOf(r.path))}" data-tile="${esc(r.path)}">
@@ -307,7 +283,7 @@ function reposSection() {
         <button class="text-btn sm rp-rescan" data-rescan ${off}><span class="rp-spin">${icon('Refresh', 13)}</span>Scan again</button>
       </div>
     </div>
-    <div class="rp-sub"><b>Your repos</b><span class="mono muted">${shown === repos.length ? `${repos.length} shown` : `${shown} of ${repos.length} shown`}</span></div>
+    <div class="rp-sub"><b>Your repos</b>${shown === repos.length ? '' : `<span class="mono muted">${shown} of ${repos.length} shown</span>`}</div>
     <div class="rp-grid">${repos.map(repoTile).join('') || '<p class="muted rp-none">No repos yet. Add a folder above.</p>'}</div>
     ${plain.length ? `<div class="rp-sub"><b>Not git repos yet</b><span class="mono muted">staged can't see these until git is on</span></div>
     <div class="rp-grid">${plain.map(plainTile).join('')}</div>` : ''}
@@ -368,8 +344,6 @@ const short = (p) => String(p).replace(/\/$/, '').split('/').pop() || p;
 const foundText = (added) => (added.length ? `Found ${added.length} ${added.length === 1 ? 'repo' : 'repos'}` : 'No new repos');
 const addPath = (p) => scanWith(`Scanning ${short(p)}`, { action: 'add', path: p }, foundText);
 
-const progress = () => `<span class="wr-progress"><span class="wr-bar"><i style="transform:scaleX(${Math.max(0.02, prog.r)})"></i></span><span class="wr-step mono">${esc(prog.text || 'Starting…')}</span></span>`;
-
 // Remove git: hold for 1.5s (let go to cancel). The .git folder goes to the Trash, with Undo.
 const HOLD_MS = 1500;
 function onHold(e) {
@@ -411,8 +385,7 @@ async function onClick(e) {
     return;
   }
   if ((b = e.target.closest('[data-unfolder]'))) { if (await manage({ action: 'remove', path: b.dataset.unfolder })) toast(`Removed ${b.dataset.unfolder}`); return; }
-  if ((b = e.target.closest('[data-format]'))) { const v = commitStore.get(); v.format = b.dataset.format; commitStore.set(v); draw(); ctx.onChange?.(); return; }
-  if ((b = e.target.closest('[data-preview]'))) { b.dataset.preview === 'commit' ? previewCommit() : previewPush(); return; }
+  if ((b = e.target.closest('[data-preview]'))) { b.dataset.preview === 'commit' ? previewCommit() : practiceCart(); return; }
   if ((b = e.target.closest('[data-check]'))) return checkNow();
 }
 function onChange(e) {

@@ -391,8 +391,6 @@ function mixBar(counts, w = 72) {
   const title = present.map((t) => `${TYPE_LABEL[t]} ${counts[t]}`).join(' · ');
   return `<svg class="mix" width="${w}" height="6" viewBox="0 0 ${w} 6" preserveAspectRatio="none"><title>${title}</title>${out}</svg>`;
 }
-// What the glance rail reads: a label, a count and the mix of change types.
-const glance = (label, commits) => `data-gl="${esc(label)}" data-gl-n="${commits.length}" data-gl-mix="${Object.entries(countTypes(commits)).map(([t, n]) => t + ':' + n).join(',')}"`;
 function countTypes(list) {
   const c = {};
   for (const x of list) c[x.type] = (c[x.type] || 0) + 1;
