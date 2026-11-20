@@ -45,14 +45,14 @@ export function compareUrl(remote, provider, base, head) {
 }
 
 export function receiptSpec(R) {
-  const n = R.items.length;
   return {
     kind: 'receipt',
     label: `${R.practice ? 'Practice receipt' : 'Push receipt'} · No. ${no4(R.no)}`,
-    meta: [[R.name, `${day(R.at)} ${time(R.at)}`], [R.branch, `→ ${R.upstream}`]],
-    items: R.items.slice().reverse().map((c) => ({ l: c.subject, r: plural(c.files || 0, 'file'), sl: c.sha.slice(0, 7), sr: `+${c.add || 0} −${c.del || 0}` })),
-    totals: [['Commits', String(n)], ['Files', String(sum(R.items, 'files'))], ['Lines', `+${sum(R.items, 'add')} −${sum(R.items, 'del')}`, true]],
-    ok: 'Approved',
+    meta: [['Repo', R.name], ['Date', `${day(R.at)} · ${time(R.at)}`], ['Branch', `${R.branch} → ${R.upstream}`]],
+    // The subject gets the whole line; the code, files and lines sit under it like a receipt's small print.
+    head: ['Item', 'Lines'],
+    items: R.items.slice().reverse().map((c, i) => ({ l: c.subject, r: '', sl: `${String(i + 1).padStart(2, '0')} · ${c.sha.slice(0, 7)} · ${plural(c.files || 0, 'file')}`, sr: `+${c.add || 0} −${c.del || 0}` })),
+    totals: [['Files', String(sum(R.items, 'files'))], ['Total lines', `+${sum(R.items, 'add')} −${sum(R.items, 'del')}`, true]],
     note: R.practice ? 'Practice run. Nothing was pushed.' : 'Thanks for shipping.',
     stamp: ['Shipped', new Date(R.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })],
     qr: R.link || (R.practice ? 'staged · practice receipt' : ''),
@@ -66,16 +66,24 @@ export function receiptSpec(R) {
 export function statementSpec(fromGit, now = Date.now()) {
   const wk = weekOf(now);
   const pushes = (fromGit || pushLog()).filter((p) => p.at >= wk.start && p.at < wk.end).sort((a, b) => a.at - b.at);
-  const repos = [...new Set(pushes.map((p) => p.repo))];
+  // One line per project: every push to it this week, added up, busiest project first.
+  const byRepo = new Map();
+  for (const p of pushes) {
+    const r = byRepo.get(p.repo) || { repo: p.repo, n: 0, files: 0, add: 0, del: 0, days: new Set(), last: 0 };
+    r.n += p.n || 0; r.files += p.files || 0; r.add += p.add || 0; r.del += p.del || 0; r.last = Math.max(r.last, p.at);
+    r.days.add(new Date(p.at).toLocaleDateString('en-GB', { weekday: 'short' }));
+    byRepo.set(p.repo, r);
+  }
+  const projects = [...byRepo.values()].sort((a, b) => b.n - a.n || b.add + b.del - (a.add + a.del) || b.last - a.last);
   const range = `${new Date(wk.start).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${new Date(wk.end - 1).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
   return {
     kind: 'statement',
     label: `Weekly statement · Week ${wk.week}`,
-    meta: [['Period', range], ['Repos', repos.length ? repos.join(', ') : 'none yet']],
-    items: pushes.map((p) => ({ l: p.repo, r: plural(p.n, 'commit'), sl: `${new Date(p.at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })} · ${time(p.at)}${p.branch ? ` · ${p.branch}` : p.no ? ` · No. ${no4(p.no)}` : ''}`, sr: `+${p.add} −${p.del}` })),
+    meta: [['Period', range]],
+    head: ['Project', 'Commits'],
+    items: projects.map((r) => ({ l: r.repo, r: plural(r.n, 'commit'), sl: [...r.days].join(', '), sr: `+${r.add} −${r.del}` })),
     empty: 'No pushes yet this week.',
-    totals: [['Pushes', String(pushes.length)], ['Commits', String(sum(pushes, 'n'))], ['Files', String(sum(pushes, 'files'))], ['Lines', `+${sum(pushes, 'add')} −${sum(pushes, 'del')}`, true]],
-    ok: pushes.length ? `${plural(pushes.length, 'push')} this week` : '',
+    totals: [['Pushes', String(pushes.length)], ['Commits', String(sum(pushes, 'n'))], ['Files', String(sum(pushes, 'files'))], ['Total lines', `+${sum(pushes, 'add')} −${sum(pushes, 'del')}`, true]],
     note: pushes.length ? 'Keep shipping.' : 'Your pushes this week will add up here.',
     stamp: ['Settled', `Week ${wk.week}`],
     qr: '',
@@ -104,9 +112,10 @@ export function specHtml(s) {
   const row = (l, r, cls = '') => `<div class="rcpt-row ${cls}"><span>${esc(l)}</span><span class="mono">${esc(r)}</span></div>`;
   return `<div class="rcpt is-${s.kind}">
     <div class="rcpt-top"><span class="rcpt-brand">${MARK.replace('<svg ', '<svg class="rcpt-mark" ')}<span>staged</span></span><span class="mono">${esc(s.label)}</span></div>
-    ${s.meta.map(([l, r]) => `<div class="rcpt-row mono"><span>${esc(l)}</span><span>${esc(r)}</span></div>`).join('')}
+    <div class="rcpt-meta">${s.meta.map(([l, r]) => `<div class="rcpt-row mono"><span>${esc(l)}</span><span>${esc(r)}</span></div>`).join('')}</div>
     <hr>
-    ${s.items.length ? s.items.map((it) => `<div class="rcpt-item">${row(it.l, it.r)}<div class="rcpt-row rcpt-sub mono"><span>${esc(it.sl)}</span><span>${esc(it.sr)}</span></div></div>`).join('') : `<p class="rcpt-empty">${esc(s.empty || '')}</p>`}
+    ${s.head && s.items.length ? `<div class="rcpt-row rcpt-head mono"><span>${esc(s.head[0])}</span><span>${esc(s.head[1])}</span></div>` : ''}
+    ${s.items.length ? s.items.map((it) => `<div class="rcpt-item">${it.r ? row(it.l, it.r) : `<div class="rcpt-row rcpt-line"><span>${esc(it.l)}</span></div>`}<div class="rcpt-row rcpt-sub mono"><span>${esc(it.sl)}</span><span>${esc(it.sr)}</span></div></div>`).join('') : `<p class="rcpt-empty">${esc(s.empty || '')}</p>`}
     <hr>
     ${s.totals.map(([l, r, b]) => row(l, r, b ? 'rcpt-total' : '')).join('')}
     <hr>
