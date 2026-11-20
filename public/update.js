@@ -2,6 +2,7 @@
 // sheet, and a one-click update that restarts staged in place and lands you back where you were.
 import { esc, modal, toast } from './ui.js';
 import { icon } from './icons.js';
+import { mdView } from './md.js';
 
 const KEY_DONE = 'staged-updated', KEY_LATER = 'staged-later';
 const store = {
@@ -63,7 +64,7 @@ function notes(l) {
       <div class="upd-ver"><span class="mono muted">${esc(info.current)}</span>${icon('ArrowRight01', 14)}<b>${esc(l.version)}</b></div>
       ${when ? `<span class="mono muted">${esc(when)}</span>` : ''}
     </div>
-    ${l.note ? `<p class="upd-note">${esc(l.note).replace(/\n+/g, '<br>')}</p>` : ''}
+    ${l.note ? `<div class="upd-note">${mdView(l.note)}</div>` : ''}
     ${l.groups.map((g) => `<section class="upd-group"><h4 class="mono">${esc(g.label)}</h4><ul>${g.items.slice(0, 12).map((x) => `<li>${esc(x)}</li>`).join('')}${g.items.length > 12 ? `<li class="muted">and ${g.items.length - 12} more</li>` : ''}</ul></section>`).join('')}
     ${!l.note && !l.groups.length ? '<p class="muted">Small fixes and polish.</p>' : ''}
     ${info.blocked ? `<div class="cm-alert upd-block">${icon('Alert02', 14)}<span>${esc(info.blocked)}</span></div>` : ''}

@@ -1,53 +1,12 @@
-// Releases, changelog, weekly recap and feature stories.
+// Releases, changelog and feature stories.
 import { icon } from './icons.js';
+import { mdView } from './md.js';
 import { esc, compact, api, toast, copy, modal, dLong, dShort, dMonth, TYPES, TYPE_LABEL, hostOf } from './ui.js';
 
-const DAY = 86400000;
 const NOTES_LABEL = { feature: 'New', ui: 'Design', fix: 'Fixes', perf: 'Performance', refactor: 'Maintenance', other: 'Other' };
-const weekStart = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); };
-const list = (xs) => (xs.length <= 1 ? xs.join('') : xs.length === 2 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
-const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
-
-// ---------- weekly recap ----------
-export function recapFor(commits) {
-  const thisWeek = weekStart(Date.now());
-  let start = thisWeek, label = 'This week';
-  let wk = commits.filter((c) => c.t >= start);
-  if (wk.length < 3) { start = thisWeek - 7 * DAY; label = 'Last week'; wk = commits.filter((c) => c.t >= start && c.t < thisWeek); }
-  if (!wk.length) return null;
-  const isBook = (c) => c.areas.some((a) => /^books?$/i.test(a));
-  const books = wk.filter(isBook);
-  const feats = wk.filter((c) => c.type === 'feature' && !isBook(c));
-  const featNames = [];
-  for (const c of feats) { const a = c.areas.find((x) => !/^(project setup|root|assets?)$/i.test(x)); if (a && !featNames.includes(a)) featNames.push(a); }
-  const ui = wk.filter((c) => c.type === 'ui' && !isBook(c)).length;
-  const fix = wk.filter((c) => c.type === 'fix').length;
-  const perf = wk.filter((c) => c.type === 'perf').length;
-  const repos = new Set(wk.map((c) => c.repo));
-  const parts = [];
-  if (featNames.length) parts.push(featNames.length > 3 ? `${featNames.slice(0, 3).join(', ')} and ${featNames.length - 3} more features` : `new work on ${list(featNames.slice(0, 3))}`);
-  if (books.length) parts.push(plural(books.length, 'book note update'));
-  if (ui) parts.push(plural(ui, 'design tweak'));
-  if (perf) parts.push(plural(perf, 'speed-up'));
-  if (fix) parts.push(plural(fix, 'fix', 'fixes'));
-  const text = parts.length
-    ? `${label} you shipped ${list(parts)}${repos.size > 1 ? ` across ${repos.size} repos` : ''}, in ${plural(wk.length, 'commit')}.`
-    : `${label} you made ${plural(wk.length, 'commit')}${repos.size > 1 ? ` across ${repos.size} repos` : ''}.`;
-  return { label, text };
-}
-
-export function recapCard(commits) {
-  const r = recapFor(commits);
-  if (!r) return '';
-  return `<section class="recap">
-    <div class="recap-label mono">${esc(r.label)}</div>
-    <p class="recap-text">${esc(r.text)}</p>
-    <div class="recap-tools"><button class="text-btn bordered" data-recapcopy>${icon('Copy01', 14)}Copy</button></div>
-  </section>`;
-}
 
 // ---------- notes markdown ----------
-export function notesMarkdown(title, commits, withRepo) {
+function notesMarkdown(title, commits, withRepo) {
   let md = `## ${title}\n`;
   for (const t of TYPES) {
     const cs = commits.filter((c) => c.type === t);
@@ -178,7 +137,7 @@ export function openChangelog(repo, onDone) {
   const m = modal({
     title: 'Changelog', wide: true,
     body: `<p class="note" style="margin:0 0 10px">${repo.tags.length ? 'Grouped by release.' : 'No tags yet, so this groups by month.'} Writing it creates <code class="mono">CHANGELOG.md</code> in ${esc(repo.name)}; it shows up in the Commit tab for you to review and commit.</p>
-      <pre class="md-preview mono scroll-fade">${esc(md.slice(0, 20000))}${md.length > 20000 ? '\n…' : ''}</pre>`,
+      <div class="md-preview scroll-fade">${mdView(md.slice(0, 20000))}</div>`,
     actions: `<button class="text-btn bordered" data-copymd>${icon('Copy01', 14)}Copy Markdown</button><button class="btn-primary" data-write>${icon('FileExport', 14)}Write CHANGELOG.md</button>`,
   });
   m.el.querySelector('[data-copymd]').onclick = () => copy(md, 'Changelog copied');
