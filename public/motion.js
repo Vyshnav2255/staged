@@ -132,21 +132,6 @@ export function initFluidHover(root) {
   }).observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
 }
 
-// Numbers glide to their new value.
-const last = new Map();
-export function countUp(el, to, key, fmt = (n) => String(Math.round(n))) {
-  const from = last.get(key);
-  last.set(key, to);
-  if (from == null || from === to || calm()) { el.textContent = fmt(to); return; }
-  const t0 = performance.now(), d = 520;
-  const step = (t) => {
-    const k = Math.min(1, (t - t0) / d), e = 1 - Math.pow(1 - k, 3);
-    el.textContent = fmt(from + (to - from) * e);
-    if (k < 1) requestAnimationFrame(step);
-  };
-  requestAnimationFrame(step);
-}
-
 // A section that just changed fades up into place.
 export function enter(el) {
   if (!el || calm()) return;

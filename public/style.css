@@ -10,44 +10,6 @@
   font-weight: 100 900;
   font-display: swap;
 }
-
-:root {
-  /* Logo colours: "Forest". */
-  --logo-1: #c4e35a;
-  --logo-2: #4cbb6c;
-  --logo-box: #1f9a6a;
-  --bg: #fafaf9;
-  --surface: #ffffff;
-  --control-raised: var(--surface);
-  --hover: #f3f3f1;
-  --line: #e9e8e4;
-  --line-strong: #d9d8d2;
-  --ink: #0b0b0b;
-  --ink-2: #52514e;
-  --muted: #898781;
-  --grid: #eeede9;
-  --add: #006300;
-  --del: #b42f2f;
-  --t-feature: #2a78d6;
-  --t-ui: #eb6834;
-  --t-fix: #1baf7a;
-  --t-perf: #eda100;
-  --t-refactor: #e87ba4;
-  --t-other: #c3c2b7;
-  --radius: 10px;
-  --motion-fast-duration: 80ms;
-  --motion-fast-exit-duration: 60ms;
-  --motion-moderate-duration: 160ms;
-  --motion-moderate-exit-duration: 120ms;
-  --motion-slow-duration: 240ms;
-  --motion-slow-exit-duration: 160ms;
-  --ease-spring-fast: cubic-bezier(.22, 1, .36, 1);
-  --ease-spring-moderate: cubic-bezier(.22, 1, .36, 1);
-  --ease-spring-slow: cubic-bezier(.34, 1.08, .64, 1);
-  --lane-0: #52514e;
-  --shadow: 0 10px 40px rgb(0 0 0 / .12), 0 2px 6px rgb(0 0 0 / .05);
-  color-scheme: light;
-}
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0d0d0d;
@@ -391,14 +353,8 @@ a { color: inherit; }
 .check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); margin-bottom: 12px; }
 .warn-list { margin: 8px 0; padding-left: 18px; }
 .warn-list li { margin: 3px 0; }
-.up-bad { color: var(--del); }
-.down-good { color: var(--add); }
 
 /* ---------- modal & drawer ---------- */
-.modal-wrap { position: fixed; inset: 0; z-index: 80; background: rgb(0 0 0 / 0); display: grid; place-items: center; padding: 24px; transition: background var(--motion-moderate-duration) ease; }
-.modal-wrap.is-open { background: rgb(0 0 0 / .28); }
-.modal { width: min(520px, 100%); max-height: calc(100vh - 48px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
-  transform: translateY(8px) scale(.985); opacity: 0; transition: transform var(--motion-slow-duration) var(--ease-spring-slow), opacity var(--motion-slow-duration) ease; }
 .modal.is-wide { width: min(760px, 100%); }
 .modal-wrap.is-open .modal { transform: none; opacity: 1; }
 .modal-wrap.is-side { place-items: stretch end; padding: 10px; }
