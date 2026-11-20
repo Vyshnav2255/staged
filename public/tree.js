@@ -174,12 +174,14 @@ function draw(animate) {
   const dayKey = (c) => new Date(c.date).toDateString();
   let seps = '';
   commits.forEach((c, i) => { if (i && dayKey(c) !== dayKey(commits[i - 1])) seps += `<line x1="0" x2="${gw}" y1="${i * ROW}" y2="${i * ROW}"/>`; });
+  // With only one author, the author column says nothing, so it goes.
+  const oneAuthor = new Set(commits.map((c) => c.author)).size <= 1;
   const list = commits.map((c, i) => {
     const newDay = i === 0 || dayKey(c) !== dayKey(commits[i - 1]);
     const hit = q && (c.subject.toLowerCase().includes(q) || c.sha.startsWith(q) || c.author.toLowerCase().includes(q));
-    return `<div class="t-row ${newDay && i ? 'day-start' : ''} ${hit ? 'is-hit' : ''} ${st.open === c.sha ? 'is-open' : ''} ${c.sha === head ? 'is-headrow' : ''}" data-row="${i}" data-sha="${c.sha}" style="--d:${motion ? Math.min(i * 14, 900) + 60 : 0}ms">
+    return `<div class="t-row ${newDay && i ? 'day-start' : ''} ${hit ? 'is-hit' : ''} ${st.open === c.sha ? 'is-open' : ''} ${c.sha === head ? 'is-headrow' : ''}" data-row="${i}" data-sha="${c.sha}" style="--d:${motion ? Math.min(i * 8, 320) + 40 : 0}ms">
       <span class="t-subj">${refPills(c.refs, c.sha === head)}<span class="t-text">${esc(c.subject)}</span></span>
-      <span class="t-author">${esc(c.author)}</span>
+      ${oneAuthor ? '' : `<span class="t-author">${esc(c.author)}</span>`}
       <span class="t-when mono ${newDay ? 'is-day' : ''}" title="${dLong.format(new Date(c.date))}">${newDay ? dayLabel(c.date) : ''}</span>
       <span class="t-sha mono">${c.sha.slice(0, 7)}</span>
     </div>`;
@@ -195,10 +197,9 @@ function draw(animate) {
         <button data-scope="all" aria-selected="${st.all}">All branches</button>
         <button data-scope="head" aria-selected="${!st.all}">This branch</button>
       </div>
-      <span class="mono muted">${total} commits · ${branchN} branches · ${merges} merges${tagN ? ` · ${tagN} tags` : ''}</span>
-      <span class="t-legend mono muted"><i class="lg-head"></i>you are here <i class="lg-commit"></i>commit, coloured by type <i class="lg-merge"></i>merge <i class="lg-tag"></i>tag</span>
+      <span class="mono muted">${[`${total} commits`, branchN > 1 && `${branchN} branches`, merges && `${merges} merges`, tagN && `${tagN} tags`].filter(Boolean).join(' · ')}</span>
     </div>
-    <div class="t-wrap" style="--gw:${gw}px">
+    <div class="t-wrap${oneAuthor ? ' is-solo' : ''}" style="--gw:${gw}px">
       <svg class="t-graph" width="${gw}" height="${H}" viewBox="0 0 ${gw} ${H}" aria-hidden="true">
         <g class="seps">${seps}</g><g class="edges">${paths}</g><g class="nodes">${nodes}</g>
       </svg>

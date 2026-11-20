@@ -407,6 +407,7 @@ a { color: inherit; }
 .t-subj { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .t-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-author { color: var(--ink-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-wrap.is-solo .t-row { grid-template-columns: minmax(0, 1fr) 72px 64px; }
 .t-when, .t-sha { color: var(--muted); text-align: right; }
 .t-wrap.is-tracing .t-row:not(.on), .t-wrap.is-tracing .node:not(.on) { opacity: .28; }
 .t-wrap.is-tracing path.edge:not(.on) { opacity: .15; }
