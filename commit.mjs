@@ -19,6 +19,8 @@ function run(dir, args, { env, input } = {}) {
     child.stderr.on('data', (d) => (err += d));
     child.on('error', reject);
     child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(err.trim() || `git ${args[0]} failed`))));
+    // git can exit before reading stdin (EPIPE); without this handler that error would crash the server
+    child.stdin.on('error', () => {});
     child.stdin.end(input || '');
   });
 }
@@ -251,6 +253,379 @@ function signalsOf(f) {
   for (const w of f.path.replace(/\.[a-z0-9]+$/i, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)) if (w.length >= 3 && !STOPWORDS.has(w) && !WEAK_STEMS.has(w) && !/^(public|src|assets|includes|sass|pages|test|tests|lib|js|css|scss|html|data)$/.test(w)) where.add('W:' + w);
   return plus.size || minus.size || where.size ? { plus, minus, kept, where, shown } : null;
 }
+// Defined here, used there. A chunk that brings in a brand-new name (a function, a constant, a CSS
+// class, a custom property, a keyframes) and the chunks that start using that name are one change,
+// the way a person reads a diff: `exitFallbackMs` added in motion.js and first called in ui.js.
+// A name counts only when it is fresh (never in unchanged or removed lines), specific (made of parts
+// or long) and defined in at most two places. Each using chunk joins the one definer it leans on most,
+// so a chunk that touches three features can't chain them all together.
+const NAME_TOKEN = /--[a-z][\w-]+|[A-Za-z_$][\w$]*(?:-[A-Za-z0-9_]+)*/g;
+function specificName(raw) {
+  if (raw.length < 5 || BUILTIN.test(raw) || /^[A-Za-z0-9]{1,2}(?:-[A-Za-z0-9]{1,2})+$/.test(raw)) return false;
+  const low = raw.toLowerCase();
+  if (STOPWORDS.has(low) || COMMON_NAMES.has(low)) return false;
+  const parts = raw.replace(/^--/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/).filter(Boolean);
+  return parts.length >= 2 || raw.length >= 8;
+}
+function definitionsIn(line, css) {
+  const out = [];
+  if (css) {
+    const sel = line.includes('{') ? line.slice(0, line.indexOf('{')) : /,\s*$/.test(line) && /^\s*[.#&:>*\[\w\s-]/.test(line) && !/:\s+\S/.test(line) ? line : '';
+    if (sel) for (const m of sel.matchAll(/\.([a-z][\w-]*)/gi)) out.push(m[1]);
+    for (const m of line.matchAll(/(--[a-z][\w-]+)\s*:/gi)) out.push(m[1]);
+    for (const m of line.matchAll(/@keyframes\s+([\w-]+)/g)) out.push(m[1]);
+  } else {
+    for (const m of line.matchAll(/(?:function\*?\s+|\b(?:const|let|var|class)\s+)([A-Za-z_$][\w$]*)/g)) out.push(m[1]);
+    for (const m of line.matchAll(/\b(?:const|let|var)\s*\{([^}=]+)\}\s*=/g)) for (const x of m[1].split(',')) { const k = x.split(':').pop().trim(); if (k) out.push(k); }
+    const key = line.match(/^\s*(?:async\s+)?([a-z][a-z0-9]*[A-Z][\w$]*)\s*(?::|\([^)]*\)\s*\{)/);
+    if (key) out.push(key[1]);
+    for (const m of line.matchAll(/[{,]\s*([a-z][a-z0-9]*[A-Z][\w$]*)\s*:(?!:)/g)) out.push(m[1]);
+    // A custom property set from code with a template (`--motion-${tier}-duration`) defines a family.
+    for (const m of line.matchAll(/setProperty\(\s*`(--[a-z][\w-]*\$\{[^}]+\}[\w-]*)`/g)) out.push('~' + m[1]);
+    for (const m of line.matchAll(/(--[a-z][\w-]+)['"]?\s*[:,]/gi)) out.push(m[1]);
+  }
+  return out.filter(specificName);
+}
+function defineUseLinks(files, kinds, coll, isNew, union, hint = () => {}) {
+  const n = files.length;
+  const plus = [], minus = [], keptIn = [], kept = new Set(), defs = [], size = [], props = [];
+  const tokens = (line, into) => { for (const m of line.matchAll(NAME_TOKEN)) into.add(m[0]); };
+  const keptByPath = new Map(), importOnly = [], addedLines = [], styleNames = [];
+  for (let i = 0; i < n; i++) {
+    const f = files[i], p = new Set(), m = new Set(), d = new Set(), k = new Set(), pr = { add: new Set(), del: new Set() };
+    plus.push(p); minus.push(m); defs.push(d); keptIn.push(k); props.push(pr); styleNames.push(new Set());
+    if (isAsset(kinds[i]) || (coll[i] && isNew[i])) { size.push(0); continue; }
+    const css = /\.(s?css|less|sass)$/i.test(f.path), html = /\.(html?|svelte|vue)$/i.test(f.path);
+    const lines = f.status === 'A' && f.content ? f.content.slice(0, 60000).split('\n').map((l) => '+' + l) : (f.diff || '').split('\n');
+    let changed = 0, inStyle = false, inComment = false;
+    addedLines[i] = lines.filter((l) => l[0] === '+' && !l.startsWith('+++')).length;
+    importOnly[i] = lines.some((l) => l[0] === '+' && !l.startsWith('+++')) && lines.every((l) => l[0] !== '+' || l.startsWith('+++') || /^\+\s*(import\b|export\s*\{|(const|let|var)\s.*=\s*require\(|\s*$)/.test(l));
+    for (const l of lines) {
+      if (l.startsWith('@@') || l.startsWith('+++') || l.startsWith('---') || l.startsWith('diff ') || l.startsWith('index ')) continue;
+      const styled = css || inStyle;
+      // Words in comments are prose, not uses: a comment saying "one shared highlight" doesn't use
+      // the `highlight` variable another chunk declares.
+      let body = l.slice(1);
+      if (inComment) { const end = body.indexOf('*/'); if (end < 0) body = ''; else { body = body.slice(end + 2); inComment = false; } }
+      body = body.replace(/\/\*.*?\*\//g, ' ');
+      if (body.includes('/*')) { body = body.slice(0, body.indexOf('/*')); inComment = true; }
+      if (!styled) body = body.replace(/(^|[\s;{}(),])\/\/.*$/, '$1');
+      if (/^\s*\*/.test(body) && !styled) body = '';
+      if (html && /<style\b/i.test(body)) inStyle = true;
+      if (l[0] === '+') { changed++; tokens(body, p); for (const x of definitionsIn(body, styled)) d.add(x); if (styled) for (const x of body.matchAll(/[.#]([a-z][\w-]*)|(--[a-z][\w-]+)/gi)) styleNames[i].add(x[1] || x[2]); }
+      else if (l[0] === '-') { changed++; tokens(body, m); }
+      else tokens(body, k);
+      // Style properties a chunk adds or drops (mask-image, scrollbar-width, ::-webkit-scrollbar).
+      if (styled && (l[0] === '+' || l[0] === '-')) for (const x of body.matchAll(/(?:^|[;{\s])(-?[a-z]+(?:-[a-z]+)+)\s*:(?!:)|::?(-webkit-[a-z-]+)/g)) (l[0] === '+' ? pr.add : pr.del).add(x[1] || x[2]);
+      if (html && /<\/style>/i.test(body)) inStyle = false;
+    }
+    for (const x of k) kept.add(x);
+    if (!keptByPath.has(f.path)) keptByPath.set(f.path, new Set());
+    for (const x of k) keptByPath.get(f.path).add(x);
+    size.push(changed);
+  }
+  // Fresh names only: one already in the code (unchanged or removed lines anywhere) says nothing.
+  const definers = new Map(), families = [];
+  for (let i = 0; i < n; i++) for (const x of defs[i]) {
+    if (x[0] === '~') { families.push([new RegExp('^' + x.slice(1).replace(/[.*+?^()|[\]\\]/g, '\\$&').replace(/\$\{[^}]+\}/g, '[\\w-]+') + '$'), i]); continue; }
+    if (kept.has(x) || minus.some((m) => m.has(x))) continue;
+    if (!definers.has(x)) definers.set(x, []);
+    definers.get(x).push(i);
+  }
+  for (const [x, ds] of definers) for (const [re, i] of families) if (re.test(x) && !ds.includes(i)) ds.push(i);
+  for (const [x, ds] of definers) if (ds.length > 2) definers.delete(x);
+  // The same custom property declared in two places (CSS and the code that sets it) is one system.
+  for (const [x, ds] of definers) if (x.startsWith('--') && ds.length === 2) union(ds[0], ds[1], `defines ${x}`);
+  const users = new Map();
+  for (const [x, ds] of definers) users.set(x, plus.map((p, i) => (p.has(x) && !ds.includes(i) ? i : -1)).filter((i) => i >= 0));
+  const totalUsers = new Array(n).fill(0);
+  for (const [x, ds] of definers) for (const d of ds) totalUsers[d] += users.get(x).length;
+  // A big chunk that brings in names for several features at once (a long block of new styles at the
+  // end of a stylesheet) is a hub: its users spread over many files, so pulling each of them in would
+  // fuse every feature it serves into one commit. Users then join their feature some other way.
+  const userFiles = defs.map(() => new Set());
+  for (const [x, ds] of definers) for (const d of ds) for (const u of users.get(x)) if (files[u].path !== files[d].path) userFiles[d].add(files[u].path);
+  const hubDef = size.map((sz, d) => sz >= 120 && userFiles[d].size >= 3);
+  const bothAdd = [], own = new Array(n).fill(false);
+  // A name two chunks of one file both bring in (a button added to markup, its click handler).
+  const addedIn = new Map();
+  for (let i = 0; i < n; i++) if (files[i].unitOf) for (const x of plus[i]) if (specificName(x) && /[-_A-Z]/.test(x.slice(1))) (addedIn.get(x) || addedIn.set(x, []).get(x)).push(i);
+  // CSS pseudo-classes (:last-child, :focus-visible) are syntax every stylesheet chunk may add, not a name.
+  const PSEUDO = /^((first|last|only|nth)(-last)?-(child|of-type)|focus-(visible|within)|placeholder-shown)$/;
+  for (const [x, is] of addedIn) {
+    // In styles only a class, id or custom property is a name; a value (ui-monospace) is just a value.
+    if (is.length !== 2 || PSEUDO.test(x) || is.some((i) => /\.(s?css|less|sass)$/i.test(files[i].path) && !styleNames[i].has(x)) || files[is[0]].path !== files[is[1]].path || definers.has(x) || props.some((pr) => pr.add.has(x) || pr.del.has(x))) continue;
+    if (minus.some((m) => m.has(x)) || keptByPath.get(files[is[0]].path).has(x)) continue;
+    bothAdd.push([is[0], is[1], x]); own[is[0]] = own[is[1]] = true;
+  }
+  for (const [a, b, x] of bothAdd) union(a, b, `both add ${x}`);
+  // Names that leave the code together: a panel's markup goes from one file and its styles from
+  // another, and nothing anywhere still mentions them. Taking a feature out is one change.
+  const droppedIn = new Map();
+  for (let i = 0; i < n; i++) if (size[i] && minus[i].size && addedLines[i] * 3 <= size[i]) for (const x of minus[i]) if (specificName(x) && /[-_A-Z]/.test(x.slice(1)) && !kept.has(x) && !plus.some((p) => p.has(x))) (droppedIn.get(x) || droppedIn.set(x, []).get(x)).push(i);
+  const dropPairs = new Map();
+  for (const [x, is] of droppedIn) {
+    if (is.length < 2 || is.length > 3 || new Set(is.map((i) => files[i].path)).size !== is.length) continue;
+    for (const j of is.slice(1)) { const key = is[0] + ':' + j; if (!dropPairs.has(key)) dropPairs.set(key, { a: is[0], b: j, x, c: 0 }); dropPairs.get(key).c++; }
+  }
+  // One shared word could be chance; three dropped together is a feature leaving.
+  for (const { a, b, x, c } of dropPairs.values()) if (c >= 3) union(a, b, `both drop ${x}`);
+  for (let u = 0; u < n; u++) {
+    const score = new Map(), named = new Map(), narrow = new Map();
+    for (const [x, ds] of definers) {
+      const us = users.get(x);
+      if (!us.includes(u)) continue;
+      // A chunk that starts a feature of its own and also uses a widely shared new token (a motion
+      // duration, a colour) belongs to its own feature, not to the token's.
+      if (us.length > 3 && (size[u] > 8 || totalUsers[u] > 0 || own[u])) continue;
+      if (x.startsWith('--') && (totalUsers[u] > 0 || own[u])) continue;
+      for (const d of ds) {
+        // Only other files are kept off a hub: callers inside the hub's own file are its feature (closedRepos).
+        if (hubDef[d] && files[u].path !== files[d].path) { hint(u, d, x); continue; }
+        score.set(d, (score.get(d) || 0) + 1 / us.length);
+        if (!named.has(d) || x.length > named.get(d).length) named.set(d, x);
+        if (us.length <= 2) narrow.set(d, x);
+      }
+    }
+    let best = -1;
+    for (const [d, s] of score) if (best < 0 || s > score.get(best) + 1e-9 || (Math.abs(s - score.get(best)) < 1e-9 && totalUsers[d] > totalUsers[best])) best = d;
+    if (best >= 0) union(u, best, `uses ${named.get(best)}`);
+    // A one-line chunk is small enough to wire two parts together (a template line that renders the
+    // new list with the new class), when each name it uses is shared by at most one other chunk.
+    if (best >= 0 && addedLines[u] === 1 && !importOnly[u]) for (const [d, x] of narrow) if (d !== best) union(u, d, `uses ${x}`);
+    // A chunk whose new names only this chunk uses (besides the import line) serves it alone: fx.js's
+    // foldRepaint, called only by the view's draw, goes with draw even when draw found a better match.
+    // Not for a line or two that starts two features (initMotion(); initRepoHover();): that's wiring.
+    if (addedLines[u] > 2) for (const [d, x] of narrow) if (d !== best && !hubDef[d] && files[d].path !== files[u].path && [...definers].every(([y, ds]) => !ds.includes(d) || users.get(y).every((v) => v === u || (importOnly[v] && files[v].path === files[u].path)))) union(u, d, `uses ${x}`);
+  }
+  // A chunk that edits a function (named in its hunk header) and a chunk elsewhere that starts calling it.
+  for (let i = 0; i < n; i++) {
+    const head = (files[i].unitOf || files[i].hunks?.length === 1) && (files[i].diff || '').split('\n').find((l) => l.startsWith('@@'));
+    const fn = head && head.match(/@@[^@]*@@.*?\b(?:function\*?\s+|(?:const|let)\s+)([A-Za-z_$][\w$]{4,})/)?.[1];
+    if (!fn || !specificName(fn)) continue;
+    const callers = [];
+    for (let j = 0; j < n; j++) if (j !== i && files[j].path !== files[i].path && plus[j].has(fn) && !minus[j].has(fn)) callers.push(j);
+    if (callers.length && callers.length <= 2) for (const j of callers) union(i, j, `changes ${fn}`);
+  }
+  // Clean-up chunks: a chunk that only drops styling (mask-image: none, scrollbar-width: none) which a
+  // new rule elsewhere in the same file now provides goes with that rule.
+  for (let u = 0; u < n; u++) {
+    if (!files[u].unitOf || size[u] > 4 || [...defs[u]].some((x) => definers.has(x)) || !props[u].del.size) continue;
+    const gone = [...props[u].del].filter((x) => !props[u].add.has(x));
+    if (!gone.length) continue;
+    let best = -1, bestN = 0;
+    for (let d = 0; d < n; d++) {
+      if (d === u || hubDef[d] || files[d].path !== files[u].path || ![...defs[d]].some((x) => definers.has(x))) continue;
+      const hit = gone.filter((x) => props[d].add.has(x) && !props[d].del.has(x)).length;
+      if (hit > bestN) { best = d; bestN = hit; }
+    }
+    if (best >= 0) union(u, best, `replaced by ${[...defs[best]].find((x) => definers.has(x))}`);
+  }
+}
+// A code name read as words: initMotionSystem -> motion system, suggestMerges -> merge suggestions,
+// scroll-fade -> scroll fade, --motion-fast-duration -> motion durations.
+const NOUN_OF = { suggest: 'suggestions', update: 'updates', preview: 'previews', render: '', get: '', compute: '', calc: '', append: '', allow: '', init: '', setup: '', build: '', make: '', create: '', handle: '', apply: '', mount: '', open: '', show: '', draw: '', wire: '' };
+const TWO_VERBS = /^(define|use|read|write|load|save|find|link|split|join|group|sort|match|build|parse|send|fetch|open|close|show|hide|add|remove|move|copy|drag|drop|undo|redo)$/;
+// Names that tie chunks together but aren't things a person would name a commit after: a regex
+// class (A-Za-z_), a CSS pseudo-class (focus-visible), a data- or aria- attribute, a git flag.
+const VENDOR = /(^|\/)(vendor|vendors|third[-_]party|node_modules|lib\/ext)\//i;
+const DOM_API = /^(exec|execFile|execSync|execFileSync|spawn|spawnSync|fork|readFile|writeFile|readFileSync|writeFileSync|readdir|readdirSync|mkdir|mkdirSync|existsSync|statSync|promisify|createServer|fetch|structuredClone|AbortController|URLSearchParams|TextDecoder|TextEncoder|documentElement|querySelector(All)?|(add|remove)EventListener|classList|innerHTML|outerHTML|textContent|innerText|getBoundingClientRect|requestAnimationFrame|cancelAnimationFrame|set(Timeout|Interval)|clear(Timeout|Interval)|localStorage|sessionStorage|dataset|scroll(Top|Left|IntoView|Height|Width)|offset(Width|Height|Top|Left)|client(Width|Height)|matchMedia|getComputedStyle|createElement|appendChild|insertAdjacentHTML|preventDefault|stopPropagation|currentTarget|getAttribute|setAttribute|removeAttribute|toggleAttribute|closest|contains|setProperty|getPropertyValue)$/;
+const NOT_A_THING = /^(A-Za-z|a-z|A-Z|0-9)|^(Extended_Pictographic|Emoji_Presentation|Emoji_Modifier|Regional_Indicator|White_Space|Alphabetic)$|^(focus|focus-visible|focus-within|first-child|last-child|nth-child|hover|active|checked|disabled|placeholder-shown|not)$|^(data|aria)-|^--(abbrev|format|no-|porcelain|numstat|shortstat|name-only|pretty|oneline|since|until|author|grep|follow|cached|staged|verify|quiet|force|all|tags|depth|unified)/;
+function featureName(name) {
+  if (NOT_A_THING.test(name) || DOM_API.test(name)) return '';
+  // Code abbreviations as a word of the name (eng-pulse, btnRow, cfgPath) name code, not a feature.
+  if (name.replace(/^--/, '').split(/[-_]|(?<=[a-z0-9])(?=[A-Z])/).some((w) => /^(eng|btn|cfg|pkg|msg|img|src|ctx|evt|err|str|num|obj|arr|tmp|idx|cnt|val|req|res|elem|util|utils|impl|dlg|hdr|ftr|cmp|rl|rp)$/i.test(w))) return '';
+  // gh is GitHub's own CLI: ghRelease -> GitHub release.
+  if (/^gh[A-Z][a-z]/.test(name)) { const rest = featureName(name[2].toLowerCase() + name.slice(3)); return rest ? `GitHub ${rest}` : ''; }
+  // State flags and shorthand (justMoved, rl-badge, cm-head) name a variable, not a feature.
+  if (/^(just|is|has|was|did|can|should|last|prev|next|cur|tmp|old)[A-Z_-]/.test(name) || name.replace(/^--/, '').replace(/^(cm|js|is|has|el|my|u)[-_]/, '').split(/[-_]|(?<=[a-z0-9])(?=[A-Z])/).some((w) => w.length > 0 && w.length <= 2 && !/^(ui|ux|qr|id|os|ai|db|on|in|up|to|by|of|at|go|do|no|it|or|as|be)$/i.test(w))) return '';
+  // A product or brand written as one PascalCase word (GitHub, JavaScript) stays as written.
+  if (/^[A-Z][a-z]+[A-Z][a-z]+$/.test(name) && /^(GitHub|GitLab|JavaScript|TypeScript|WebKit|YouTube|LinkedIn|PayPal|WordPress|MacBook|iPhone)$/.test(name)) return name;
+  let words = name.replace(/^--/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (name.startsWith('--')) words = words.filter((w) => !/^(fast|moderate|slow|exit|sm|md|lg|xl|\d+)$/.test(w));
+  while (words.length > 1 && /^(is|has|cm|js|u|el|my|the)$/.test(words[0])) words.shift();
+  words = words.filter((w, i) => w.length > 1 || i === 0);
+  while (words.length > 1 && /^(ms|px|el|fn|cb|id|ids|list|state|value|min|max|file|files|key|url|path|by|for|of|to|from|with)$/.test(words.at(-1))) words.pop();
+  if (words.length > 1 && words[0] in NOUN_OF) {
+    const noun = NOUN_OF[words.shift()];
+    if (noun) words = [...words.map((w, i) => (i === words.length - 1 ? w.replace(/s$/, '') : w)), noun];
+  }
+  // Two verbs in a row name what the thing links or does: defineUseLinks -> define-and-use links.
+  if (words.length >= 3 && TWO_VERBS.test(words[0]) && TWO_VERBS.test(words[1])) words = [`${words[0]}-and-${words[1]}`, ...words.slice(2)];
+  if (name.startsWith('--') && words.length && !/s$/.test(words.at(-1))) words[words.length - 1] += 's';
+  const out = words.join(' ');
+  return out.length >= 4 && words.length <= 4 && !STOPWORDS.has(out) ? out : '';
+}
+// A tiny function that only picks a value out of a string (githubRepo: one .match and a return)
+// is plumbing, not the feature the group is about.
+function parserHelper(name, fs_) {
+  for (const f of fs_) {
+    const ls = (f.diff || '').split('\n'), at = ls.findIndex((l) => new RegExp(`^\\+\\s*(export\\s+)?(async\\s+)?function\\s+${name.replace(/[$]/g, '\\$')}\\s*\\(|^\\+\\s*(export\\s+)?const\\s+${name.replace(/[$]/g, '\\$')}\\s*=\\s*(async\\s*)?\\(`).test(l));
+    if (at < 0) continue;
+    const body = [];
+    for (let k = at + 1; k < ls.length && body.length < 6; k++) { if (/^\+\}\s*;?\s*$/.test(ls[k])) break; body.push(ls[k]); }
+    return body.length <= 3 && body.some((l) => /\.(match|exec|replace|split)\(/.test(l)) && body.some((l) => /\breturn\b/.test(l));
+  }
+  return false;
+}
+// The comment you wrote above a new name usually says what it is better than the name does:
+// "/* Low-profile scrollbar treatment. */" -> low-profile scrollbar treatment; "One shared highlight
+// glides between repository rows." -> a shared highlight that glides between repository rows.
+const COMMENT_VERBS = new Set('glides slides fades shows keeps holds lives opens closes moves stays sits follows runs reads writes uses makes lets gives takes picks sorts groups tracks marks turns wraps fills draws renders appears steps hides lifts springs eases snaps scrolls points tells lists checks catches finds saves loads sends handles covers mirrors'.split(' '));
+const COMMENT_IMPERATIVE = /^(find|keep|make|use|show|let|give|take|pick|sort|group|track|mark|turn|wrap|fill|draw|render|hide|check|catch|save|load|send|handle|return|get|set|add|remove|skip|try|only|don't|do|note|todo|fixme|hack|see|when|if|this|these|it|we|i)\b/i;
+function commentPhrase(name, fs_) {
+  for (const f of fs_) {
+    const lines = (f.status === 'A' && f.content ? f.content.split('\n').map((l) => '+' + l) : (f.diff || '').split('\n'));
+    const defines = (l) => l[0] === '+' && (name == null ? /^\+\s*(export\s+)?(async\s+)?(function|class|const|let|[.#][\w-]|--)/.test(l) : definitionsIn(l.slice(1), /\.(s?css|less|sass)$/i.test(f.path) || /^\s*[.#-]/.test(l.slice(1))).includes(name));
+    for (let at = lines.findIndex(defines), tries = 0; at >= 0 && tries < 1; at = -1, tries++) {
+    if (at < 1) continue;
+    const said = [];
+    let inBlock = false;
+    for (let k = at - 1; k >= 0 && k >= at - 6; k--) {
+      const t = lines[k].slice(1).trim();
+      if (lines[k][0] !== '+') break;
+      if (!inBlock && /\*\/$/.test(t) && !/\/\*/.test(t)) inBlock = true;
+      if (!inBlock && !/^(\/\/|\/\*|\*|#(?!\{))/.test(t)) break;
+      said.unshift(t.replace(/^(\/\/+|\/\*+|\*+|#+)\s*/, '').replace(/\s*\*+\/\s*$/, ''));
+      if (inBlock && /\/\*/.test(t)) inBlock = false;
+    }
+    const sentences = said.join(' ').replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/);
+    // A short motto first ("Defined here, used there.") is a title, not a description: read on.
+    const first = (sentences.length > 1 && sentences[0].split(' ').length <= 6 && /,/.test(sentences[0]) ? sentences[1] : sentences[0]).replace(/[.!?:]$/, '').replace(/^.*\s[›»>]\s/, '');
+    if (!first || COMMENT_IMPERATIVE.test(first) || /[`(){}=<>\[\]]/.test(first) || /^(shown|kept|used|made|done|given|taken|seen|known|found|held|left|set|put|read|built|sent|written|drawn|called)\b/i.test(first)) continue;
+    let words = first.split(' ');
+    const cut = words.findIndex((w, i) => i >= 2 && /^(for|so|because|since|unless|but)$/i.test(w) || /[,;—]$/.test(w));
+    if (cut > 0) words = words.slice(0, /[,;—]$/.test(words[cut]) ? cut + 1 : cut).map((w) => w.replace(/[,;—]$/, ''));
+    const verbAt = words.findIndex((w, i) => i >= 1 && i <= 4 && COMMENT_VERBS.has(w.toLowerCase()));
+    const lower = (ws) => { const out = []; ws.forEach((w, i) => out.push(/^[A-Z](?:[a-z]|$)/.test(w) && (i === 0 || (!/^[A-Z]/.test(out[i - 1] || '') && !/^[A-Z][a-z]/.test(ws[i + 1] || ''))) ? w.toLowerCase() : w)); return out; };
+    let phrase;
+    if (verbAt > 0) {
+      const np = lower(words.slice(0, verbAt));
+      if (/^(both|each|all|these|those|they|it|we|you|there|here|then|so|and|or|but)$/i.test(np[0])) continue;
+      if (!np.some((w) => w.replace(/[^a-z]/gi, '').length >= 3)) continue; // "gh lives in ..." is about a tool, not the thing
+      if (/^(one|the)$/i.test(np[0])) np[0] = 'a';
+      phrase = /^(that|which|who)$/i.test(np.at(-1)) ? `${np.join(' ')} ${words.slice(verbAt).join(' ')}` : `${np.join(' ')} that ${words.slice(verbAt).join(' ')}`;
+    } else if (words.length <= 5 && !words.some((w) => /^(is|are|was|were|be|been|being|has|have|had|can|could|will|would|should|must|may|might|does|do|did|blocks|crosses|means|needs|gets)$/i.test(w))) phrase = lower(words).join(' ');
+    // "Bundle metadata only" is a caveat and "one observer serves every option" a sentence, not a name.
+    if (phrase && /\sonly$/i.test(phrase)) continue;
+    if (phrase && verbAt <= 0 && /\b\w{3,}s (every|each|all|the|a|an|its|their|our|your|this|that)\b/i.test(phrase)) continue;
+    if (phrase && phrase.length >= 8 && phrase.length <= 64 && phrase.split(' ').length >= 2) return phrase;
+    }
+  }
+  return '';
+}
+// Small style edits, read declaration by declaration: which rule, which property, which way.
+const CSS_ELEMENT = { a: 'links', img: 'images', p: 'paragraphs', h1: 'headings', h2: 'headings', h3: 'headings', h4: 'headings', ul: 'lists', ol: 'lists', li: 'list items', button: 'buttons', input: 'inputs', body: 'the page', html: 'the page', nav: 'navigation', footer: 'footer', header: 'header', svg: 'icons', table: 'tables', code: 'code', pre: 'code blocks', blockquote: 'quotes', hr: 'dividers', ':root': 'theme' };
+const CSS_PROP = { 'font-size': 'font size', 'font-weight': 'font weight', 'font-family': 'font', 'line-height': 'line height', 'letter-spacing': 'letter spacing', 'border-radius': 'corner radius', 'background-color': 'background', background: 'background', color: 'text color', 'box-shadow': 'shadow', 'z-index': 'stacking', 'max-width': 'max width', 'min-width': 'min width', 'max-height': 'max height', 'min-height': 'min height', 'grid-template-columns': 'columns', gap: 'spacing', 'row-gap': 'row spacing', 'column-gap': 'column spacing', fill: 'fill color', stroke: 'stroke color', 'stroke-width': 'stroke width', 'text-decoration': 'underline', transition: 'transition', opacity: 'opacity' };
+function selectorWords(sel) {
+  const last = sel.split(',')[0].trim().split(/\s+|>|\+|~/).filter(Boolean);
+  const words = [];
+  for (const part of last.slice(-2)) {
+    const bare = part.replace(/::?[a-z-]+(\([^)]*\))?/g, '').replace(/\[[^\]]*\]/g, '');
+    const cls = bare.match(/[.#]([a-z][\w-]*)/gi);
+    if (cls) words.push(cls.map((c) => c.slice(1).replace(/^(is|has|js|u)-/, '').replace(/^[a-z]{1,2}-(?=[a-z]{3})/, '').replace(/[-_]+/g, ' ')).join(' '));
+    else if (CSS_ELEMENT[bare.toLowerCase()]) words.push(CSS_ELEMENT[bare.toLowerCase()]);
+    else if (bare) words.push(bare.toLowerCase());
+  }
+  const hover = /:hover|:focus/.test(sel) ? ' on hover' : '';
+  return (words.at(-1) || '').replace(/\bbtn\b/g, 'button').replace(/\bnav\b/g, 'navigation').replace(/\bimg\b/g, 'image').trim() + hover;
+}
+// A rule inside a media query only holds there: (hover: none) is touch screens.
+const MEDIA_PHRASE = [[/hover:\s*none|pointer:\s*coarse/, 'on touch screens'], [/hover:\s*hover|pointer:\s*fine/, 'on mouse devices'], [/prefers-reduced-motion/, 'with reduced motion'], [/prefers-color-scheme:\s*dark/, 'in dark mode'], [/^\s*print\b/, 'in print'], [/max-width/, 'on narrow screens'], [/min-width/, 'on wide screens']];
+function cssSubject(fs_) {
+  const edits = [], mediaOf = new Map();
+  for (const f of fs_) {
+    let sel = '', media = '', depth = 0;
+    const rem = new Map(), add = new Map();
+    const flush = () => {
+      for (const [k, v] of rem) { const [s2, prop] = k.split('\0'); if (!add.has(k)) edits.push({ sel: s2, prop, from: v, to: null, f }); else if (add.get(k) !== v) edits.push({ sel: s2, prop, from: v, to: add.get(k), f }); }
+      for (const [k, v] of add) if (!rem.has(k)) { const [s2, prop] = k.split('\0'); edits.push({ sel: s2, prop, from: null, to: v, f }); }
+      rem.clear(); add.clear();
+    };
+    for (const l of (f.diff || '').split('\n')) {
+      if (l.startsWith('@@')) { flush(); const h = l.match(/@@[^@]*@@\s*(.*\{)?/); sel = h?.[1] ? h[1].replace(/\{\s*$/, '').trim() : ''; continue; }
+      if (l.startsWith('+++') || l.startsWith('---')) continue;
+      const body = l.slice(1);
+      let text = body;
+      const mq = body.match(/@media\s*([^{]+)\{/);
+      if (mq) { media = mq[1].trim(); depth = 0; }
+      if (media) depth += (body.match(/\{/g) || []).length - (body.match(/\}/g) || []).length;
+      const here = media;
+      if (media && depth <= 0) media = '';
+      const open = body.lastIndexOf('{');
+      // A nested Sass rule (&:hover, &.active) belongs to the rule it sits in.
+      if (open >= 0) { const s2 = body.slice(0, open).trim(); sel = s2.startsWith('&') && sel && !sel.startsWith('&') ? sel.split(',')[0].trim() + s2.slice(1) : s2 || sel; text = body.slice(open + 1); }
+      if (l[0] !== '+' && l[0] !== '-') { if (body.includes('}')) { flush(); } continue; }
+      // A Sass mixin that sets a property counts as setting it: @include themed(color, $dark-700, $dark-300).
+      const mixin = text.match(/^\s*@include\s+[\w-]+\(\s*([a-z][a-z-]*)\s*,\s*([^;{}]+)\)\s*;?\s*$/);
+      if (mixin) { (l[0] === '+' ? add : rem).set(sel + '\0' + mixin[1], mixin[2].trim()); continue; }
+      for (const m of text.matchAll(/(?:^|;)\s*(-?[a-z][a-z-]*)\s*:\s*([^;{}]+)/g)) {
+        if (m[1].startsWith('--') || /^(-webkit|-moz)/.test(m[1])) continue;
+        (l[0] === '+' ? add : rem).set(sel + '\0' + m[1], m[2].trim());
+        mediaOf.set(sel, here);
+      }
+    }
+    flush();
+  }
+  if (!edits.length || edits.length > 3) return '';
+  // A hunk deep inside a rule shows no selector: the stylesheet's own name says where (_articles.scss -> articles).
+  const fileWords = (f) => { const n = stemOf(f.path).replace(/[-_]+/g, ' '); return /^(style|styles|main|base|index|global|globals|app|site|variables|theme)$/.test(n) ? '' : n; };
+  let sels = [...new Set(edits.map((e) => selectorWords(e.sel) || fileWords(e.f)).filter(Boolean))];
+  // "links and links on hover" is just links.
+  sels = sels.filter((x) => !(x.endsWith(' on hover') && sels.includes(x.slice(0, -9))));
+  if (!sels.length || sels.length > 2 || sels.some((x) => x.length > 28)) return '';
+  const num = (v) => { const m = String(v || '').match(/^(-?[\d.]+)(px|rem|em|%|vh|vw)?$/); return m ? parseFloat(m[1]) : null; };
+  const verbOf = (e) => (e.to == null ? 'Removed' : e.from == null ? 'Added' : num(e.from) != null && num(e.to) != null ? (num(e.to) < num(e.from) ? 'Reduced' : 'Increased') : 'Changed');
+  const props = edits.map((e) => ({ v: verbOf(e), p: CSS_PROP[e.prop] || e.prop.replace(/-/g, ' ') }));
+  const verbs = [...new Set(props.map((x) => x.v))];
+  const verb = verbs.length === 1 ? verbs[0] : 'Adjusted';
+  const what = list([...new Set(props.map((x) => x.p))]);
+  const where = list(sels);
+  const prep = verb === 'Removed' ? 'from' : verb === 'Added' ? 'to' : 'for';
+  const medias = [...new Set(edits.map((e) => mediaOf.get(e.sel) || ''))];
+  const onlyIn = medias.length === 1 && medias[0] ? MEDIA_PHRASE.find(([re]) => re.test(medias[0]))?.[1] || '' : '';
+  // Full opacity under a media query is "always shown there": Stopped always showing discard on touch screens.
+  if (onlyIn && edits.length === 1 && edits[0].prop === 'opacity' && (edits[0].to ?? edits[0].from) === '1' && (edits[0].to == null || edits[0].from == null)) return edits[0].to == null ? `Stopped always showing ${where} ${onlyIn}` : `Kept ${where} visible ${onlyIn}`;
+  const gm = `${verb} ${what} ${prep} ${where}${onlyIn ? ' ' + onlyIn : ''}`;
+  return gm.length <= 70 ? gm : '';
+}
+// The label people see on a new element is its name: <button class="modal-handle" aria-label="Close
+// sheet"> is a close sheet button, not a modal handle.
+function labelPhrase(name, fs_) {
+  if (name.startsWith('--')) return '';
+  const esc_ = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const f of fs_) for (const l of (f.diff || '').split('\n')) {
+    if (l[0] !== '+') continue;
+    const m = l.match(new RegExp(`<(\\w+)[^>]*class="[^"]*\\b${esc_}\\b[^"]*"[^>]*>`));
+    if (!m) continue;
+    const label = m[0].match(/(?:aria-label|title)="([^"]{3,40})"/)?.[1] || l.slice(l.indexOf(m[0]) + m[0].length).match(/^([A-Za-z][^<]{2,30})</)?.[1];
+    if (!label || /\$\{/.test(label)) continue;
+    const tag = { button: 'button', a: 'link', input: 'field', select: 'menu', nav: 'menu' }[m[1].toLowerCase()] || '';
+    if (!tag && !/\s/.test(label.trim())) continue;
+    const words_ = label.trim().replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase());
+    return `${/s$/.test(words_) ? '' : /^[aeiou]/i.test(words_) ? 'an ' : 'a '}${words_}${tag && !new RegExp(`\\b${tag}$`, 'i').test(words_) ? ' ' + tag : ''}`;
+  }
+  return '';
+}
+// A view renamed in place: exports and the header both swap one word for another.
+function renameOf(f) {
+  const d = f.diff || '';
+  const gone = [...d.matchAll(/^-\s*export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+  const came = [...d.matchAll(/^\+\s*export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+  for (const a of gone) for (const b of came) {
+    if (a === b) continue;
+    let k = 0; while (k < a.length && a[k] === b[k]) k++;
+    const pre = a.slice(0, k);
+    const oldW = a.slice(k), newW = b.slice(k);
+    if (pre.length >= 3 && /^[A-Z][a-z]+$/.test(oldW) && /^[A-Z][a-z]+$/.test(newW) && came.length <= 6) {
+      // The header should agree: the old word leaves it, the new one arrives.
+      const head = (sign) => (d.split('\n').find((l) => l[0] === sign && /^.\s*(\/\/|\/\*|\*)/.test(l)) || '');
+      if (head('-').includes(oldW) && head('+').includes(newW)) return [oldW, newW];
+      if (!head('-') && !head('+')) return [oldW, newW];
+    }
+  }
+  return null;
+}
 const MEANING_MIN = 0.16;
 // Soft semantic edges below this score are useful hints, but too weak to turn two
 // independently reviewable changes into one suggested commit. Explicit imports,
@@ -287,7 +662,7 @@ function suggestGroups(input, learn = {}) {
   const files = [];
   for (const f of input) {
     const hs = f.hunks;
-    const splittable = hs && hs.length >= 2 && hs.length <= 40 && !collectionOf(f.path) && !/\.(md|mdx|txt|json|ya?ml|toml|lock)$/i.test(f.path);
+    const splittable = hs && hs.length >= 2 && hs.length <= 120 && !collectionOf(f.path) && !/\.(md|mdx|txt|json|ya?ml|toml|lock)$/i.test(f.path);
     if (!splittable) { files.push(f); continue; }
     const big = hs.reduce((b, h) => (h.add + h.del > b.add + b.del ? h : b), hs[0]);
     for (const [at, h] of hs.entries()) files.push({ ...f, unitOf: f.path, hunk: h.id, at, home: h === big, units: hs.length, diff: h.head + '\n' + (h.all || h.lines).join('\n'), add: h.add, del: h.del, hunks: undefined });
@@ -296,7 +671,7 @@ function suggestGroups(input, learn = {}) {
   const n = files.length;
   const parent = files.map((_, i) => i);
   const why = files.map(() => new Set());
-  const linkEvidence = [];
+  const linkEvidence = [], heldEvidence = [];
   const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const apart = learn.apart || new Set();
   const keyOf = (a, b) => (files[a].path < files[b].path ? files[a].path + '\0' + files[b].path : files[b].path + '\0' + files[a].path);
@@ -304,6 +679,9 @@ function suggestGroups(input, learn = {}) {
   const evidenceWeight = (reason) => reason === 'you grouped these before' ? 0.99
     : reason === 'imports new file' ? 0.97
       : reason.startsWith('uses ') ? 0.94
+        : reason.startsWith('drops ') || reason === 'manifest and lock' ? 0.90
+        : reason.startsWith('changes ') || reason.startsWith('defines ') || reason === 'same edit' ? 0.88
+          : reason.startsWith('both add ') || reason.startsWith('replaced by ') || reason.startsWith('both drop ') ? 0.86
         : reason === 'includes new file' ? 0.90
           : reason === 'same file' ? 0.90
             : reason === 'usually change together' ? 0.88
@@ -320,7 +698,9 @@ function suggestGroups(input, learn = {}) {
                                   : 0.60;
   const union = (a, b, reason, confidence = evidenceWeight(reason)) => {
     const ra = find(a), rb = find(b);
-    if (ra === rb) return;
+    // Already joined, maybe only by a weak link that the bridge split will cut: keep a stronger fact
+    // on record so it still holds the pair (about.md including skills.html after "one topic" joined them).
+    if (ra === rb) { if (a !== b && confidence >= MIN_GROUP_LINK_EVIDENCE) heldEvidence.push({ a, b, confidence, reason }); return; }
     // never join groups that contain a pair you split apart before
     if (apart.size) for (const x of members(ra)) for (const y of members(rb)) if (apart.has(keyOf(x, y))) return;
     parent[rb] = ra; why[a].add(reason); why[b].add(reason);
@@ -337,6 +717,12 @@ function suggestGroups(input, learn = {}) {
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
     const sameDirectory = path.dirname(files[i].path) === path.dirname(files[j].path);
     if (whole(i) && whole(j) && top[i].startsWith('.') && top[i] === top[j] && sameDirectory && files[i].path.includes('/')) union(i, j, 'same folder');
+  }
+  // A dependency manifest and its lock file move together: package.json with package-lock.json, Gemfile with Gemfile.lock.
+  const LOCKS = { 'package.json': /^(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/, Gemfile: /^Gemfile\.lock$/, 'Cargo.toml': /^Cargo\.lock$/, 'composer.json': /^composer\.lock$/, 'pyproject.toml': /^(poetry|uv|pdm)\.lock$/, Pipfile: /^Pipfile\.lock$/, 'go.mod': /^go\.sum$/ };
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const lock = LOCKS[path.basename(files[i].path)];
+    if (i !== j && whole(i) && whole(j) && lock && lock.test(path.basename(files[j].path)) && path.dirname(files[i].path) === path.dirname(files[j].path)) union(i, j, 'manifest and lock');
   }
   // Content collections: _books/* with Images/Books/*
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
@@ -358,9 +744,22 @@ function suggestGroups(input, learn = {}) {
     if (/(^|\/)(manifest\.webmanifest|site\.webmanifest)$/i.test(files[i].path) && kinds[j] === 'app-icon') { union(i, j, 'app icons'); break; }
   }
   // Same file stem: delights.js + _delights.scss, pages/tags.html + post/tags.html
+  // Both gone counts too: deleting _data/programs.yml and _includes/about/programs.html takes one part out.
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-    if (whole(i) && whole(j) && (files[i].status === 'A' || files[j].status === 'A') && stems[i].length >= 3 && stems[i] === stems[j] && !WEAK_STEMS.has(stems[i])) union(i, j, 'same name');
+    if (whole(i) && whole(j) && (files[i].status === 'A' || files[j].status === 'A' || (files[i].status === 'D' && files[j].status === 'D')) && stems[i].length >= 3 && stems[i] === stems[j] && !WEAK_STEMS.has(stems[i])) union(i, j, 'same name');
   }
+  // New sibling files named on one pattern are one set: raycast/busy-lamp-focus.sh with
+  // raycast/busy-lamp-free.sh, .githooks/pre-commit with .githooks/pre-push.
+  const nameParts = (p) => path.basename(p, path.extname(p)).toLowerCase().split(/(?<=[-_.])/);
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    if (!whole(i) || !whole(j) || files[i].status !== 'A' || files[j].status !== 'A' || coll[i] || coll[j]) continue;
+    if (dirOf(files[i].path) !== dirOf(files[j].path) || path.extname(files[i].path) !== path.extname(files[j].path)) continue;
+    const a = nameParts(files[i].path), b = nameParts(files[j].path);
+    let shared = ''; for (let k = 0; k < Math.min(a.length, b.length) - 1 && a[k] === b[k] && /[-_.]$/.test(a[k]); k++) shared += a[k];
+    if (shared.length >= 4 && !/^(index|main|test|spec)[-_.]$/.test(shared)) union(i, j, 'same name');
+  }
+  // Two new files where one's whole name starts the other's (receipt.js, receipt-image.js) are one
+  // feature as surely as a shared stem, so that counts as the same name, not a weak shared topic.
   // One topic in the name: update.js and updater.mjs; server.mjs and
   // app-server.mjs. At least one of the two must be new: a shared word in a
   // new file's name is a strong sign of one feature.
@@ -371,7 +770,7 @@ function suggestGroups(input, learn = {}) {
     if (!whole(i) || !whole(j)) continue;
     const named = (a, b) => folders[a].length && folders[a].at(-1).toLowerCase() === stems[b] && folders[a].slice(0, -1).join('/') === folders[b].join('/');
     if (named(i, j) || named(j, i)) { union(i, j, 'same name'); continue; }
-    if ((files[i].status === 'A' || files[j].status === 'A') && !coll[i] && !coll[j] && !isAsset(kinds[i]) && !isAsset(kinds[j]) && words[i].some((a) => words[j].some((b) => sameWord(a, b)))) union(i, j, 'one topic');
+    if ((files[i].status === 'A' || files[j].status === 'A') && !coll[i] && !coll[j] && !isAsset(kinds[i]) && !isAsset(kinds[j]) && words[i].some((a) => words[j].some((b) => sameWord(a, b)))) union(i, j, files[i].status === 'A' && files[j].status === 'A' && [[i, j], [j, i]].some(([x, y]) => words[x].length === 1 && words[y].length > 1 && words[y][0] === words[x][0]) ? 'same name' : 'one topic');
   }
   // Connected: a change that imports, includes or hooks into a new file. Real import statements are
   // resolved to paths (import, require, new URL, <script src>, <link href>, @import, url()), which is
@@ -384,7 +783,14 @@ function suggestGroups(input, learn = {}) {
   const byPath = new Map(files.map((f, i) => [f.path, i]));
   const links = [];
   for (let i = 0; i < n; i++) {
-    if ((isNew[i] && coll[i]) || prose(files[i].path)) continue;
+    if (isNew[i] && coll[i]) continue;
+    // A page written in Markdown still pulls in parts with a template tag: {% include about/skills.html %}.
+    if (prose(files[i].path)) {
+      if (!/\.(md|markdown|mdx)$/i.test(files[i].path)) continue;
+      const tags = addedText(files[i]).match(/\{%-?\s*(?:include|render)\s+[^%]+%\}/g) || [];
+      for (let j = 0; j < n; j++) if (j !== i && isNew[j] && !coll[j] && tags.some((t) => t.includes(files[j].path.replace(/^_includes\//, '')))) links.push([i, j, 'includes new file']);
+      continue;
+    }
     const add = addedText(files[i]);
     if (!add) continue;
     const exact = new Set();
@@ -403,10 +809,54 @@ function suggestGroups(input, learn = {}) {
       let hit = null;
       for (const h of hooks) if (body.includes(h)) { hit = h; break; }
       // A chunk that calls what a new file exports (glanceRail()), or styles a class only a new file uses.
-      if (!hit && code) hit = exportsOf(body).find((x) => new RegExp(`\\b${esc(x)}\\b`).test(add));
+      if (!hit && code) hit = exportsOf(body).find((x) => specificName(x) && new RegExp(`\\b${esc(x)}\\b`).test(add));
       if (!hit && /\.s?css$/i.test(files[i].path)) hit = [...add.matchAll(/\.([a-z][\w]*-[\w-]{2,})/g)].map((m) => m[1]).find((c) => c.length >= 6 && !/^(is|has|no|js|u|with)-/.test(c) && body.includes(c));
       if (hit) links.push([i, j, `uses ${hit}`]);
     }
+  }
+  // A new image or video named by its path in a string or a data file is that file's: app.js gaining
+  // icon: 'assets/globe.svg', or portfolio-data.json listing "videoUrl": "assets/videos/2113…-0.mp4".
+  // Code naming a new data file counts too (server.js reading "hidden-book-notes.json"). Data files are
+  // read in full (their shown diff is cut short), so a long list still finds its media.
+  for (let i = 0; i < n; i++) {
+    const p = files[i].path, data = /\.(json|ya?ml)$/i.test(p) && !coll[i];
+    if (!data && !/\.(m?js|cjs|jsx?|tsx?)$/i.test(p)) continue;
+    const add = (files[i].hunks ? files[i].hunks.flatMap((h) => h.all || h.lines) : (files[i].diff || '').split('\n')).filter((l) => l[0] === '+').join('\n');
+    for (let j = 0; j < n; j++) {
+      if (i === j || !isNew[j] || !(isAsset(kinds[j]) || (!data && /\.(json|ya?ml|csv)$/i.test(files[j].path))) || links.some(([a, b]) => a === i && b === j)) continue;
+      const base = path.basename(files[j].path).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Code must quote the path; YAML leaves it bare (logo: /Images/Skills/blender.png).
+      const named = data ? new RegExp(`(^|[\\s'"\`:/])${base}(['"\`,]|\\s|$)`, 'm') : new RegExp(`['"\`]([^'"\`\\s]*/)?${base}['"\`]`);
+      // Code says what the file is for by its name ("uses arrow-down"); a data list just includes it.
+      if (named.test(add)) links.push([i, j, data ? 'includes new file' : `uses ${stems[j]}`]);
+    }
+  }
+  // A Sass import list grows one line at a time: `"now",` -> `"now", "delights";` pulls in the new _delights.scss.
+  for (let i = 0; i < n; i++) {
+    if (!/\.s[ac]ss$/i.test(files[i].path)) continue;
+    const dir = path.posix.dirname(files[i].path), found = new Set();
+    for (const m of addedText(files[i]).matchAll(/^\+\s*(?:@(?:import|use|forward)\s+)?["']([\w/-]+)["']\s*[,;]?\s*$/gm)) {
+      const name = m[1].split('/'), last = name.pop();
+      for (const cand of [[...name, '_' + last], [...name, last]]) for (const ext of ['.scss', '.sass']) {
+        const j = byPath.get(path.posix.join(dir, ...cand) + ext);
+        if (j != null && j !== i && isNew[j] && !links.some(([a, b]) => a === i && b === j)) found.add(j);
+      }
+    }
+    // The main sheet pulling in two unrelated partials (experience-summary, image-lightbox) is shared by
+    // both features, so it joins neither; partials of one name (theme, theme-dark) are one feature.
+    const parts = [...found].map((j) => stems[j].split(/[-_]+/));
+    if (found.size && parts[0].some((w) => parts.every((ws) => ws.includes(w)))) for (const j of found) links.push([i, j, 'imports new file']);
+  }
+  // A file taken out goes with the change that stops pointing at it: app.js dropping <img src="assets/info.svg">
+  // and the deleted info.svg are one change.
+  for (let j = 0; j < n; j++) {
+    if (files[j].status !== 'D' || coll[j]) continue;
+    const base = path.basename(files[j].path), esc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(^|[^\\w.-])${esc}([^\\w.-]|$)`);
+    const who = [];
+    for (let i = 0; i < n; i++) if (i !== j && files[i].status !== 'D' && (files[i].diff || '').split('\n').some((l) => l[0] === '-' && !l.startsWith('---') && re.test(l) && (!prose(files[i].path) || /\{%-?\s*(include|render)\b/.test(l)))) who.push(i);
+    // Only when one file let go of it; a name dropped in many places is a sweep of its own.
+    if (who.length && new Set(who.map((i) => files[i].path)).size === 1) for (const i of who) union(i, j, `drops ${stems[j]}`);
   }
   const usedBy = new Array(n).fill(0), uses = new Array(n).fill(0);
   // Users are counted by file, so two chunks of app.js using glance.js count once.
@@ -421,7 +871,63 @@ function suggestGroups(input, learn = {}) {
     // still belongs with the importing change even when that hunk also wires in other features.
     if (usedBy[j] === 1 || (!hub[i] && ((isNew[i] && usedBy[j] <= 2) || (files[i].unitOf && usedBy[j] <= 3)))) union(i, j, reason);
   }
+  // Uses of a hub chunk's names don't join anything, but they still say what a group is about.
+  const nameHints = [];
+  defineUseLinks(files, kinds, coll, isNew, union, (a, b, x) => nameHints.push({ a, b, reason: `uses ${x}` }));
+  // A hub whose names mostly (60%+) go to one feature is that feature's own big chunk (the cart's 370
+  // lines of styles: 50 of its names used by the cart's view, a few by the cards). Joining it to
+  // that one feature fuses nothing else. Run again once the softer evidence below has gathered a
+  // hub's scattered users (an import line, a menu item, a settings button) into one group.
+  const joinHubs = () => {
+    const hubVotes = new Map();
+    for (const h of nameHints) { const m = hubVotes.get(h.b) || hubVotes.set(h.b, new Map()).get(h.b), r = find(h.a); m.set(r, [...(m.get(r) || []), h.reason]); }
+    for (const [d, m] of hubVotes) {
+      const total = [...m.values()].reduce((s, v) => s + v.length, 0), [r, rs] = [...m].sort((x, y) => y[1].length - x[1].length)[0];
+      if (rs.length >= 3 && rs.length >= 0.6 * total && find(d) !== r) union(r, d, rs[0]);
+    }
+  };
+  joinHubs();
+  const editSigs = new Map();
+  // The same edit made in many places (every 1px divider turned into a hairline, 600 weights to 500)
+  // is one change, even with no new name to tie it together. Each chunk still on its own is read as
+  // line pairs; what a pair takes out and puts in is its edit, and chunks whose main edit is the same
+  // go together.
+  {
+    const editTokens = (t) => t.match(/--[\w-]+|[\w.#%-]+|[^\s\w]/g) || [];
+    const mainEdit = (f) => {
+      const minus = [], plus = [], seen = new Map();
+      for (const l of (f.diff || '').split('\n')) { if (l[0] === '-' && !l.startsWith('---')) minus.push(l.slice(1)); else if (l[0] === '+' && !l.startsWith('+++')) plus.push(l.slice(1)); }
+      if (!minus.length || minus.length !== plus.length || minus.length > 6) return '';
+      for (let k = 0; k < minus.length; k++) {
+        const a = editTokens(minus[k]), b = editTokens(plus[k]), ca = new Map(), cb = new Map();
+        for (const t of a) ca.set(t, (ca.get(t) || 0) + 1);
+        for (const t of b) cb.set(t, (cb.get(t) || 0) + 1);
+        const out = [...ca].filter(([t, c]) => c > (cb.get(t) || 0)).map(([t]) => '-' + t);
+        const inn = [...cb].filter(([t, c]) => c > (ca.get(t) || 0)).map(([t]) => '+' + t);
+        if (!out.length && !inn.length || out.length + inn.length > 8) continue;
+        const sig = out.join(' ') + ' | ' + inn.join(' ');
+        seen.set(sig, (seen.get(sig) || 0) + 1);
+      }
+      return [...seen].sort((x, y) => y[1] - x[1])[0]?.[0] || '';
+    };
+    const lone = (i) => members(find(i)).length === 1;
+    const bySig = editSigs;
+    for (let i = 0; i < n; i++) {
+      if (!files[i].unitOf && files[i].status !== 'M' || !lone(i)) continue;
+      const sig = mainEdit(files[i]);
+      if (sig) { if (!bySig.has(sig)) bySig.set(sig, []); bySig.get(sig).push(i); }
+    }
+    for (const [sig, is] of bySig) if (is.length >= 2) for (const j of is.slice(1)) union(is[0], j, 'same edit');
+  }
 
+  // Two data files of one name with nothing else to read: portfolio-data.json and portfolio.config.json
+  // went in together every time new posts were synced. Data has no shared code names, so history decides.
+  if (learn.cochange) for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    const data = (k) => !files[k].unitOf && files[k].status !== 'D' && !coll[k] && /\.(json|ya?ml|toml)$/i.test(files[k].path) && !/(^|\/)package(-lock)?\.json$/.test(files[k].path);
+    // They must share a name too: _config.yml changes alongside everything, so history alone over-joins it.
+    const w = (k) => stems[k].split(/[-_.]+/).filter((x) => x.length >= 4);
+    if (data(i) && data(j) && w(i).some((x) => w(j).includes(x)) && (learn.cochange.get(keyOf(i, j)) || 0) >= 0.5) union(i, j, 'usually change together');
+  }
   // Evidence, weighed together. Everything above joins on a hard fact (a new file and the line that
   // imports it). What's left is softer and only counts in sum: the names two changes share (a class
   // styled in one chunk and used in another, a function added here and called there), the words they
@@ -501,6 +1007,7 @@ function suggestGroups(input, learn = {}) {
       live.splice(b, 1); cents.splice(b, 1);
     }
   }
+  joinHubs();
   // Chunks that had no feature signal stay with their file's home chunk.
   const alone = (i) => members(find(i)).length === 1;
   const homeOf = new Map(files.map((f, i) => [f, i]).filter(([f]) => f.unitOf && f.home).map(([f, i]) => [f.unitOf, i]));
@@ -516,29 +1023,44 @@ function suggestGroups(input, learn = {}) {
   const splitWeakBridges = (idx) => {
     const membersInGroup = new Set(idx), localParent = new Map(idx.map((i) => [i, i]));
     const localFind = (i) => { const p = localParent.get(i); if (p === i) return i; const r = localFind(p); localParent.set(i, r); return r; };
-    // Hunk-level plans may contain several independently parsed chunks from one file.
-    // Keep those together by default; only file-to-file links decide whether the
-    // larger commit should split.
-    const firstByPath = new Map();
-    for (const i of idx) {
-      const p = files[i].path;
-      if (firstByPath.has(p)) localParent.set(localFind(i), localFind(firstByPath.get(p)));
-      else firstByPath.set(p, i);
-    }
-    for (const edge of linkEvidence) {
+    // Chunks of one file are held together only by their own evidence (a shared name, the
+    // home-chunk fallback), never by the path alone: that would let style.css glue every feature
+    // it touches into one commit.
+    for (const edge of [...linkEvidence, ...heldEvidence]) {
       if (edge.confidence < MIN_GROUP_LINK_EVIDENCE || !membersInGroup.has(edge.a) || !membersInGroup.has(edge.b)) continue;
       const a = localFind(edge.a), b = localFind(edge.b);
       if (a !== b) localParent.set(b, a);
+    }
+    // A chunk left on its own found no feature of its own: it
+    // goes back with the rest of that file, the way people mostly commit whole files.
+    let pieces = new Map();
+    for (const i of idx) { const root = localFind(i); if (!pieces.has(root)) pieces.set(root, []); pieces.get(root).push(i); }
+    for (const piece of pieces.values()) {
+      const p = files[piece[0]].path;
+      if (!piece.every((i) => files[i].path === p) || piece.some((i) => files[i].home)) continue;
+      const inside = new Set(piece);
+      if ([...linkEvidence, ...heldEvidence].some((e) => inside.has(e.a) && inside.has(e.b) && e.confidence >= MIN_GROUP_LINK_EVIDENCE && /^(uses|both add|both drop|defines|changes|replaced by) |^same edit$/.test(e.reason))) continue;
+      const mate = [...pieces.values()].filter((q) => q !== piece && q.some((i) => files[i].path === p))
+        .sort((x, y) => Number(y.some((i) => files[i].path === p && files[i].home)) - Number(x.some((i) => files[i].path === p && files[i].home)) || y.length - x.length)[0];
+      if (mate) localParent.set(localFind(piece[0]), localFind(mate[0]));
     }
     const parts = new Map();
     for (const i of idx) { const root = localFind(i); if (!parts.has(root)) parts.set(root, []); parts.get(root).push(i); }
     return [...parts.values()];
   };
   let groups = [...buckets.values()].flatMap((idx) => splitWeakBridges(idx).map((part) => ({ idx: part })));
+  // Groups decided elsewhere (you moved a file, or a test replays real commits): keep them as given
+  // and only write their messages. Each group lists paths, or "path#chunk" for single chunks.
+  if (Array.isArray(learn.fixed)) {
+    const keyOf_ = (f) => (f.unitOf ? f.path + '#' + f.hunk : f.path);
+    groups = learn.fixed.map((keys) => ({ idx: files.map((f, i) => (keys.includes(keyOf_(f)) || keys.includes(f.path) || (!f.unitOf && keys.some((k) => k.startsWith(f.path + '#'))) ? i : -1)).filter((i) => i >= 0) }));
+    groups.forEach((g, k) => { g.at = k; });
+    groups = groups.filter((g) => g.idx.length);
+  }
 
   // Leave unrelated small edits separate. They only share a commit when another signal connects them.
 
-  return groups.map((g, k) => {
+  const build = (g, k) => {
     const byP = new Map();
     for (const i of g.idx) {
       const f = files[i], c = byP.get(f.path);
@@ -606,10 +1128,26 @@ function suggestGroups(input, learn = {}) {
         let bonus = 0;
         for (const [y, d] of count) if (y !== x && [...wordsOf_(y)].some((w) => ws.has(w))) bonus += d;
         return [x, c + bonus * 0.5 + (ws.size >= 2 ? 0.75 : 0), c];
-      }).filter(([x, , c]) => featureName(x) && (c >= 2 || g.idx.length <= 3 || featureName(x).includes(' ')));
+      }).filter(([x, , c]) => featureName(x) && !parserHelper(x, g.idx.map((i) => files[i])) && (c >= 2 || g.idx.length <= 3 || featureName(x).includes(' ')));
+      // Every tie was plumbing: try the other new functions, defined in one chunk and called in another.
+      if (!scored.length && [...count].length) {
+        const units = g.idx.map((i) => files[i]);
+        for (const u of units) for (const m of (u.diff || '').matchAll(/^\+\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gm)) {
+          const x = m[1], call = new RegExp(`(^|[^\\w$.])${x.replace(/[$]/g, '\\$')}\\s*\\(`);
+          if (featureName(x) && !parserHelper(x, units) && units.some((v) => v !== u && (v.diff || '').split('\n').some((l) => l[0] === '+' && call.test(l.slice(1))))) scored.push([x, 1, 1]);
+        }
+      }
       const multi = (x) => (featureName(x).includes(' ') ? 1 : 0);
       const top = scored.sort((a, b) => multi(b[0]) - multi(a[0]) || b[1] - a[1] || featureName(b[0]).split(/[ -]/).length - featureName(a[0]).split(/[ -]/).length || a[0].length - b[0].length)[0];
-      const thing = top && (scored.slice(0, 3).map(([x]) => commentPhrase(x, g.idx.map((i) => files[i])) || labelPhrase(x, g.idx.map((i) => files[i]))).find(Boolean) || commentPhrase(null, g.idx.map((i) => files[i]).sort((a, b) => b.add - a.add).slice(0, 1)) || featureName(top[0]));
+      // A comment that titles what it sits on ("// The side panel: reviewing a batch ...") names the group;
+      // one that is a sentence ("// The header should agree: ...") does not.
+      const titled = (() => {
+        for (const i of g.idx) { const ls = (files[i].diff || '').split('\n');
+          for (let k = 0; k < ls.length - 1; k++) { const m = ls[k].match(/^\+\s*(?:\/\/+|\/\*+|#)\s*(the|a|an)\s+([a-z][a-z-]*(?: [a-z][a-z-]*){0,2}):\s+\S/i);
+            if (m && /^\+\s*(?:export\s+)?(?:async\s+)?(?:function\b|class\b|const\b|let\b|[\w$]+\s*[:=(])/.test(ls[k + 1]) && !NOT_A_THING.test(m[2]) && !/\b(should|must|can|will|is|are|was|does|has)\b/.test(m[2])) return `${m[1].toLowerCase() === 'the' ? 'the' : 'a'} ${m[2].toLowerCase()}`; } }
+        return '';
+      })();
+      const thing = titled || top && (scored.slice(0, 3).map(([x]) => commentPhrase(x, g.idx.map((i) => files[i])) || labelPhrase(x, g.idx.map((i) => files[i]))).find(Boolean) || commentPhrase(null, g.idx.map((i) => files[i]).sort((a, b) => b.add - a.add).slice(0, 1)) || featureName(top[0]));
       if (thing) {
         const spots = [...new Set(fs_.map((f) => (/index\.html?$/.test(f.path) ? 'the page' : nameOf(f.path).toLowerCase())))];
         const place = spots.length >= 4 && !/\bacross\b/.test(thing) ? ` across ${spots.length} files` : '';
@@ -619,6 +1157,7 @@ function suggestGroups(input, learn = {}) {
         const conv = msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '';
         Object.assign(msg, { type: msg.type === 'style' ? 'style' : 'feat', gitmoji: gm, conventional: conv + (gm[0].toLowerCase() + gm.slice(1)).replace(/^added /, 'add ').replace(/^simplified /, 'simplify ').replace(/^reworked /, 'rework ') });
         msg.emoji = verb === 'Simplified' || verb === 'Reworked' ? '♻️' : msg.type === 'style' ? '💄' : '✨';
+        if (!titled && thing === featureName(top?.[0] || '')) msg.fromIdent = true;
         if (verb === 'Simplified' || verb === 'Reworked') msg.type = 'refactor';
       }
     }
@@ -635,9 +1174,21 @@ function suggestGroups(input, learn = {}) {
         if (names.length > 1) { const head = names.map((x) => x.split('-')[0]); if (head.every((x) => x === head[0])) prop = head[0]; }
         if (out && inn && out.length <= 32 && inn.length <= 32) {
           // A custom property reads as words: --font-body -> body font.
-          const said = prop.startsWith('--') ? (([a, ...b]) => (/^(font|color|colour|space|spacing|radius|shadow|size|weight|line)$/.test(a) && b.length ? [...b, a] : [a, ...b]).join(' '))(prop.slice(2).split('-')) : prop;
-          const gm = `Changed ${said ? said + ' ' : ''}from ${out} to ${inn} in ${g.idx.length} places`;
-          Object.assign(msg, { type: 'style', emoji: '💄', gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + gm[0].toLowerCase() + gm.slice(1).replace(/^changed /, 'change ') });
+          // A property reads as words too (font-weight -> font weight), and a number says which way it went:
+          // "Increased font weight from 500 to 600 in 25 places".
+          const said = prop.startsWith('--') ? (([a, ...b]) => (/^(font|color|colour|space|spacing|radius|shadow|size|weight|line)$/.test(a) && b.length ? [...b, a] : [a, ...b]).join(' '))(prop.slice(2).split('-')) : prop.replace(/-/g, ' ');
+          const num = (v) => (/^-?\d*\.?\d+(px|rem|em|%)?$/.test(v) ? parseFloat(v) : null);
+          const way = said && num(out) != null && num(inn) != null && num(out) !== num(inn) ? (num(inn) > num(out) ? 'Increased' : 'Reduced') : 'Changed';
+          // Words in quotes that changed everywhere are a rename, said in their own order:
+          // 'Commit Compass' -> 'staged engine' is Renamed “Commit Compass” to “staged engine”.
+          const quoted = (sign, toks) => {
+            const want = toks.split(' ').sort().join(' ');
+            for (const i of g.idx) for (const l of (files[i].diff || '').split('\n')) if (l[0] === sign) for (const m of l.matchAll(/(["'`])([A-Za-z][\w ]{2,40}?)\1/g)) if (m[2].split(/\s+/).sort().join(' ') === want) return m[2];
+            return '';
+          };
+          const qa = !g.idx.some((i) => /\.(s?css|less|sass|styl)$/i.test(files[i].path)) && /[a-z]{3}/i.test(out) && /[a-z]{3}/i.test(inn) && num(out) == null ? quoted('-', out) : '', qb = qa ? quoted('+', inn) : '';
+          const gm = qa && qb ? `Renamed “${qa}” to “${qb}”${g.idx.length > 2 ? ` in ${g.idx.length} places` : ''}` : `${way} ${said ? said + ' ' : ''}from ${out} to ${inn} in ${g.idx.length} places`;
+          Object.assign(msg, { type: 'style', emoji: '💄', gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + gm[0].toLowerCase() + gm.slice(1).replace(/^renamed /, 'rename ').replace(/^changed /, 'change ').replace(/^increased /, 'increase ').replace(/^reduced /, 'reduce ') });
         }
       }
     }
@@ -650,7 +1201,7 @@ function suggestGroups(input, learn = {}) {
         if (!before.has(fn)) continue;
         const names = (s2) => new Set([...s2.matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]));
         const was = names(before.get(fn)), gained = [...names(args)].filter((x) => !was.has(x) && !/^(true|false|null|undefined)$/.test(x));
-        if (!gained.length) continue;
+        if (!gained.length || !featureName(fn)) continue; // "a timeout option to bounded" names no function
         const what = featureName(gained[0]) || gained[0];
         const gm = `Added ${/^[aeiou]/.test(what) ? 'an' : 'a'} ${what} option to ${featureName(fn) || fn}`;
         Object.assign(msg, { type: 'feat', emoji: '✨', gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + 'add ' + gm.slice(6) });
@@ -675,10 +1226,17 @@ function suggestGroups(input, learn = {}) {
         }
       }
     }
+    // A subject built only from a code name or a function's name ("Simplified closed repos", "Updated
+    // updater") gives way to what the diff itself says it does.
+    if (msg.fromIdent || weakSubject(msg.gitmoji) || /^(Handled errors in|Updated) [\w .-]+$/.test(msg.gitmoji) && msg.gitmoji !== 'Updated dependencies') {
+      const said = storyOf(fs_);
+      if (said) Object.assign(msg, { gitmoji: said, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + toImperative(said).replace(/^\w/, (c) => c.toLowerCase()) });
+    }
+    delete msg.fromIdent;
     // In-house intent reader for subjects that still say little. No model: it reads what the change
     // itself says, a new file's opening comment or the request fields a handler starts accepting.
     if (weakSubject(msg.gitmoji)) {
-      const said = readIntent(fs_);
+      const said = readIntent(fs_) || recordsSubject(fs_) || configSubject(fs_) || (fs_.some((f) => f.status === 'A' && !isAsset(kindOf(f.path))) ? '' : metaSubject(fs_)); // a new page's own meta tags are not its story
       if (said) Object.assign(msg, { gitmoji: said, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + said[0].toLowerCase() + said.slice(1) });
     }
     // A weak subject borrows the user's own words for this part of the code: past commits that
@@ -691,8 +1249,24 @@ function suggestGroups(input, learn = {}) {
         Object.assign(msg, { gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + 'update ' + phrase });
       }
     }
+    // A bare name says what kind of thing it is, read from where its file lives: pages/now.md is the now
+    // page, _includes/about/desk.html a section, vercel.json a config: "Updated now" -> "Updated the now page".
+    {
+      const m = msg.gitmoji.match(/^(Added|Updated|Removed|Simplified) ([\w.-]+)$/);
+      const kindAt = (p) => (/(^|\/)_?pages?\/[^/]+\.(html?|md|markdown)$/i.test(p) || /^[^/]+\.html?$/i.test(p)) && !/^index$/i.test(m[2]) ? ' page'
+        : /(^|\/)_layouts\//.test(p) ? ' layout' : /(^|\/)_?(includes|partials|components)\//.test(p) ? ' section'
+        : ['config', 'data'].includes(kindOf(p)) && !/\//.test(p) ? ' config' : '';
+      const named = m ? fs_.filter((x) => stemOf(x.path) === m[2].toLowerCase()) : [];
+      const kind = named.length && !/^(dependencies|package)$/.test(m[2]) ? (named.map((x) => kindAt(x.path)).find(Boolean) || '').replace(new RegExp(`^ ${m[2]}$`, 'i'), '') : '';
+      if (kind) {
+        const gm = `${m[1]} the ${m[2].toLowerCase()}${kind}`;
+        Object.assign(msg, { gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + (TO_IMP[m[1]] || m[1]).toLowerCase() + gm.slice(m[1].length) });
+      }
+    }
     // Conventional subjects are imperative whatever path wrote them: "change border", "turn Today into Home".
     if (msg.conventional) msg.conventional = msg.conventional.replace(/^((?:[a-z]+(?:\([^)]*\))?!?: )?)([a-z]+)\b/, (m, pre, w) => { const imp = TO_IMP[w[0].toUpperCase() + w.slice(1)]; return pre + (imp ? imp.toLowerCase() : w); });
+    // "Added Akt font for fonts" says the same thing twice.
+    msg.gitmoji = msg.gitmoji.replace(/\b(\w{3,}) for (?:the )?\1s$/i, '$1');
     if (learn.tense === 'imperative') msg.gitmoji = toImperative(msg.gitmoji);
     return {
       id: 'g' + (k + 1), ...(g.at != null ? { fixedAt: g.at } : {}),
@@ -706,11 +1280,190 @@ function suggestGroups(input, learn = {}) {
       ...(ties.length ? { ties } : {}),
       ...msg,
     };
-  }).sort((a, b) => b.size - a.size);
+  };
+  let out = groups.map(build);
+  // Pieces of one file that read the same ("Refined colours and shadows" three times in styles.css)
+  // found nothing to tell them apart: people commit those as one change, so they become one.
+  if (!Array.isArray(learn.fixed)) {
+    // Nameless style touch-ups in one stylesheet ("Refined spacing and layout") count as the same too.
+    const nameless = (o) => /\.(s?css|less)$/i.test(o.files[0]) && /^Refined (styles|((colours|spacing|layout|type|animations|corners|shadows)( and |, )?)+)$/.test(o.gitmoji);
+    const key = (o) => (new Set(o.files).size === 1 ? o.files[0] + '\0' + (nameless(o) ? 'refined' : o.gitmoji) : '');
+    const seen = new Map();
+    groups.forEach((g, k) => { const s = key(out[k]); if (!s) return; if (!seen.has(s)) seen.set(s, []); seen.get(s).push(k); });
+    const twins = [...seen.values()].filter((ks) => ks.length > 1);
+    if (twins.length) {
+      const drop = new Set(twins.flatMap((ks) => ks.slice(1)));
+      for (const ks of twins) groups[ks[0]] = { ...groups[ks[0]], idx: ks.flatMap((k) => groups[k].idx) };
+      groups = groups.filter((_, k) => !drop.has(k));
+      out = groups.map(build);
+    }
+  }
+  return out.sort((a, b) => b.size - a.size);
 }
 
 
 // What a change says about itself, read without any model.
+// Sentences from the comments written with a change: consecutive "+ // ..." lines read as one block.
+function addedComments(fs_) {
+  const out = [];
+  for (const f of fs_) {
+    let cur = [];
+    const done = () => { if (cur.length) out.push(...cur.join(' ').replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/)); cur = []; };
+    for (const l of (f.diff || '').split('\n')) {
+      const c = l[0] === '+' && !l.startsWith('+++') ? l.slice(1).trim().match(/^(?:\/\/+|\/\*+|\*(?!\/)|#(?![{!\w]))\s*(.*?)\s*(?:\*+\/)?$/) : null;
+      if (c) cur.push(c[1]); else done();
+    }
+    done();
+  }
+  return out.map((s) => s.replace(/[.!?:]+$/, '').trim()).filter((s) => s.length >= 8 && !/[`{}=<>\[\]]/.test(s));
+}
+// "every tag shows up as a release" -> "every tag show up as a release", for "Made ..." subjects.
+const baseVerb = (w) => /(ss|sh|ch|x|o)es$/.test(w) ? w.slice(0, -2) : /ies$/.test(w) ? w.slice(0, -3) + 'y' : /[^s]s$/.test(w) ? w.slice(0, -1) : w;
+// What a change does, read from the diff itself when its name came only from code: the comment's
+// purpose, a rule that moved, Markdown no longer stripped, one piece of state swapped for another.
+function storyOf(fs_) {
+  const says = addedComments(fs_);
+  for (const s of says) {
+    // "Pushing happens in the side panel (hold to push)" -> Moved pushing to the side panel.
+    const mv = s.replace(/\s*\([^)]*\)/g, '').match(/^([A-Z][a-z]+ing(?: [a-z]+){0,2}) (?:now )?(?:happens|lives|runs) (?:in|on) (the [a-z]+(?: [a-z]+)?)$/);
+    if (mv) return `Moved ${mv[1].toLowerCase()} to ${mv[2]}`;
+  }
+  for (const s of says) {
+    // "That way every tag shows up as a release" -> Made every tag show up as a release.
+    const tw = s.match(/^(?:that|this) way,?\s+((?:every|each|the|a|an|all|any) [a-z]+(?: [a-z]+)?) ([a-z]+s) ([^,;—()]{3,40})$/i);
+    if (tw && !/^(is|has|was|does)$/.test(tw[2])) { const gm = `Made ${tw[1].toLowerCase()} ${baseVerb(tw[2])} ${tw[3]}`; if (gm.length <= 64) return gm; }
+    // "Releases always show every release, so ..." -> Made releases always show every release.
+    const pl = s.match(/^([A-Z][a-z]{3,}s) (always|never|only|now) ([a-z]+ [^,;—()]{3,40}?)(?:,|$)/);
+    if (pl && !/(ss|us|is)$/.test(pl[1]) && !/^(Always|Perhaps|Sometimes|Unless|Whereas|Besides|Otherwise|Thus)$/.test(pl[1]) && !/^(is|are|has|have|was|were|does)\b/.test(pl[3])) { const gm = `Made ${pl[1].toLowerCase()} ${pl[2]} ${pl[3]}`; if (gm.length <= 64) return gm; }
+  }
+  const lines = fs_.flatMap((f) => (f.diff || '').split('\n'));
+  const plus = lines.filter((l) => l[0] === '+' && !l.startsWith('+++')), minus = lines.filter((l) => l[0] === '-' && !l.startsWith('---'));
+  // A .replace() chain that strips Markdown (headings, **bold**) going or coming: Stopped stripping
+  // Markdown from release notes. Without a noun nearby, the file's own name says where.
+  const MD = /\.replace\(\/(?:\^#\+|\\\*\\\*|\\\[|`)[^/]*\/[gmi]*\s*,\s*(['"`])\1\)/g;
+  const mdIn = (ls) => ls.reduce((n, l) => n + (l.match(MD) || []).length, 0);
+  const mdGone = mdIn(minus) - mdIn(plus);
+  if (mdGone) {
+    const near = lines.join(' ').toLowerCase();
+    const nouns = { release: 'release notes', commit: 'commit messages', issue: 'issues', comment: 'comments', post: 'posts', message: 'messages', readme: 'the readme', changelog: 'the changelog' };
+    const hit = Object.keys(nouns).map((n) => [n, (near.match(new RegExp(`\\b${n}s?\\b`, 'g')) || []).length]).filter(([, c]) => c).sort((a, b) => b[1] - a[1])[0];
+    const stem = fs_.length === 1 ? nameOf(fs_[0].path).toLowerCase() : '';
+    const what = hit ? nouns[hit[0]] : stem && !WEAK_STEMS.has(stem) ? `the ${stem}` : '';
+    if (what) return mdGone > 0 ? `Stopped stripping Markdown from ${what}` : `Stripped Markdown from ${what}`;
+  }
+  // One piece of state taken out and another put in its place on the same object (cs.banner gone,
+  // cs.panel new): Replaced the banner with the panel.
+  {
+    const props = (ls) => { const m = new Map(); for (const l of ls) for (const x of new Set([...l.matchAll(/\b([a-z]\w*)\.([a-z][a-z]{3,})\b(?!\s*\()/g)].map((y) => y[1] + '.' + y[2]))) m.set(x, (m.get(x) || 0) + 1); return m; };
+    const was = props(minus), now = props(plus);
+    const only = (a, b) => [...a].filter(([x]) => !b.has(x)).sort((p, q) => q[1] - p[1]);
+    const gone = only(was, now), came = only(now, was);
+    for (const [x, n] of gone.slice(0, 1)) {
+      const obj = x.split('.')[0];
+      const mine = came.filter(([y]) => y.startsWith(obj + '.'));
+      const gone2 = gone.filter(([y]) => y.startsWith(obj + '.'));
+      if (n < 3 || !mine.length || mine[0][1] < 3 || (mine[1] && mine[1][1] * 1.5 > mine[0][1]) || (gone2[1] && gone2[1][1] * 1.5 > n)) break;
+      const a = featureName(x.split('.')[1]), b = featureName(mine[0][0].split('.')[1]);
+      if (a && b && !/\s/.test(a + b)) return `Replaced the ${a} with the ${b}`;
+    }
+  }
+  // A modifier class put on every mapped item but the first: class="area${i ? ' is-more' : ''}".
+  for (const l of plus) {
+    const m = l.match(/class="([a-z][\w-]*)\$\{\s*i\s*\?\s*'\s*(?:is|has)-([a-z]+)'\s*:\s*''\s*\}"/);
+    if (m && /\.map\(\(\w+,\s*i\)/.test(l) && !minus.some((x) => x.includes(`'${m[0].split("'")[1]}'`))) { const item = m[1].replace(/^[a-z]{1,2}-(?=[a-z]{3})/, '').replace(/[-_]+/g, ' '); return `Marked every ${item} after the first as “${m[2]}”`; }
+  }
+  return '';
+}
+
+// A YAML settings file says which settings moved, key by key: "analytics: enabled: true -> false" is
+// "Turned off analytics", a new "umami:" block is "Added umami settings". Top-level keys of a site
+// config (_config.yml) are the site's: "role" -> "site role".
+function configSubject(fs_) {
+  const facts = [];
+  for (const f of fs_) {
+    if (!/\.ya?ml$/i.test(f.path) || collectionOf(f.path) || /(^|\/)(pnpm-lock|\.github\/|docker-compose)/i.test(f.path)) continue;
+    // A list of records (- title: ..., url: ...) is data, not settings.
+    if (/^\+\s*-\s+[\w-]+\s*:/m.test(f.diff || '')) continue;
+    const site = /(^|\/)_?config\.ya?ml$/i.test(f.path);
+    const seen = { '+': new Map(), '-': new Map() };
+    const stack = { '+': [], '-': [] };
+    for (const l of (f.diff || '').split('\n')) {
+      if (l.startsWith('@@')) { stack['+'] = []; stack['-'] = []; continue; }
+      if (/^(\+\+\+|---)/.test(l) || !/^[ +-]/.test(l)) continue;
+      const m = l.slice(1).match(/^(\s*)([A-Za-z][\w -]*?)\s*:(?:\s+(.*?))?\s*(?:#.*)?$/);
+      if (!m || /^\s*#/.test(l.slice(1))) continue;
+      const depth = m[1].length, val = (m[3] || '').replace(/^["']|["']$/g, '').trim();
+      for (const side of l[0] === ' ' ? ['+', '-'] : [l[0]]) {
+        const st = stack[side];
+        while (st.length && st.at(-1).depth >= depth) st.pop();
+        const keyPath = [...st.map((x) => x.key), m[2]];
+        st.push({ depth, key: m[2] });
+        if (l[0] !== ' ') seen[side].set(keyPath.join('.'), { keyPath, val, section: !m[3] });
+      }
+    }
+    // A setting is named with the block it sits in (author gravatar, google tracking id); a lone word reads as a setting.
+    const name = (kp, leaf = true) => {
+      const ws = kp.map((k) => k.replace(/[-_]+/g, ' ').toLowerCase());
+      const out = site && kp.length === 1 && leaf ? 'site ' + ws[0] : ws.slice(-2).join(' ');
+      return out.includes(' ') ? out : out + ' setting';
+    };
+    const addedSections = [...seen['+']].filter(([k, x]) => x.section && !seen['-'].has(k)).map(([k]) => k);
+    const under = (k) => addedSections.some((s2) => k !== s2 && k.startsWith(s2 + '.'));
+    for (const [k, x] of seen['+']) {
+      if (under(k)) continue;
+      const was = seen['-'].get(k);
+      if (!was) facts.push(x.section ? { verb: 'Added', text: `${name(x.keyPath.slice(-1), false).replace(/ setting$/, '')} settings` } : { verb: 'Added', text: name(x.keyPath) });
+      else if (was.val === x.val) continue;
+      else if (/^(true|yes|on)$/i.test(was.val) && /^(false|no|off)$/i.test(x.val)) facts.push({ verb: 'Turned off', text: x.keyPath.length >= 2 && /^enabled?$/.test(x.keyPath.at(-1)) ? name(x.keyPath.slice(0, -1), false).replace(/ setting$/, '') : name(x.keyPath) });
+      else if (/^(false|no|off)$/i.test(was.val) && /^(true|yes|on)$/i.test(x.val)) facts.push({ verb: 'Turned on', text: x.keyPath.length >= 2 && /^enabled?$/.test(x.keyPath.at(-1)) ? name(x.keyPath.slice(0, -1), false).replace(/ setting$/, '') : name(x.keyPath) });
+      else if (was.val && !x.val) facts.push({ verb: 'Cleared', text: name(x.keyPath) });
+      else facts.push({ verb: 'Changed', text: name(x.keyPath) });
+    }
+    for (const [k, x] of seen['-']) if (!seen['+'].has(k) && !x.section && ![...seen['-'].keys()].some((s2) => k.startsWith(s2 + '.') && seen['-'].get(s2).section)) facts.push({ verb: 'Removed', text: name(x.keyPath) });
+  }
+  if (!facts.length || facts.length > 3) return '';
+  const [a, b] = facts;
+  const gm = !b ? `${a.verb} ${a.text}` : a.verb === b.verb ? `${a.verb} ${a.text} and ${b.text}` : `${a.verb} ${a.text} and ${b.verb.toLowerCase()} ${b.text}`;
+  return gm.length <= 64 && gm.split(' ').length >= 3 ? gm : '';
+}
+
+// A YAML list of records that only gained entries is named by what it lists: _data/visuals.yml with two
+// new "- name:" items is "Added 2 visuals", not "Updated 63".
+function recordsSubject(fs_) {
+  const lists = fs_.filter((f) => /\.ya?ml$/i.test(f.path));
+  if (lists.length !== 1) return '';
+  const d = lists[0].diff || '';
+  const came = (d.match(/^\+-\s+[\w-]+\s*:/gm) || []).length, went = (d.match(/^--\s+[\w-]+\s*:/gm) || []).length;
+  if (!came || went || /^-(?!--)/m.test(d)) return '';
+  const what = stemOf(lists[0].path).replace(/[-_]+/g, ' ').toLowerCase();
+  if (!/^[a-z]+( [a-z]+)?$/.test(what) || /^(config|settings|data|site|index)$/.test(what)) return '';
+  const many = what.endsWith('s') ? what : what + 's', one = what.replace(/s$/, '');
+  return came === 1 ? `Added a new ${one}` : `Added ${came} ${many}`;
+}
+
+// A page head that gained or lost meta tags says which: <meta name="theme-color"> gone is "Removed the
+// theme color meta tag"; og:* and twitter:* tags are the Open Graph and Twitter card tags.
+function metaSubject(fs_) {
+  const names = (sign) => [...new Set(fs_.flatMap((f) => (f.diff || '').split('\n').filter((l) => l[0] === sign).flatMap((l) => [...l.slice(1).matchAll(/<meta\s+(?:name|property)="([\w:.-]+)"/g)].map((m) => m[1]))))];
+  const plus = names('+'), minus = names('-');
+  const came = plus.filter((x) => !minus.includes(x)), went = minus.filter((x) => !plus.includes(x));
+  const say = (xs) => [...new Set(xs.map((x) => (/^og:/.test(x) ? 'Open Graph' : /^twitter:/.test(x) ? 'Twitter card' : x.replace(/[-_:.]+/g, ' '))))];
+  const tags = (xs) => { const ws = say(xs); return ws.length <= 2 ? `the ${ws.join(' and ')} meta tag${xs.length > 1 ? 's' : ''}` : ''; };
+  if (went.length && !came.length && tags(went)) return `Removed ${tags(went)}`;
+  if (came.length && !went.length && tags(came)) return `Added ${tags(came)}`;
+  return '';
+}
+
+// New tests and tool configs that came along with a bigger change (most of the lines are elsewhere)
+// support it; they are not what the commit is about.
+const isTestPath = (p) => /(^|\/)(tests?|spec|__tests__)\/|[._-](test|spec)\.[cm]?[jt]sx?$|(^|\/)test[-_][\w-]+\.[cm]?[jt]s$|(^|\/)test_[\w]+\.py$/i.test(p);
+function supportFile(f, fs_) {
+  if (!isTestPath(f.path) && !/(^|\/)([\w-]+\.config\.[cm]?[jt]s|\.[\w-]+rc(\.\w+)?)$/.test(f.path)) return false;
+  const total = fs_.reduce((s2, x) => s2 + (x.add || 0) + (x.del || 0), 0);
+  // Tests count together with their fixtures: test/engine.test.mjs and test/fixtures/*.json.
+  const own = isTestPath(f.path) ? fs_.filter((x) => isTestPath(x.path)).reduce((s2, x) => s2 + (x.add || 0), 0) : (f.add || 0);
+  return own * 2 < total;
+}
 function readIntent(fs_) {
   // A new file that opens with a sentence about itself: "X uses deterministic local rules for ..."
   if (fs_.length === 1 && (fs_[0].status === 'A' || fs_[0].untracked) && fs_[0].content) {
@@ -725,29 +1478,40 @@ function readIntent(fs_) {
     }
   }
   // A handler that starts accepting new request fields: body.togetherPairs, searchParams.get('since').
-  const fresh = [], seen = new Set(), ctx = new Set();
+  // The route the handler serves (sub === '/learn', app.post('/learn')) says where better than the
+  // function around all the routes: "in the learn route", not "in commit routes".
+  const fresh = [], seen = new Set(), ctx = new Set(), routes = new Set();
   for (const f of fs_) {
     const lines = (f.diff || '').split('\n');
     const old = lines.filter((l) => l[0] !== '+').join('\n');
     const h = lines.find((l) => l.startsWith('@@'))?.match(/@@[^@]*@@\s*(?:export\s+)?(?:async\s+)?(?:function\s+)?([A-Za-z_$][\w$]*)/)?.[1];
-    for (const l of lines) if (l[0] === '+') for (const m of l.slice(1).matchAll(/\bbody\.([a-z][\w$]*)|searchParams\.get\(\s*['"]([\w-]+)['"]/g)) {
+    let route = '', end = -1;
+    for (const l of lines) {
+      // A hunk that starts right where the last one ended (a line or two apart) is still in its route.
+      const at = l.startsWith('@@') && l.match(/^@@ -(\d+)(?:,(\d+))?/);
+      if (at) { if (+at[1] - end > 3) route = ''; end = +at[1] + +(at[2] ?? 1); }
+      const r = l.slice(1).match(/(?:===?\s*|\.(?:get|post|put|patch|delete)\(\s*)['"]\/(?:api\/)?([a-z][\w-]*(?:\/[a-z][\w-]*)*)['"]/);
+      if (r && l[0] !== '-') route = r[1].split('/').pop();
+      if (l[0] === '+') for (const m of l.slice(1).matchAll(/\bbody\.([a-z][\w$]*)|searchParams\.get\(\s*['"]([\w-]+)['"]/g)) {
       const x = m[1] || m[2];
+      if (/^(body|data|value|values|id|name|type|text|options|opts|params|payload|input|args|result)$/.test(x)) continue;
       if (seen.has(x) || new RegExp(`\\bbody\\.${x}\\b|['"]${x}['"]`).test(old)) continue;
-      seen.add(x); fresh.push(x); if (h) ctx.add(h);
+      seen.add(x); fresh.push(x); if (h) ctx.add(h); routes.add(route);
+    }
     }
   }
   if (fresh.length && fresh.length <= 3) {
     const words = fresh.map((x) => x.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(' '));
     const tail = words.every((w) => w.length >= 2 && w.at(-1) === words[0].at(-1)) ? words[0].at(-1) : '';
     const named = tail ? list(words.map((w) => w.slice(0, -1).join(' '))) + ' ' + tail : list(words.map((w) => w.join(' ')));
-    const where = ctx.size === 1 ? ' in ' + [...ctx][0].replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase() : '';
+    const where = routes.size === 1 && [...routes][0] ? ` in the ${[...routes][0].replace(/[-_]+/g, ' ')} route` : ctx.size === 1 ? ' in ' + [...ctx][0].replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase() : '';
     return `Accepted ${named}${where}`;
   }
   return '';
 }
 
 // Subjects that say little: a bare file name, "Updated x in y", copy fallbacks, generic style passes.
-const weakSubject = (s) => !/^Updated dependencies$/.test(s) && /^(Added|Updated|Refined|Tidied) [\w.-]+$|^Updated [\w .-]+ in [\w.-]+$|^Refined styles\b|^Tidied\b/.test(s);
+const weakSubject = (s) => !/^Updated dependencies$/.test(s) && /^(Added|Updated|Refined|Tidied) [\w.-]+$|^Updated [\w .-]+ in [\w.-]+$|^Refined styles\b|^Tidied\b|^Updated [\w .-]+ markup$/.test(s);
 const PAST_STOP = new Set('a an the and or of to for in on with by from into at as is are be this that its it our your their new more some all files file across styles style code logic page pages ui app minor small various changes update updates improvements improvement tweaks fixes bump bumps version versions dependency dependencies issues issue'.split(' '));
 const PAST_VERB = /^(added|updated|refined|fixed|removed|improved|enhanced|changed|reworked|refactored|tweaked|polished|cleaned|made|moved|renamed|replaced|implemented|created|simplified|tidied|adjusted|restyled|wrote|tracked|bumped|increased|reduced|add|update|refine|fix|remove|improve|enhance|change|rework|refactor|tweak|polish|clean|make|move|rename|replace|implement|create|simplify|adjust)$/i;
 function pastPhrase(history, paths, inDiff = () => true) {
@@ -803,7 +1567,7 @@ function titleOf(f) {
 
 // type, scope, conventional subject (imperative), gitmoji subject (past tense, like the user's history)
 const EMOJI = { feat: '✨', fix: '🐛', style: '💄', perf: '⚡️', refactor: '♻️', docs: '📝', chore: '🔧', build: '⬆️', test: '✅', ci: '👷', remove: '🔥', content: '📝' };
-const TO_IMP = { Added: 'Add', Fixed: 'Fix', Updated: 'Update', Removed: 'Remove', Refined: 'Refine', Polished: 'Polish', Renamed: 'Rename', Moved: 'Move', Improved: 'Improve', Changed: 'Change', Created: 'Create', Deleted: 'Delete', Cleaned: 'Clean', Made: 'Make', Tweaked: 'Tweak', Replaced: 'Replace', Restyled: 'Restyle', Reworked: 'Rework', Wrote: 'Write', Increased: 'Increase', Reduced: 'Reduce', Bumped: 'Bump', Tidied: 'Tidy', Simplified: 'Simplify', Wired: 'Wire', Hooked: 'Hook', Turned: 'Turn', Grouped: 'Group', Accepted: 'Accept' };
+const TO_IMP = { Added: 'Add', Fixed: 'Fix', Updated: 'Update', Removed: 'Remove', Refined: 'Refine', Polished: 'Polish', Renamed: 'Rename', Moved: 'Move', Improved: 'Improve', Changed: 'Change', Created: 'Create', Deleted: 'Delete', Cleaned: 'Clean', Made: 'Make', Tweaked: 'Tweak', Replaced: 'Replace', Restyled: 'Restyle', Reworked: 'Rework', Wrote: 'Write', Increased: 'Increase', Reduced: 'Reduce', Bumped: 'Bump', Tidied: 'Tidy', Simplified: 'Simplify', Wired: 'Wire', Hooked: 'Hook', Turned: 'Turn', Grouped: 'Group', Accepted: 'Accept', Marked: 'Mark', Kept: 'Keep', Stripped: 'Strip', Stopped: 'Stop' };
 export const toImperative = (s) => s
   .replace(/^[A-Z][a-z]+/, (w) => TO_IMP[w] || w)
   .replace(/(\band |, )([a-z]+ed|wrote|made)\b/g, (m, pre, w) => { const k = w[0].toUpperCase() + w.slice(1); return TO_IMP[k] ? pre + TO_IMP[k].toLowerCase() : m; });
@@ -815,8 +1579,10 @@ function messageFor(fs_, label, tweaks, verbs, tense, emojiForType) {
 }
 
 const WEAK_CONTEXTS = new Set(['load', 'render', 'draw', 'handle', 'onclick', 'onchange', 'init', 'update', 'main', 'index', 'constructor', 'anonymous', 'default', 'exports']);
+// Short words a person would write; anything else that short is code shorthand (pkg, cfg, el).
+const SHORT_OK = new Set('ui ux qr id os ai db on in up to by of at go do no it or as be app tab row key map box bar log tag url api css svg all new set get add top end day run git and for the out off one two few its use'.split(' '));
 function usefulContexts(f) {
-  return [...new Set(contextsOf(f))].filter((name) => !WEAK_CONTEXTS.has(name.toLowerCase())).slice(0, 2);
+  return [...new Set(contextsOf(f))].filter((name) => !WEAK_CONTEXTS.has(name.toLowerCase()) && name.toLowerCase().split(/\s+/).every((w) => w.length > 3 || SHORT_OK.has(w))).slice(0, 2);
 }
 function visibleCopy(f) {
   const added = [], removed = [];
@@ -836,9 +1602,12 @@ function visibleCopy(f) {
   const same = new Set(added.filter((x) => removed.includes(x)));
   added.splice(0, added.length, ...added.filter((x) => !same.has(x)));
   removed.splice(0, removed.length, ...removed.filter((x) => !same.has(x)));
-  if (added.length === 1 && removed.length === 1) return `Changed visible wording from “${removed[0]}” to “${added[0]}”`;
-  if (added.length) return `Added visible wording: “${added.slice(0, 2).join('”; “')}”`;
-  if (removed.length) return `Removed visible wording: “${removed.slice(0, 2).join('”; “')}”`;
+  // Said the way a person would: Changed “Push” to “Hold to push”, Added “Cart” and “Save image”.
+  const fits = (x) => x.length <= 40;
+  const two = (xs) => { const ys = xs.filter(fits).slice(0, 2); return ys.length ? ys.map((x) => `“${x}”`).join(' and ') : ''; };
+  if (added.length === 1 && removed.length === 1 && fits(added[0]) && fits(removed[0])) return `Changed “${removed[0]}” to “${added[0]}”`;
+  if (added.length && two(added)) return `Added ${two(added)}`;
+  if (removed.length && two(removed)) return `Removed ${two(removed)}`;
   return '';
 }
 
@@ -852,11 +1621,17 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
   const coll = fs_.every((f) => collectionOf(f.path));
   const kinds = fs_.map((f) => kindOf(f.path));
   const onlyStyles = kinds.every((k) => k === 'style');
+  const cssLine = onlyStyles && !tweaks ? cssSubject(fs_) : '';
+  const renamed = fs_.length === 1 && fs_[0].status === 'M' ? renameOf(fs_[0]) : null;
   const facts = fs_.flatMap(factsFor).sort((x, y) => y.w - x.w);
-  const said = facts.filter((x) => x.verb);
+  // Names that only live inside a regex (\p{Extended_Pictographic}) are not things the change added.
+  const inRegex = new Set(fs_.flatMap((f) => [...(f.diff || '').matchAll(/\\[pP]\{([\w=]+)\}/g)].map((m) => m[1].replace(/[_=]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase())));
+  const said = facts.filter((x) => x.verb && !(x.text && inRegex.has(String(x.text).toLowerCase())));
   const intentNotes = facts.filter((x) => x.note).map((x) => x.note).join(' ');
   const fixNote = intentNotes.match(/\b(?:fix(?:es|ed)?|bug|broken|crash|regression|prevent(?:s|ed)?)\b[^.!?;]{0,100}/i)?.[0];
   const perfNote = intentNotes.match(/\b(?:performance|faster|speed(?:up)?|slow(?:er|down)?|optim(?:i|iz)(?:e|ed|ation))\b[^.!?;]{0,100}/i)?.[0];
+  const copyChanges = fs_.map(visibleCopy).filter(Boolean);
+  let fromHeader = false;
   const where = WEAK_STEMS.has(label.toLowerCase()) || /^(small tweaks|project setup|misc)$/i.test(label) ? '' : label.toLowerCase();
   const onlyTests = fs_.every((f) => /(^|\/)(?:__tests__|tests?|specs?)\/|(^|\/)(?:test|spec)\.[^.]+$|(?:\.|-)(?:test|spec)\.[^.]+$/i.test(f.path));
   const onlyDocs = !coll && fs_.every((f) => ['doc', 'text'].includes(kindOf(f.path)) || /(^|\/)(readme|changelog|contributing)(\.[^/]+)?$/i.test(f.path));
@@ -907,8 +1682,16 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
   } else if (onlyDocs) {
     type = 'docs'; emoji = '📝';
     const action = deleted.length === fs_.length ? 'Removed' : added.length === fs_.length ? 'Added' : 'Updated';
-    const subject = /^(readme|changelog|contributing|docs?)$/i.test(label) ? 'documentation' : label.toLowerCase();
+    const subject = /^changelog$/i.test(label) ? (action === 'Added' ? 'a changelog' : 'the changelog') : /^(readme|contributing|docs?)$/i.test(label) ? 'documentation' : label.toLowerCase();
     gm = `${action} ${subject}`;
+  } else if (renamed) {
+    // A view renamed in place: mountToday -> mountHome, "Today: ..." -> "Home: ...".
+    type = 'feat'; emoji = '✨';
+    gm = `Turned ${renamed[0]} into ${renamed[1]}`;
+  } else if (copyChanges.length && fs_.length <= 2 && !added.some((f) => !isAsset(kindOf(f.path)) && !VENDOR.test(f.path) && f.add >= 20)) {
+    type = kinds.every((k) => ['doc', 'text'].includes(k)) ? 'docs' : 'feat';
+    emoji = type === 'docs' ? '📝' : '✨';
+    gm = copyChanges[0];
   } else if (asset) {
     ({ type, emoji } = asset);
     gm = `${asset.verb} ${asset.what}`;
@@ -940,16 +1723,65 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
   } else if (deleted.length === fs_.length) {
     type = 'refactor'; emoji = EMOJI.remove;
     gm = `Removed ${label.toLowerCase()}`;
-  } else if (added.some((f) => !isAsset(kindOf(f.path))) && !tweaks) {
+  } else if (added.some((f) => !isAsset(kindOf(f.path))) && !tweaks && !added.filter((f) => !isAsset(kindOf(f.path))).every((f) => supportFile(f, fs_))) {
     // Something new: name the thing, not the files it touched.
     type = 'feat';
-    const fresh = added.filter((f) => !isAsset(kindOf(f.path))).sort((x, y) => y.add - x.add);
-    const many = added.length >= 3 && commonDir(added.map((f) => f.path));
-    const thing = many ? label.toLowerCase() : thingFor(fresh[0], fs_);
-    const about = many ? null : aboutOf(fresh[0], thing);
-    gm = `Added ${about?.subject || thing}`;
+    // Someone else's code dropped in (a vendored library) is not what the change is about.
+    const own = added.filter((f) => !isAsset(kindOf(f.path)) && !VENDOR.test(f.path));
+    // New tests name the commit only when they are most of it: tests that came along with a bigger
+    // change are not what it is about.
+    const testsLead = (f) => isTestPath(f.path) && !supportFile(f, fs_);
+    const fresh = (own.length ? own : added.filter((f) => !isAsset(kindOf(f.path)))).sort((x, y) => supportFile(x, fs_) - supportFile(y, fs_) || y.add - x.add);
+    const many = added.length >= 3 && commonDir(added.map((f) => f.path)) && !own.some((f) => f.add >= 20);
+    let thing = many ? label.toLowerCase() : thingFor(fresh[0], fs_);
+    // A folder of new scripts says what they are: "Added 10 raycast scripts", not "Added raycast".
+    if (many && !/\s/.test(thing) && added.length === fs_.length && added.every((f) => /\.(sh|bash|zsh|py|rb|pl|ps1|m?js|cjs|ts)$/.test(f.path)) && !/scripts?$/.test(thing)) thing = `${added.length} ${thing} scripts`;
+    let about = many ? null : aboutOf(fresh[0], thing);
+    // New tests are named for what they test: test/engine.test.mjs -> "engine tests".
+    const testFile = own.find((f) => /(^|\/)[\w-]+\.(test|spec)\.[cm]?[jt]sx?$/.test(f.path) && (testsLead(f) || fs_.every((x) => x === f || x.add < f.add)));
+    if (testFile && !many) { const stem = testFile.path.split('/').pop().replace(/\.(test|spec)\..*$/, '').replace(/[-_]+/g, ' '); about = { subject: `${stem} tests` }; type = 'test'; }
+    // The first new file whose header says plainly what it is names the commit.
+    if (!many && !about?.subject) for (const f of fresh.slice(1, 4).filter((x) => x.add * 2 >= fresh[0].add)) { const t = thingFor(f, fs_), a2 = aboutOf(f, t); if (a2?.subject) { thing = t; about = a2; break; } }
+    // A header like "Tiny Markdown view for notes and changelogs: headings, lists, ..." names the thing before the colon.
+    if (!many && !about?.subject) {
+      const h = (fresh[0].content || '').split('\n').slice(0, 6).map((l) => l.trim()).find((l) => /^(\/\/|\/\*|\*|#)\s*\S/.test(l) && !/^#!/.test(l))?.replace(/^(\/\/+|\/\*+|\*+|#+)\s*/, '') || '';
+      const pre = h.includes(': ') ? h.slice(0, h.indexOf(': ')) : '';
+      if (pre && pre.split(' ').length >= 2 && pre.split(' ').length <= 8 && pre.length <= 58 && !/[`(){}=<>\[\]]/.test(pre)) about = { subject: pre };
+    }
+    // "Receipt image that turns a receipt or statement spec" lost its "into ...": keep just the name.
+    if (about?.subject && /\sthat (turns|converts|maps|moves|changes|translates)\s/.test(about.subject) && !/\s(into|to)\s/.test(about.subject.split(' that ')[1])) about = { subject: about.subject.split(' that ')[0] };
+    // A header that gives an order ("Test the production adapter ...", "Install / remove Claude Code
+    // hooks ...") says what the new file is for: "Added a test for the production adapter ...". One that
+    // asks a question ("Where Busy Lamp keeps its files") does not name it.
+    if (about?.subject && /^(Where|What|How|When|Why|Which|Who)\b/.test(about.subject)) about = null;
+    const opening = many ? "" : ((fresh[0]?.content || '').split('\n').slice(0, 4).map((l) => l.trim()).find((l) => /^("""|\'\'\'|\/\/|\/\*|\*|#(?!!))\s*\S/.test(l)) || '')
+      .replace(/^("""|\'\'\'|\/\/+|\/\*+|\*+|#+)\s*/, '').replace(/("""|\'\'\'|\*\/)\s*$/, '').replace(/\s*\([^)]*\)/g, '').split(/[.;!?](?:\s|$)/)[0].trim();
+    const ORDER = /^(Test|Check|Verify|Install|Prepare|Build|Run|Generate|Create|Make|Draw|Render|Read|Write|Sync|Export|Import|Fetch|Download|Upload|Convert|Update|Validate|Bundle|Package|Sign|Publish|Watch|Start|Stop|Launch|Open|Close|Drive|Apply|Copy|Find|Keep|Show|Turn|Load|Save|Send|Serve|Set up|Clean|Compile|Measure|Score|Compare|Split|Merge|Pick|Collect)( \/ [a-z]+)?\s(.+)$/;
+    // "Development only: check ES5 grammar ..." says what it does after the colon.
+    const [pre, ...post] = opening.split(/:\s/);
+    const doing = post.length && (/\sonly$/i.test(pre) || !pre.includes(' ')) ? post.join(': ').replace(/^\w/, (c) => c.toUpperCase()) : pre;
+    const plainText = (t) => t.split(' ').length <= 12 && !/[`{}=<>\[\]]/.test(t);
+    if (ORDER.test(doing) && !/\sonly$/.test(doing) && plainText(doing)) about = { subject: doing };
+    // "Shared, bounded checks for private files ..." was cut to its first word: keep the rest.
+    else if (about?.subject && !about.subject.includes(' ') && opening.toLowerCase().startsWith(about.subject.toLowerCase() + ', ') && plainText(opening) && opening.split(' ').length <= 10) about = { subject: opening.slice(about.subject.length + 2) };
+    if (about?.subject && (/\sonly$/i.test(about.subject) || /^(one|a|an|the|each|every)\s\w+\s\w{3,}s (every|each|all|the|a|an|its|their|our|your|this|that)\b/i.test(about.subject))) about = null;
+    if (about?.subject) {
+      const order = about.subject.match(ORDER);
+      if (order) {
+        const f0 = fresh[0].path, isTest = /(^|\/)(tests?|spec)\/|[._-](test|spec)\.|(^|\/)test[-_]/i.test(f0);
+        const noun = isTest ? 'a test' : /(^|\/)[^/]*config[^/]*$|rc(\.\w+)?$/i.test(f0) ? 'a config' : /(^|\/)(scripts?|tools?|bin)\//.test(f0) || /\.(sh|py|rb|pl)$/.test(f0) ? 'a script' : 'a helper';
+        const rest = order[3].replace(/^the\s/, 'the ');
+        about = { subject: isTest && /^(Test|Check|Verify)$/.test(order[1]) ? `${noun} for ${rest}` : `${noun} to ${order[1].toLowerCase()}${order[2] || ''} ${rest}` };
+      }
+    }
+    gm = `Added ${(about?.subject || thing).replace(/^(Tiny|Small|Little|Simple|Quiet|Short|Basic|New|One|Shared|Local|Plain|Light|Soft|Full|Single|Quick|Live|Main|Global|Custom)\s/, (w) => w.toLowerCase())}`;
+    if (about?.subject) fromHeader = true;
     const extra = said.find((x) => x.w >= 6 && !gm.includes(x.text) && !sameFact(gm, x));
     if (extra && gm.length + extra.text.length < 60) gm = joinFact(gm, extra);
+  } else if (cssLine) {
+    // A small style change says exactly what moved: "Reduced font size for description".
+    type = 'style'; emoji = '💄';
+    gm = cssLine;
   } else if (said.length && said[0].w >= 6) {
     // A clear single change: a font swap, a weight change.
     const f0 = said[0];
@@ -961,10 +1793,14 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
     type = 'style';
     const topics = [...new Set(facts.flatMap((x) => x.topics || []))].slice(0, 2);
     const adds = said.find((x) => x.verb === 'Added');
+    const metaLine = metaSubject(fs_);
     if (tweaks) gm = `Polished ${list([...new Set(fs_.map((f) => nameOf(f.path).toLowerCase()))].slice(0, 3))}${fs_.length > 3 ? ' and more' : ''}`;
     else if (adds && !topics.length) gm = `${adds.verb} ${adds.text}`;
+    else if (metaLine) gm = metaLine;
+    else if (!topics.length && !kinds.includes('style') && where) gm = `Updated ${where} markup`; // no stylesheet touched: not "Refined styles"
     else {
-      const place = where || list([...new Set(fs_.flatMap(usefulContexts))].slice(0, 2));
+      // A stylesheet hunk that opens under body or :root says nothing about where the change is.
+      const place = where || list([...new Set(fs_.flatMap(usefulContexts))].filter((c) => !/^(body|html|:root|\*)$/i.test(c)).slice(0, 2));
       gm = `Refined ${topics.length ? list(topics) : 'styles'}${place ? ` ${topics.length ? 'in' : 'for'} ${place}` : ''}`;
     }
   } else if (tweaks) {
@@ -977,13 +1813,18 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
     const add = fs_.reduce((s, f) => s + f.add, 0), del = fs_.reduce((s, f) => s + f.del, 0);
     const best = said.find((x) => x.kind === 'code' || x.kind === 'markup' || x.kind === 'doc' || x.kind === 'config') || said[0];
     // A comment you wrote with the change usually says it best: "Updated app server: restart only when …"
-    const note = facts.find((x) => x.note && `Updated ${label}: ${x.note}`.length <= 72 && x.note.split(/\s+/).length >= 4 && !/^(a|an|the|this|that|it)\s/i.test(x.note));
+    const note = facts.find((x) => x.note && `Updated ${label}: ${x.note}`.length <= 72 && x.note.split(/\s+/).length >= 4 && !(x.note.split(/\s+/).length <= 6 && /,/.test(x.note)) && !/^(a|an|the|this|that|it|what|how|why|when|where|which|who)\s/i.test(x.note));
     if (note && (!best || best.w < 6) && fs_.length <= 2) { type = 'feat'; gm = `Updated ${where || label.toLowerCase()}: ${/^[A-Z](?![A-Z])/.test(note.note) ? note.note[0].toLowerCase() + note.note.slice(1) : note.note}`; }
     else if (best && best.verb === 'Added') { type = 'feat'; gm = `Added ${best.text}${where && best.kind === 'code' && !best.text.includes(where) ? ` to ${where}` : ''}`; }
     else if (best && best.verb === 'Removed') { type = 'refactor'; emoji = '🔥'; gm = `Removed ${best.text}${where ? ` from ${where}` : ''}`; }
     else if (best) { type = best.kind === 'doc' ? 'docs' : best.kind === 'config' ? 'chore' : 'feat'; gm = `${best.verb} ${best.text}`; }
     else if (del > add * 2 && del > 20) { type = 'refactor'; gm = `Simplified ${label.toLowerCase()}`; }
-    else if (facts.some((x) => x.fixy) && add < 40) { type = 'fix'; gm = `Fixed ${label.toLowerCase()} edge cases`; }
+    else if (facts.some((x) => x.fixy) && add < 40) {
+      // New try/catch: say where errors are now caught, in the function git names for the chunk.
+      const fn = fs_.length === 1 ? contextsOf(fs_[0])[0] : '';
+      const at = fn && featureName(fn) ? featureName(fn) : label.toLowerCase();
+      type = 'fix'; gm = `Handled errors in ${at}`;
+    }
     else {
       type = kinds.every((k) => k === 'doc' || k === 'text') ? 'docs' : 'feat';
       const ctx = [...new Set(fs_.flatMap(usefulContexts))].filter((c) => c !== label.toLowerCase()).slice(0, 2);
@@ -991,6 +1832,54 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
     }
     const next = said.find((x) => x !== best && x.w >= 4 && !gm.includes(x.text) && !sameFact(gm, x));
     if (next && gm.length + next.text.length < 58) gm = joinFact(gm, next);
+  }
+  // A button that came or went, named by its label: Added the “Copy notes” button.
+  if (fs_.length <= 3 && /^(Updated|Refined|Tidied) [\w .-]+$/.test(gm)) {
+    const lines = fs_.flatMap((f) => (f.diff || '').split('\n')), plus = lines.filter((l) => l[0] === '+'), minus = lines.filter((l) => l[0] === '-');
+    const ids = (ls) => new Set(ls.flatMap((l) => [...l.matchAll(/<button\b[^>]*\bid="([\w-]+)"/g)].map((m) => m[1])));
+    const was = ids(minus), now = ids(plus);
+    const labelOf = (id, ls) => {
+      const clean = (t) => t.replace(/\$\{[^}]*\}/g, '').replace(/<[^>]*>/g, '').replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+      for (const l of ls) {
+        const m = l.match(new RegExp(`id="${id}"[^>]*>([^<{$]{3,30})</button>`)) || l.match(new RegExp(`['"]#${id}['"]\\)\\.(?:innerHTML|textContent)\\s*=\\s*[\`'"](.{3,80}?)[\`'"]\\s*;`));
+        if (m && /^[A-Z][\w ’'.-]{2,28}$/.test(clean(m[1]))) return clean(m[1]);
+      }
+      for (const l of ls) { const m = l.match(new RegExp(`<button\\b[^>]*\\bid="${id}"[^>]*\\b(?:title|aria-label)="([^"]{3,60})"`)) || l.match(new RegExp(`<button\\b[^>]*\\b(?:title|aria-label)="([^"]{3,60})"[^>]*\\bid="${id}"`)); if (m && /^[A-Z][\w ’'.-]{2,28}$/.test(clean(m[1]))) return clean(m[1]); }
+      return '';
+    };
+    const came = [...now].filter((x) => !was.has(x)).map((x) => labelOf(x, plus)).filter(Boolean);
+    const went = [...was].filter((x) => !now.has(x)).map((x) => labelOf(x, minus)).filter(Boolean);
+    if (came.length && !went.length) { type = 'feat'; emoji = '✨'; gm = `Added the ${list(came.map((x) => `“${x}”`))} button${came.length > 1 ? 's' : ''}`; }
+    else if (went.length && !came.length) { type = 'refactor'; emoji = EMOJI.remove || '🔥'; gm = `Removed the ${list(went.map((x) => `“${x}”`))} button${went.length > 1 ? 's' : ''}`; }
+  }
+  // A vague subject takes the why from a comment written with it: "Fixed, not sticky: the sidebar never
+  // travels with the page" -> Refined layout so the sidebar never travels with the page.
+  if (fs_.length <= 2 && /^(Updated|Refined|Tidied) [\w .-]+$/.test(gm)) {
+    for (const f of fs_) for (const l of (f.diff || '').split('\n')) {
+      if (l[0] !== '+' || / so /.test(gm)) continue;
+      const c = l.slice(1).trim().match(/^(?:\/\/+|\/\*+|\*|#)\s*(.*?)\s*(?:\*\/)?$/)?.[1];
+      if (!c) continue;
+      const after = c.replace(/^[^:]{3,40}:\s+/, '');
+      const m = after.match(/^((?:the|a|an)\s+[a-z][\w-]*(?:\s[a-z][\w-]*){0,2}\s+(?:never|always|no longer|now|only|stays|keeps|sits|follows)\b[^,;—(]*)/i);
+      if (m && m[1].split(' ').length <= 10 && `${gm} so ${m[1]}`.length <= 72) { gm = `${gm} so ${m[1][0].toLowerCase()}${m[1].slice(1).replace(/[.\s]+$/, '')}`; break; }
+    }
+  }
+  // Two kinds of file say plainly what they gained: an icon set and package.json.
+  if (fs_.length === 1 && /^(Updated|Refined|Tidied) [\w .-]+$/.test(gm)) {
+    const d = fs_[0].diff || '', plus = d.split('\n').filter((l) => l[0] === '+' && !l.startsWith('+++')), minus = d.split('\n').filter((l) => l[0] === '-' && !l.startsWith('---'));
+    const icons = [...new Set(plus.map((l) => l.match(/^\+\s*["']?([A-Z][A-Za-z]+)\d*["']?\s*:\s*["'`]\s*</)?.[1]).filter(Boolean))];
+    const keyOf = (l) => l.match(/^[+-]\s*"([@\w][\w:./@-]*)"\s*:\s*"([^"]*)"/);
+    const gone = new Set(minus.map((l) => keyOf(l)?.[1]).filter(Boolean));
+    const keys = plus.map(keyOf).filter((m) => m && !gone.has(m[1]));
+    if (icons.length >= 2 && plus.length - icons.length <= 2) {
+      const words = icons.map((x) => x.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase());
+      type = 'feat'; emoji = '✨'; gm = icons.length <= 3 ? `Added ${list(words)} icons` : `Added ${icons.length} icons`;
+    } else if (/(^|\/)package\.json$/.test(fs_[0].path) && keys.length && keys.length <= 3) {
+      const scripts = keys.filter((m) => !/^[\^~>=<*]?\d|^(latest|next|workspace:|file:|git\+|https?:)/.test(m[2]));
+      const deps = keys.filter((m) => !scripts.includes(m));
+      if (scripts.length && !deps.length) { type = 'chore'; emoji = '🔧'; gm = `Added ${list(scripts.map((m) => `“${m[1]}”`))} script${scripts.length > 1 ? 's' : ''}`; }
+      else if (deps.length && !scripts.length) { type = 'build'; emoji = '➕'; gm = `Added ${list(deps.map((m) => m[1]))}`; }
+    }
   }
   const fallbackEmoji = EMOJI[type];
   emoji = emojiForType?.[type] && (!emoji || emoji === fallbackEmoji) ? emojiForType[type] : emoji || fallbackEmoji;
@@ -1002,7 +1891,7 @@ function messageForPast(fs_, label, tweaks, verbs, emojiForType) {
   gm = gm.replace(/\s+/g, ' ').trim();
   if (gm.length > 72) gm = gm.slice(0, 71).replace(/\s+\S*$/, '') + '…';
   conv = toImperative(gm).replace(/^\w/, (c) => c.toLowerCase());
-  return { type, scope: tweaks ? '' : scope, emoji, emojiSuggestions, conventional: conv, gitmoji: gm, body: bodyFor(fs_, facts, gm), source: 'guess' };
+  return { type, scope: tweaks ? '' : scope, emoji, emojiSuggestions, conventional: conv, gitmoji: gm, body: bodyFor(fs_, facts, gm), source: 'guess', ...(fromHeader ? { fromHeader } : {}) };
 }
 
 // Rank a short, context-aware set. The chosen emoji leads; concrete change evidence
