@@ -1,8 +1,8 @@
-// Commit Compass uses deterministic local rules for grouping and message drafts.
+// The engine uses deterministic local rules for grouping and message drafts.
 const writeHeaders = { 'content-type': 'application/json', 'x-changes': '1' };
 
 export const ENGINES = {
-  rules: { label: 'Commit Compass rules', short: 'Commit Compass', note: 'Local, explainable rules group changes and write a grounded first draft.' },
+  rules: { label: 'Engine rules', short: 'Engine', note: 'Local, explainable rules group changes and write a grounded first draft.' },
 };
 
 export function status() { return Promise.resolve({ rules: 'ready' }); }
