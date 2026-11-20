@@ -1,14 +1,32 @@
 // Read-mostly insights: git tree, repo state (ahead/behind, branches, stashes), Today,
-// site weight per week, image report, releases (tags), push, changelog export.
+// releases (tags), push, changelog export.
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 
 const BOT_BRANCH = /(^|\/)(dependabot|renovate|imgbot|snyk|greenkeeper)(\/|$)/i;
-const IMG = /\.(png|jpe?g|gif|webp|avif|svg|heic|bmp|tiff?)$/i;
-const MODERN_IMG = /\.(webp|avif|svg)$/i;
+
+function githubRepo(remote) {
+  const m = remote.match(/github[\w.-]*[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i);
+  return m ? m[1] : '';
+}
+// gh lives in Homebrew's folder, which apps started by launchd don't always have on PATH.
+function ghRelease(cwd, tag, notes) {
+  const tries = ['gh', '/opt/homebrew/bin/gh', '/usr/local/bin/gh'];
+  return new Promise((resolve) => {
+    const next = () => {
+      const bin = tries.shift();
+      if (!bin) return resolve('');
+      execFile(bin, ['release', 'create', tag, '--verify-tag', '--title', tag, '--notes', notes || tag], { cwd, timeout: 30000 }, (err, out) => {
+        if (err && err.code === 'ENOENT') return next();
+        resolve(err ? '' : String(out).trim().split('\n').pop());
+      });
+    };
+    next();
+  });
+}
 
 export function insightRoutes({ git, listRepos, repoDir }) {
-  const weightCache = new Map(); // sha -> totals
 
   async function upstreamCounts(dir) {
     try {
@@ -199,8 +217,20 @@ export function insightRoutes({ git, listRepos, repoDir }) {
         const exists = await git(dir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]).then(() => true, () => false);
         if (exists) return fail(`${tag} already exists`, 409);
         await git(dir, ['tag', '-a', '--cleanup=verbatim', tag, '-m', String(body.notes || tag).trim() || tag]);
-        if (body.push) await git(dir, ['push', 'origin', tag]).catch((e) => { throw new Error('Tagged, but the push failed: ' + String(e.stderr || e.message).trim().split('\n').pop()); });
-        return ok({ tag });
+        if (!body.push) return ok({ tag });
+        await git(dir, ['push', 'origin', tag]).catch((e) => { throw new Error('Tagged, but the push failed: ' + String(e.stderr || e.message).trim().split('\n').pop()); });
+        // On GitHub, publish it as a Release (not just a tag): with the gh CLI when it's signed in,
+        // otherwise hand back GitHub's "new release" page already filled in, so one click publishes it.
+        const gh = githubRepo((await git(dir, ['remote', 'get-url', 'origin']).catch(() => '')).trim());
+        if (!gh) return ok({ tag });
+        const notes = String(body.body || '').trim();
+        const made = await ghRelease(dir, tag, notes);
+        if (made) return ok({ tag, release: made, published: true });
+        const q = new URLSearchParams({ tag, title: tag, body: notes.slice(0, 6000) });
+        const page = `https://github.com/${gh}/releases/new?${q}`;
+        const [cmd, args] = process.platform === 'darwin' ? ['open', [page]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', page]] : ['xdg-open', [page]];
+        execFile(cmd, args, () => {});
+        return ok({ tag, release: page, published: false });
       }
       if (p === '/api/x/changelog' && req.method === 'POST') {
         const body = await readJson(req);
