@@ -1,11 +1,10 @@
-// Home: an overview. How your week is going, your last six months at a glance, which repos you've
-// been in, and anything waiting to be committed or pushed. Details live in each repo's own views.
+// Home: how your week is going, your last six months at a glance, and anything waiting to be
+// committed or pushed. Details live in each repo's own views.
 import { icon } from './icons.js';
-import { esc, ago, api, toast, hostOf } from './ui.js';
-import { pushLaunch } from './fx.js';
+import { esc, ago, api, hostOf } from './ui.js';
 
 const DAY = 864e5;
-let host = null, ctx = null, data = null, busy = null, loadedAt = 0, painted = '';
+let host = null, ctx = null, data = null, loadedAt = 0, painted = '';
 
 export function mountHome(el, context) {
   host = el; ctx = context;
@@ -22,9 +21,7 @@ async function load() {
 
 const dayAt = (base, add = 0) => { const d = new Date(base); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + add); return d.getTime(); };
 const plural = (n, w, ws = w + 's') => `${n} ${n === 1 ? w : ws}`;
-const listNames = (a) => a.length <= 2 ? a.join(' and ') : `${a.slice(0, -1).join(', ')} and ${a.at(-1)}`;
 const fmt = new Intl.NumberFormat('en');
-const compact = (n) => (n >= 10000 ? (n / 1000).toFixed(0) + 'k' : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
 
 function activity() {
   const all = (ctx.repos || []).flatMap((r) => r.commits);
@@ -38,54 +35,37 @@ function activity() {
   const week = all.filter((c) => c.t >= ws);
   const lastWeek = all.filter((c) => c.t >= lws && c.t < lws + into);
   const weeks = Array.from({ length: 12 }, (_, i) => { const a = dayAt(ws, -7 * (11 - i)), b = dayAt(a, 7); return all.filter((c) => c.t >= a && c.t < b).length; });
-  const last = all.reduce((m, c) => (c.t > (m?.t || 0) ? c : m), null);
-  return { all, byDay, today, streak, todayList: all.filter((c) => c.t >= today), week, lastWeek, weeks, last, ws };
+  return { byDay, today, streak, week, lastWeek, weeks, ws };
 }
 
-function story(a) {
-  const repos = [...new Set(a.todayList.map((c) => c.repo))];
-  const lead = a.todayList.length
-    ? `<b>${plural(a.todayList.length, 'commit')} today</b> in ${esc(listNames(repos))}.`
-    : a.last ? `Nothing committed yet today. Your last commit was ${ago(a.last.t)}, in ${esc(a.last.repo)}.` : 'No commits yet.';
-  return `<p class="home-story">${lead}</p>`;
-}
-
-const bars = (vals, cls = '') => {
+const bars = (vals) => {
   const max = Math.max(1, ...vals);
-  return `<svg class="hv-bars ${cls}" viewBox="0 0 ${vals.length * 8} 28" preserveAspectRatio="none" aria-hidden="true">${vals.map((v, i) => { const h = v ? Math.max(2, (v / max) * 26) : 1; return `<rect x="${i * 8}" y="${28 - h}" width="6" height="${h}" rx="1.5" class="${i === vals.length - 1 ? 'is-now' : ''}"/>`; }).join('')}</svg>`;
+  return `<svg class="hv-bars" viewBox="0 0 ${vals.length * 8} 28" preserveAspectRatio="none" aria-hidden="true">${vals.map((v, i) => { const h = v ? Math.max(2, (v / max) * 26) : 1; return `<rect x="${i * 8}" y="${28 - h}" width="6" height="${h}" rx="1.5" class="${i === vals.length - 1 ? 'is-now' : ''}"/>`; }).join('')}</svg>`;
 };
 
 function tiles(a) {
   const diff = a.week.length - a.lastWeek.length;
   const add = a.week.reduce((s, c) => s + c.add, 0), del = a.week.reduce((s, c) => s + c.del, 0);
   const days = Array.from({ length: 14 }, (_, i) => a.byDay.get(dayAt(a.today, i - 13)) || 0);
-  const share = add + del ? add / (add + del) : 0.5;
   return `<div class="hv-tiles">
     <div class="hv-tile">
       <span class="hv-label">This week</span>
       <span class="hv-num">${a.week.length}<small>commits</small></span>
-      <span class="hv-sub mono ${diff > 0 ? 'up' : diff < 0 ? 'down' : ''}">${a.lastWeek.length || a.week.length ? (diff === 0 ? 'same pace as last week' : `${diff > 0 ? '+' : '−'}${Math.abs(diff)} vs this point last week`) : 'a fresh start'}</span>
+      <span class="hv-sub mono"><span class="${diff > 0 ? 'up' : diff < 0 ? 'down' : ''}">${a.lastWeek.length || a.week.length ? (diff === 0 ? 'same pace as last week' : `${diff > 0 ? '+' : '−'}${Math.abs(diff)} vs last week`) : 'a fresh start'}</span>${add + del ? ` · <span class="a">+${fmt.format(add)}</span> <span class="d">−${fmt.format(del)}</span> lines` : ''}</span>
       ${bars(a.weeks)}
     </div>
     <div class="hv-tile">
       <span class="hv-label">Streak</span>
       <span class="hv-num">${a.streak}<small>${a.streak === 1 ? 'day' : 'days'}</small></span>
-      <span class="hv-sub mono">${a.byDay.get(a.today) ? 'kept going today' : a.streak ? 'commit today to keep it' : 'commit today to start one'}</span>
       <span class="hv-days" aria-hidden="true">${days.map((n, i) => `<i class="${n ? 'is-on' : ''} ${i === 13 ? 'is-today' : ''}"></i>`).join('')}</span>
-    </div>
-    <div class="hv-tile">
-      <span class="hv-label">Lines this week</span>
-      <span class="hv-num">${compact(add + del)}<small>changed</small></span>
-      <span class="hv-sub mono"><span class="a">+${fmt.format(add)}</span> <span class="d">−${fmt.format(del)}</span></span>
-      <span class="hv-split" aria-hidden="true"><i class="a" style="flex:${share}"></i><i class="d" style="flex:${1 - share}"></i></span>
     </div>
   </div>`;
 }
 
 function heat(a) {
   const start = dayAt(a.ws, -25 * 7);
-  let max = 1, total = 0, days = 0;
-  for (const [k, n] of a.byDay) if (k >= start) { max = Math.max(max, n); total += n; days++; }
+  let max = 1;
+  for (const [k, n] of a.byDay) if (k >= start) max = Math.max(max, n);
   const f = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   let cells = '';
   for (let i = 0; i < 26 * 7; i++) {
