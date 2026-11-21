@@ -3,6 +3,7 @@ import { mountCommit, refreshCommit, setPanelRoute, openPanel, practiceCart, ope
 import { mountTree } from './tree.js';
 import { mountHome } from './today.js';
 import { mountReadme } from './readme.js';
+import { mountAbout } from './about.js';
 import { mountSettings } from './settings.js';
 import { openProjectSettings } from './project.js';
 import { openRun, loadRun, running, runCache, runCommand, onRunChange } from './run.js';
@@ -47,9 +48,9 @@ function weekLabel(ws) {
 }
 
 // ---------- state ----------
-const VIEWS = ['week', 'feature', 'release', 'tree', 'commit', 'readme', 'settings'];
-const PANE_VIEWS = ['tree', 'commit', 'readme', 'settings'];
-const GLOBAL_VIEWS = ['readme', 'settings'];
+const VIEWS = ['week', 'feature', 'release', 'tree', 'commit', 'readme', 'settings', 'about'];
+const PANE_VIEWS = ['tree', 'commit', 'readme', 'settings', 'about'];
+const GLOBAL_VIEWS = ['readme', 'settings', 'about'];
 const isHome = () => state.repo === 'all' && state.view === 'week';
 const state = { repoState: null, data: null, repo: 'all', view: 'week', range: '12w', q: '', off: new Set(), open: new Set(), expanded: new Set() };
 
@@ -156,8 +157,10 @@ function renderHeader() {
   syncDock(GLOBAL_VIEWS.includes(state.view) ? 'all' : state.repo);
   $('#readmeLink').setAttribute('aria-current', state.view === 'readme');
   $('#settingsLink').setAttribute('aria-current', state.view === 'settings');
-  if (state.view === 'readme' || state.view === 'settings') $('#runBtn').hidden = true;
+  $('#aboutLink').setAttribute('aria-current', state.view === 'about');
+  if (GLOBAL_VIEWS.includes(state.view)) $('#runBtn').hidden = true;
   if (state.view === 'readme') { $('#title').textContent = 'README'; $('#meta').innerHTML = '<span>How staged works</span>'; gh.hidden = true; push.hidden = true; }
+  if (state.view === 'about') { $('#title').textContent = 'About'; $('#meta').innerHTML = ''; gh.hidden = true; push.hidden = true; }
   if (state.view === 'settings') { $('#title').textContent = 'Settings'; $('#meta').innerHTML = '<span>Repos, sound and updates</span>'; gh.hidden = true; push.hidden = true; }
   const viewTabs = [...document.querySelectorAll('#viewSeg button')];
   const hasViewTab = viewTabs.some((b) => b.dataset.v === state.view);
@@ -572,6 +575,7 @@ function render() {
     el.hidden = false;
     if (v === 'readme') return mountReadme(el);
     if (v === 'settings') return openSettingsPane(el);
+    if (v === 'about') return openAboutPane(el);
     if (state.repo === 'all') return pickRepoPane(el, v);
     if (v === 'commit') return mountCommit(el, ctxFor(v));
     if (v === 'tree') return mountTree(el, ctxFor(v));
@@ -597,6 +601,15 @@ async function openSettingsPane(el) {
   if (!meta) meta = await api('/api/update').catch(() => ({})).then((u) => ({ version: u.current || '' }));
   const section = settingsSection; settingsSection = '';
   await mountSettings(el, { ...meta, section, onChange: () => refreshCommit(), onRepos: () => load(false) });
+}
+
+function openAbout() {
+  if (!GLOBAL_VIEWS.includes(state.view)) state.lastView = state.view;
+  state.view = 'about'; render(); scrollTo({ top: 0 });
+}
+async function openAboutPane(el) {
+  if (!meta) { meta = await api('/api/update').catch(() => ({})).then((u) => ({ version: u.current || '' })); renderHeader(); }
+  mountAbout(el, meta);
 }
 
 function pickRepoPane(el, v) {
@@ -643,6 +656,8 @@ addEventListener('staged:project-settings', projectSettings);
 $('#readmeLink').innerHTML = `${icon('BookOpen01', 15)}<span>README</span>`;
 $('#settingsLink').innerHTML = `${icon('Settings02', 15)}<span>Settings</span>`;
 $('#settingsLink').addEventListener('click', () => openSettings());
+$('#aboutLink').innerHTML = `${icon('InformationCircle', 15)}<span>About</span>`;
+$('#aboutLink').addEventListener('click', openAbout);
 initUpdates(document.querySelector('.side'));
 initMotionSystem();
 initSegs();
@@ -698,6 +713,7 @@ initPalette((q) => {
   if (state.repo !== 'all') items.push({ group: 'Actions', label: 'Rename last commit', hint: `${state.repo}: change its message, even after a push`, run: () => setTimeout(() => renameLast(state.repo), 200) });
   if (state.repo !== 'all') items.push({ group: 'Go to', label: 'Project settings', hint: `${state.repo}: commit message style`, run: projectSettings });
   items.push({ group: 'Go to', label: 'README', hint: 'how staged works', run: () => { state.view = 'readme'; render(); scrollTo({ top: 0 }); } });
+  items.push({ group: 'Go to', label: 'About', hint: 'who makes staged, and buy me a coffee', run: openAbout });
   for (const r of repos) items.push({ group: 'Repos', label: r.name, hint: r.dirty ? `${r.dirty} uncommitted` : r.last ? ago(r.last) : '', run: goRepo(r.name) });
   const views = [['week', 'Weeks'], ['feature', 'Features'], ['release', 'Releases'], ['tree', 'Tree'], ['commit', 'Commit']];
   for (const [v, label] of views) items.push({ group: 'Views', label, hint: state.repo === 'all' ? '' : state.repo, run: () => { state.view = v; render(); } });
