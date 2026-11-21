@@ -56,7 +56,7 @@ const pkgVersion = () => { try { return JSON.parse(fs.readFileSync(path.join(dir
       const r = await fetch(`https://api.github.com/repos/${m[1]}/${m[2]}/releases/tags/${encodeURIComponent(tag)}`, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'staged' }, signal: AbortSignal.timeout(5000) });
       if (!r.ok) return null;
       const j = await r.json();
-      return { title: j.name && j.name !== tag ? j.name : '', body: String(j.body || '').replace(/\r/g, '').replace(/^#+\s*/gm, '').replace(/\*\*/g, '').trim(), url: j.html_url };
+      return { title: j.name && j.name !== tag ? j.name : '', body: String(j.body || '').replace(/\r/g, '').trim(), url: j.html_url };
     } catch { return null; }
   }
 

@@ -232,7 +232,7 @@ function styleStats(commits) {
   return { count: lengths.length, formats, scopes, lengths, tense, verbs, types, emojiTypes };
 }
 
-export function combineStyleProfiles(profiles) {
+function combineStyleProfiles(profiles) {
   const valid = profiles.filter((p) => p?.count);
   const weight = (p) => Math.min(1, p.count / 30);
   const formatTotals = { gitmoji: 0, conventional: 0, plain: 0 };

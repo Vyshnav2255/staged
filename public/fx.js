@@ -25,7 +25,6 @@ function path(p0, c1, c2, p3, steps = 16, ease = easeInOut) {
 // Commit. The card closes in place: its content fades, then it collapses to nothing so the cards
 // below rise up naturally (the list waits for this before it redraws, so nothing jumps). As it
 // closes, a dot appears at its middle and, once the commit is made, glides to the new row in the cart.
-export function foldRepaint() {}
 export function commitFold(card) {
   const none = () => {}; none.ready = Promise.resolve();
   if (!card) return none;

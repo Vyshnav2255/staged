@@ -34,7 +34,7 @@ function grain() {
   return t;
 }
 
-export async function specImage(s) {
+async function specImage(s) {
   await fonts();
   const mark = await markImage();
   const X0 = (W - PAPER) / 2, X1 = X0 + PAPER;
@@ -63,6 +63,7 @@ export async function specImage(s) {
   for (const [l, r] of s.meta) pair(l, r);
   rule();
   if (!s.items.length) center(48, sans(400, 22), MUTED, s.empty || '');
+  if (s.head && s.items.length) pair(s.head[0].toUpperCase(), s.head[1].toUpperCase(), { font: mono(15), h: 32 });
   for (const it of s.items) {
     pair(it.l, it.r, { font: sans(400, 24), color: INK, h: 38 });
     pair(it.sl, it.sr, { h: 34 });
@@ -142,7 +143,7 @@ export async function specImage(s) {
   for (const r of rows) { r.draw(c, y); y += r.h; }
   // the green rubber stamp, a little crooked, beside the code at the bottom
   c.save();
-  c.translate(X1 - 128, stampAt + (s.qr ? 70 : 40)); c.rotate(-0.19);
+  c.translate(X1 - 156, stampAt + (s.qr ? 70 : 40)); c.rotate(-0.19);
   c.globalAlpha = 0.85; c.strokeStyle = GREEN; c.fillStyle = GREEN; c.lineWidth = 4;
   c.beginPath(); c.roundRect(-92, -40, 184, 80, 14); c.stroke();
   c.font = mono(30); c.textAlign = 'center'; c.letterSpacing = '6px'; c.fillText(s.stamp[0].toUpperCase(), 3, 4);

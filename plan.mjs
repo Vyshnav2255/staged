@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Machine-readable Commit Compass output for editors and coding agents.
+// Machine-readable engine output for editors and coding agents.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,7 +78,7 @@ export async function buildPlan(repoPath = process.cwd(), { includeDiff = false 
   return {
     schema: 'staged.commit-plan.v1',
     generatedAt: new Date().toISOString(),
-    engine: { name: 'Commit Compass', version: packageJson.version || 'unknown', mode: 'rules', confidenceTarget: CONFIDENCE_TARGET, minimumJoinEvidence: MIN_GROUP_LINK_EVIDENCE },
+    engine: { name: 'staged engine', version: packageJson.version || 'unknown', mode: 'rules', confidenceTarget: CONFIDENCE_TARGET, minimumJoinEvidence: MIN_GROUP_LINK_EVIDENCE },
     repository: { name: path.basename(root), path: root, branch: branch.trim() || null, head: head.trim() || null },
     style: { tense: style.tense, format: style.style.format, historyCommits: index.commits.length },
     summary: {
@@ -109,7 +109,7 @@ export async function buildPlan(repoPath = process.cwd(), { includeDiff = false 
 }
 
 async function main(args) {
-  const usage = 'Usage: staged plan [repo-path] [--include-diff]\nPrints a JSON Commit Compass plan; it never commits or edits the repository.';
+  const usage = 'Usage: staged plan [repo-path] [--include-diff]\nPrints a JSON plan from the staged engine; it never commits or edits the repository.';
   if (args.includes('--help') || args.includes('-h')) { process.stdout.write(usage + '\n'); return; }
   const includeDiff = args.includes('--include-diff');
   const positional = args.filter((arg) => !arg.startsWith('--'));
