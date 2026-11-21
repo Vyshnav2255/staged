@@ -2,6 +2,8 @@
 
 <img src="public/brand/staged-icon.svg" width="64" alt="staged">
 
+<a href="https://buymeacoffee.com/vyshnav"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-b07a3e?logo=buymeacoffee&logoColor=white" alt="Buy me a coffee"></a>
+
 **Every change across your git repos, sorted into features, commits and releases.** staged reads the git repos on your computer and shows them on `localhost`. It also runs each project's own commands from one button. Nothing leaves your computer, there is no account, no AI, and no dependencies. It works on macOS, Windows and Linux.
 
 ## Quick start
@@ -59,6 +61,7 @@ To ship a version (for maintainers): run `npm run release` (or `npm run release 
 | **Tree** | Every branch, merge and tag as lanes. Hover a commit to light up its history; click it for the files. Other branches and stashes show above it. |
 | **Commit** | Your uncommitted files, already split into commits with messages written for you. |
 | **Run** | The project's own commands on a cassette deck: serve the site, build, test. See [Run](#run). |
+| **About** | A note from the maker, links, and a way to [buy me a coffee](#support-staged). |
 
 Commit types come from gitmoji (✨ 🎉 Feature, 💄 💫 🎨 Design, 🐛 Fix, ⚡️ Perf, ♻️ 🔥 🔧 Chore) or conventional commits (`feat:`, `fix:`…). Commits with neither are guessed from their wording and shown with a hollow dot.
 
@@ -153,3 +156,11 @@ Rules are checked in order; files that match none fall back to the guess.
 - The server only answers on `localhost`, and only to this page.
 - Commits are built in a temporary index, so anything you staged yourself elsewhere is left alone. Git hooks don't run for these commits.
 - Commit messages follow your repo: past tense (`Added …`) or imperative (`Add …`), whichever your history mostly uses.
+
+## Support staged
+
+staged is free and stays free. If it saves you time, you can [buy me a coffee](https://buymeacoffee.com/vyshnav) ☕. There's a button for it in the app too, under **About**.
+
+## License
+
+staged is source-available, not open source. You can use it for free anywhere, including at work. You can fork it only to send a pull request, and you can't publish, rebrand or sell your own version. The name and logo are not covered. See [LICENSE](https://github.com/Vyshnav2255/staged/blob/main/LICENSE) and [CONTRIBUTING](https://github.com/Vyshnav2255/staged/blob/main/CONTRIBUTING.md).
