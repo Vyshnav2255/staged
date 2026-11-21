@@ -6,7 +6,7 @@
 //   npm run release -- major "A note"     with a line shown at the top of "What's new"
 //   npm run release -- 1.0.0
 //
-// It bumps package.json, commits "🔖 Released x.y.z", tags vx.y.z and pushes both.
+// It bumps package.json (and the clone command in README.md), commits "🔖 Released x.y.z", tags vx.y.z and pushes both.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -50,7 +50,12 @@ const next = bumps[kind] || kind;
 
 pkg.version = next;
 fs.writeFileSync(pkgFile, JSON.stringify(pkg, null, 2) + '\n');
-git('add', 'package.json');
+const readme = path.join(HERE, 'README.md');
+try {
+  const md = fs.readFileSync(readme, 'utf8'), bumped = md.replace(/--branch v\d+\.\d+\.\d+/g, `--branch v${next}`);
+  if (bumped !== md) fs.writeFileSync(readme, bumped);
+} catch {}
+git('add', 'package.json', ...(fs.existsSync(readme) ? ['README.md'] : []));
 git('commit', '-q', '-m', `🔖 Released ${next}`);
 git('tag', '-a', `v${next}`, '-m', note || `staged ${next}`);
 try {

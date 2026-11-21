@@ -9,10 +9,12 @@
 You need [Node 18+](https://nodejs.org) and git. No dependencies.
 
 ```sh
-git clone https://github.com/Vyshnav2255/staged.git
+git clone --branch v1.0.0 https://github.com/Vyshnav2255/staged.git
 cd staged
 npm start
 ```
+
+This clones the latest release. staged updates itself from there, so you don't need to clone again.
 
 It asks how you want to run it:
 
