@@ -1,6 +1,6 @@
 {
   "name": "staged",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Every change across your git repos, sorted into features, commits and releases. Local, no AI needed.",
   "type": "module",
