@@ -1,17 +1,18 @@
 import { icon } from './icons.js';
-import { mountCommit, refreshCommit, setPanelRoute, openPanel, practiceCart, openStatement, applyStyle, learnedStyle } from './commit-view.js';
+import { mountCommit, refreshCommit, setPanelRoute, openPanel, practiceCart, openStatement, renameLast, applyStyle, learnedStyle } from './commit-view.js';
 import { mountTree } from './tree.js';
 import { mountHome } from './today.js';
 import { mountReadme } from './readme.js';
 import { mountSettings } from './settings.js';
 import { openProjectSettings } from './project.js';
+import { openRun, loadRun, running, runCache, runCommand, onRunChange } from './run.js';
 import { initUpdates } from './update.js';
 import { previewCommit } from './fx.js';
 import { soundOn, setSound } from './sfx.js';
 import { initSegs, initFluidHover, initMotionSystem, enter } from './motion.js';
 import { initPalette, open as openPalette } from './palette.js';
 import { openStory, releasePanel, openRelease, openChangelog } from './release.js';
-import { api, hostOf, commitUrl, esc, compact, ago, dShort, dLong, toast } from './ui.js';
+import { api, hostOf, commitUrl, esc, compact, ago, dShort, dLong, toast, closeDock, syncDock } from './ui.js';
 
 // ---------- constants ----------
 const TYPES = ['feature', 'ui', 'fix', 'perf', 'refactor', 'other'];
@@ -22,23 +23,10 @@ const DAY = 86400000;
 const WEEK = 7 * DAY;
 
 const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = new Intl.NumberFormat('en');
-const compact = (n) => (n >= 10000 ? (n / 1000).toFixed(0) + 'k' : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
-const dShort = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' });
-const dLong = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 const dMonth = new Intl.DateTimeFormat('en-GB', { month: 'short', year: 'numeric' });
 const dTime = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-function ago(t) {
-  const s = (Date.now() - t) / 1000;
-  if (s < 60) return 'just now';
-  if (s < 3600) return Math.floor(s / 60) + 'm ago';
-  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-  if (s < 86400 * 30) return Math.floor(s / 86400) + 'd ago';
-  if (s < 86400 * 365) return Math.floor(s / 86400 / 30) + 'mo ago';
-  return (s / 86400 / 365).toFixed(1).replace(/\.0$/, '') + 'y ago';
-}
 function weekStart(t) {
   const d = new Date(t);
   d.setHours(0, 0, 0, 0);
@@ -59,8 +47,8 @@ function weekLabel(ws) {
 }
 
 // ---------- state ----------
-const VIEWS = ['week', 'feature', 'release', 'tree', 'health', 'commit', 'readme', 'settings'];
-const PANE_VIEWS = ['tree', 'health', 'commit', 'readme', 'settings'];
+const VIEWS = ['week', 'feature', 'release', 'tree', 'commit', 'readme', 'settings'];
+const PANE_VIEWS = ['tree', 'commit', 'readme', 'settings'];
 const GLOBAL_VIEWS = ['readme', 'settings'];
 const isHome = () => state.repo === 'all' && state.view === 'week';
 const state = { repoState: null, data: null, repo: 'all', view: 'week', range: '12w', q: '', off: new Set(), open: new Set(), expanded: new Set() };
@@ -101,8 +89,10 @@ function allCommits() {
   const list = currentRepos().flatMap((r) => r.commits);
   return state.repo === 'all' ? list.sort((a, b) => b.t - a.t) : list;
 }
+// Releases always show every release, so the time range doesn't apply there.
+function range() { return state.view === 'release' ? 'all' : state.range; }
 function rangeStart() {
-  const n = RANGES[state.range];
+  const n = RANGES[range()];
   return n === Infinity ? -Infinity : weekStart(Date.now()) - (n - 1) * WEEK;
 }
 function matches(c) {
@@ -162,8 +152,11 @@ function renderHeader() {
   push.innerHTML = `${icon('ShoppingCart01', 16)}<span>Cart</span><b>${rs2?.ahead || ''}</b>`;
   push.title = 'Open the cart';
   $('#projectBtn').hidden = state.repo === 'all' || GLOBAL_VIEWS.includes(state.view);
+  paintRunBtn();
+  syncDock(GLOBAL_VIEWS.includes(state.view) ? 'all' : state.repo);
   $('#readmeLink').setAttribute('aria-current', state.view === 'readme');
   $('#settingsLink').setAttribute('aria-current', state.view === 'settings');
+  if (state.view === 'readme' || state.view === 'settings') $('#runBtn').hidden = true;
   if (state.view === 'readme') { $('#title').textContent = 'README'; $('#meta').innerHTML = '<span>How staged works</span>'; gh.hidden = true; push.hidden = true; }
   if (state.view === 'settings') { $('#title').textContent = 'Settings'; $('#meta').innerHTML = '<span>Repos, sound and updates</span>'; gh.hidden = true; push.hidden = true; }
   const viewTabs = [...document.querySelectorAll('#viewSeg button')];
@@ -372,7 +365,7 @@ function countTypes(list) {
 
 function row(c) {
   const showRepo = state.repo === 'all';
-  const areas = c.areas.slice(0, 3).map((a) => `<span class="area">${esc(a)}</span>`).join('') + (c.areas.length > 3 ? `<span class="area">+${c.areas.length - 3}</span>` : '');
+  const areas = c.areas.slice(0, 3).map((a, i) => `<span class="area${i ? ' is-more' : ''}">${esc(a)}</span>`).join('') + (c.areas.length > 3 ? `<span class="area is-more">+${c.areas.length - 3}</span>` : '');
   const d = new Date(c.t);
   const when = Date.now() - c.t < 6 * DAY ? ago(c.t) : dShort.format(d);
   const sha = c.sha.slice(0, 7);
@@ -391,19 +384,18 @@ function group(id, title, sub, commits, opts = {}) {
   const open = state.open.has(id);
   const shown = open ? commits : commits.slice(0, PAGE);
   const add = commits.reduce((s, c) => s + c.add, 0), del = commits.reduce((s, c) => s + c.del, 0);
-  return `<section class="group" id="${id}" ${glance(title, commits)}>
+  return `<section class="group" id="${id}">
     <div class="group-head">
       <span class="group-title">${esc(title)}</span>
       <span class="group-sub mono">${sub ? esc(sub) + ' · ' : ''}${commits.length} commit${commits.length === 1 ? '' : 's'} · +${compact(add)} −${compact(del)}</span>
       ${mixBar(countTypes(commits)).replace('class="mix"', 'class="group-mix"')}
-      <span class="group-tools"><button class="text-btn" data-notes="${id}" title="Copy as release notes (Markdown)">${icon('Layers01', 14)}Copy notes</button></span>
     </div>
     ${shown.map(row).join('')}
     ${commits.length > PAGE ? `<div class="more"><button class="text-btn" data-toggle="${id}">${open ? 'Show less' : `Show ${commits.length - PAGE} more`}</button></div>` : ''}
   </section>`;
 }
 
-let notesSource = new Map();
+let notesSource = new Map(), notesRange = null;
 let featureIndex = new Map();
 
 function renderWeek(list) {
@@ -437,16 +429,16 @@ function renderFeature(list) {
   featureIndex = map;
   const feats = [...map.values()].sort((a, b) => b.commits[0].t - a.commits[0].t || b.commits.length - a.commits.length);
   const limit = state.open.has('features') ? feats.length : 30;
-  let html = `<div class="cols"><span>Feature or area</span><span class="hide-sm">Change mix</span><span>Commits</span><span class="hide-sm">Lines</span><span class="hide-sm">Last change</span><span></span></div>`;
+  let html = `<div class="cols"><span>Feature or area</span><span>Change mix</span><span>Commits</span><span>Lines</span><span>Last change</span><span></span></div>`;
   for (const f of feats.slice(0, limit)) {
     const add = f.commits.reduce((s, c) => s + c.add, 0), del = f.commits.reduce((s, c) => s + c.del, 0);
     const exp = state.expanded.has(f.key);
-    html += `<button class="feat" data-feat="${esc(f.key)}" aria-expanded="${exp}" ${glance(f.name, f.commits)}>
+    html += `<button class="feat" data-feat="${esc(f.key)}" aria-expanded="${exp}">
       <span class="feat-name">${esc(f.name)}${state.repo === 'all' ? `<span class="mono">${esc(f.repo)}</span>` : ''}</span>
-      <span class="hide-sm">${mixBar(countTypes(f.commits), 96)}</span>
+      <span>${mixBar(countTypes(f.commits), 96)}</span>
       <span class="mono">${f.commits.length}</span>
-      <span class="mono hide-sm lines"><span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span></span>
-      <span class="mono hide-sm when" style="text-align:left">${ago(f.commits[0].t)}</span>
+      <span class="mono lines"><span class="a">+${compact(add)}</span> <span class="d">−${compact(del)}</span></span>
+      <span class="mono when" style="text-align:left">${ago(f.commits[0].t)}</span>
       <span class="chev">${icon('ArrowRight01', 14)}</span>
     </button>`;
     if (exp) {
@@ -532,6 +524,7 @@ function pane(name) {
 async function refreshRepoState() {
   if (state.repo === 'all') return;
   const name = state.repo;
+  loadRun(name);
   try {
     const s = await api(`/api/x/state?repo=${encodeURIComponent(name)}`);
     state.repoState = { ...s, repo: name };
@@ -582,11 +575,11 @@ function render() {
     if (state.repo === 'all') return pickRepoPane(el, v);
     if (v === 'commit') return mountCommit(el, ctxFor(v));
     if (v === 'tree') return mountTree(el, ctxFor(v));
-    if (v === 'health') return mountHealth(el, ctxFor(v));
   }
   renderLegend();
   const list = visible();
   renderStats(list);
+  notesRange = { title: range() === 'all' ? 'All changes' : `Last ${state.range}`, commits: list };
   renderChart(list);
   notesSource = new Map();
   const listEl = $('#list');
@@ -601,13 +594,13 @@ function openSettings(section = '') {
   settingsSection = section; state.view = 'settings'; render(); if (!section) scrollTo({ top: 0 });
 }
 async function openSettingsPane(el) {
-  if (!meta) meta = await Promise.all([api('/api/changes/engines').catch(() => ({})), api('/api/update').catch(() => ({}))]).then(([e, u]) => ({ claude: !!e.claude, version: u.current || '' }));
+  if (!meta) meta = await api('/api/update').catch(() => ({})).then((u) => ({ version: u.current || '' }));
   const section = settingsSection; settingsSection = '';
   await mountSettings(el, { ...meta, section, onChange: () => refreshCommit(), onRepos: () => load(false) });
 }
 
 function pickRepoPane(el, v) {
-  const what = { commit: 'commit changes in', tree: 'see the tree of', health: 'check the health of' }[v];
+  const what = { commit: 'commit changes in', tree: 'see the tree of' }[v];
   const repos = v === 'commit' ? state.data.repos.filter((r) => r.dirty).sort((a, b) => b.dirty - a.dirty) : state.data.repos;
   el.innerHTML = repos.length ? `<p class="note">Pick a repo to ${what}.</p><div class="cm-repos">${repos.map((r) => `<button class="cm-repo" data-pickrepo="${esc(r.name)}">
       <span class="feat-name">${esc(r.name)}</span><span class="mono muted">${v === 'commit' ? `${r.dirty} uncommitted file${r.dirty > 1 ? 's' : ''}` : `${fmt.format(r.commits.length)} commits · ${r.last ? ago(r.last) : ''}`}</span>${icon('ArrowRight01', 14)}
@@ -617,7 +610,7 @@ function pickRepoPane(el, v) {
 
 // ---------- notes ----------
 function notes(id) {
-  const src = notesSource.get(id);
+  const src = id === 'range' ? notesRange : notesSource.get(id);
   if (!src) return;
   let md = `## ${src.title}\n`;
   for (const t of TYPES) {
@@ -630,6 +623,19 @@ function notes(id) {
 }
 // ---------- events ----------
 $('#searchIcon').innerHTML = icon('Search01', 15);
+// Run: the project's own commands. The button says "Running" with a live dot while any of them is.
+function paintRunBtn() {
+  const b = $('#runBtn'), repo = state.repo;
+  b.hidden = repo === 'all' || GLOBAL_VIEWS.includes(state.view);
+  const n = running(repo).length;
+  b.classList.toggle('is-live', n > 0);
+  b.innerHTML = n ? `<i class="run-dot" aria-hidden="true"></i><span>Running${n > 1 ? ` ${n}` : ''}</span>` : `${icon('Play', 15)}<span>Run</span>`;
+  b.title = n ? running(repo).map((j) => j.label).join(', ') : 'Run this project';
+}
+onRunChange((repo) => { if (repo === state.repo) paintRunBtn(); });
+$('#runBtn').addEventListener('click', () => openRun(state.repo));
+// Keep the dot honest when something stops on its own (a build finishing) while the panel is closed.
+setInterval(() => { if (state.repo !== 'all' && running(state.repo).length && !document.hidden) loadRun(state.repo); }, 5000);
 $('#projectBtn').innerHTML = icon('Settings02', 16);
 const projectSettings = () => openProjectSettings(state.repo, { learned: learnedStyle(state.repo), onChange: () => applyStyle(state.repo) });
 $('#projectBtn').addEventListener('click', projectSettings);
@@ -674,7 +680,7 @@ function goHome() {
 }
 $('#brandHome').addEventListener('click', (e) => { e.preventDefault(); goHome(); });
 // Pushing happens in the side panel (hold to push). This button brings the panel back after you close it.
-$('#pushBtn').addEventListener('click', () => openPanel());
+$('#pushBtn').addEventListener('click', () => { closeDock(); openPanel(); });
 initPalette((q) => {
   const items = [];
   const repos = state.data ? state.data.repos : [];
@@ -685,6 +691,11 @@ initPalette((q) => {
   items.push({ group: 'Actions', label: "Print this week's statement", hint: 'every push this week, added up', run: () => setTimeout(openStatement, 200) });
   items.push({ group: 'Actions', label: soundOn() ? 'Turn sounds off' : 'Turn sounds on', hint: 'commit and push sounds', run: () => { setSound(!soundOn()); toast(soundOn() ? 'Sounds on' : 'Sounds off'); } });
   items.push({ group: 'Go to', label: 'Settings', hint: 'Repos, sound, updates', run: () => openSettings() });
+  if (state.repo !== 'all') {
+    items.push({ group: 'Run', label: 'Run…', hint: `${state.repo}: all its commands`, run: () => setTimeout(() => openRun(state.repo), 200) });
+    for (const c of runCache(state.repo)?.commands || []) items.push({ group: 'Run', label: `Run ${c.label}`, hint: c.cmd, run: () => { runCommand(state.repo, c.id); toast(`Running ${c.label}${c.kind === 'serve' ? '. The page opens when it’s ready.' : ''}`); } });
+  }
+  if (state.repo !== 'all') items.push({ group: 'Actions', label: 'Rename last commit', hint: `${state.repo}: change its message, even after a push`, run: () => setTimeout(() => renameLast(state.repo), 200) });
   if (state.repo !== 'all') items.push({ group: 'Go to', label: 'Project settings', hint: `${state.repo}: commit message style`, run: projectSettings });
   items.push({ group: 'Go to', label: 'README', hint: 'how staged works', run: () => { state.view = 'readme'; render(); scrollTo({ top: 0 }); } });
   for (const r of repos) items.push({ group: 'Repos', label: r.name, hint: r.dirty ? `${r.dirty} uncommitted` : r.last ? ago(r.last) : '', run: goRepo(r.name) });
@@ -739,23 +750,27 @@ $('#list').addEventListener('click', (e) => {
   if (n) { notes(n.dataset.notes); return; }
   const f = e.target.closest('[data-feat]');
   if (f) { const k = f.dataset.feat; state.expanded.has(k) ? state.expanded.delete(k) : state.expanded.add(k); render(); return; }
-  const g = e.target.closest('[data-goto]');
-  if (g) { state.view = g.dataset.goto; render(); return; }
-  if (e.target.closest('[data-recapcopy]')) { const r = recapFor(visible()); if (r) copy(r.text, 'Recap copied'); return; }
   const st = e.target.closest('[data-story]');
   if (st) { const f = featureIndex.get(st.dataset.story); if (f) openStory(f.name, f.commits, f.repo); return; }
   const repo = state.data.repos.find((r) => r.name === state.repo);
   if (e.target.closest('[data-release]') && repo) return openRelease(repo, () => load(false));
   if (e.target.closest('[data-changelog]') && repo) return openChangelog(repo, () => load(false));
 });
-$('#refresh').addEventListener('click', () => { load(true); refreshRepoState(); if (state.view === 'commit') refreshCommit(); });
+$('#copyRange').innerHTML = `${icon('Layers01', 14)}Copy notes`;
+$('#copyRange').addEventListener('click', () => notes('range'));
 addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
-  if (e.key === 'r' && !e.metaKey && !e.ctrlKey) { load(true); if (state.view === 'commit') refreshCommit(); }
+  if (e.key === 'r' && !e.metaKey && !e.ctrlKey) { load(); if (state.view === 'commit') refreshCommit(); }
 });
-let rT;
-addEventListener('resize', () => { clearTimeout(rT); rT = setTimeout(() => state.data && renderChart(visible()), 100); });
+// Redraw the chart whenever its box changes size: the window, or the cart opening beside it.
+let rT, chartW = 0;
+new ResizeObserver(([e]) => {
+  const w = Math.round(e.contentRect.width);
+  if (!w || w === chartW) return;
+  chartW = w; clearTimeout(rT);
+  rT = setTimeout(() => state.data && !$('#chart').closest('[hidden]') && renderChart(visible()), 60);
+}).observe($('#chart'));
 addEventListener('focus', () => { if (state.data) { load(false); if (state.view === 'commit') refreshCommit(); } });
 
 readHash();

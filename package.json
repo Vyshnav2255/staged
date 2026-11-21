@@ -9,7 +9,8 @@
     "setup": "node server.mjs --install",
     "remove": "node server.mjs --uninstall",
     "plan": "node server.mjs plan",
-    "release": "node release.mjs"
+    "release": "node release.mjs",
+    "test": "node --test test/engine.test.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -27,6 +28,7 @@
     "updater.mjs",
     "writer.mjs",
     "insights.mjs",
+    "run.mjs",
     "public/",
     "README.md"
   ],

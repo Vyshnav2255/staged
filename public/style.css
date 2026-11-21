@@ -61,13 +61,9 @@ a { color: inherit; }
 .ic { display: block; flex: none; }
 
 /* ---------- layout ---------- */
-.shell { display: grid; grid-template-columns: 264px minmax(0, 1fr); min-height: 100vh; }
-.side {
-  position: sticky; top: 0; height: 100vh;
-  display: flex; flex-direction: column;
-  border-right: .5px solid var(--line-strong);
-  padding: 20px 12px 16px;
-}
+.shell { min-height: 100vh; padding-left: 264px; }
+html { overscroll-behavior: none; }
+/* Fixed, not sticky: the sidebar never travels with the page, including the elastic bounce at either end. */
 /* Lockup: the mark's visible height equals the ascender, its bottom sits on the baseline, and the gap is half the x-height.
    At 18px Akt: ascender 12.6px -> 22px svg; 4.7px of empty viewBox below the box, 2.9px either side of the strokes. The mark sits about 0.95px lower than that, so the box dips just below the baseline (an overshoot, like round letters), balancing the g. */
 .brand { display: flex; align-items: baseline; gap: 1.6px; padding: 0 8px 18px; }
@@ -84,12 +80,7 @@ a { color: inherit; }
 .side-filter input::-webkit-search-cancel-button { display: none; }
 .repo-list { position: relative; isolation: isolate; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0; padding: 2px 4px 8px; }
 .side-empty { font-size: 12px; padding: 10px 8px; margin: 0; }
-.repo {
-  position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 10px;
-  padding: 8px 8px; border-radius: 8px; border: 0; background: none; text-align: left; cursor: pointer;
-}
 @media (hover: hover) { .repo-list .repo:hover:not([aria-current="true"]) { background: transparent; } }
-.repo[aria-current="true"] { background: var(--surface); box-shadow: var(--raise); }
 .repo-hover { position: absolute; z-index: 0; top: 0; left: 0; width: 0; height: 0; border-radius: 8px; background: var(--hover); opacity: 0; pointer-events: none; transform: translate3d(0, 0, 0); transition: transform var(--motion-fast-duration) var(--ease-spring-fast), opacity var(--motion-fast-duration) ease; }
 .repo-list.has-fluid-hover .repo-hover { opacity: 1; }
 @media (prefers-reduced-motion: reduce) { .repo-hover { transition: none; } }
@@ -98,7 +89,7 @@ a { color: inherit; }
 .repo-dirty { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--t-perf); margin-left: 2px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--t-perf) 18%, transparent); }
 .repo-meta { grid-column: 1; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 21px; margin-top: 1px; }
 
-.main { padding: 28px 40px 80px; max-width: 1120px; width: 100%; min-width: 0; }
+.main { padding: 28px 40px 80px; max-width: 1120px; width: 100%; min-width: 0; transition: padding-right .48s cubic-bezier(.32, .72, 0, 1), max-width .48s cubic-bezier(.32, .72, 0, 1); }
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .head h1 { font-size: 24px; font-weight: 500; letter-spacing: -0.015em; line-height: 1.2; margin: 0; }
 .head-meta { color: var(--muted); margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
@@ -805,13 +796,31 @@ a.brand:focus-visible { outline: 2px solid var(--logo-2); outline-offset: 2px; }
 .set-row-main .muted { font-size: 12.5px; line-height: 1.45; }
 .set-btns { display: flex; gap: 6px; }
 .text-btn.is-danger-soft:hover { color: var(--del); }
-.switch { position: relative; flex: none; width: 34px; height: 20px; }
-.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-.switch i { position: absolute; inset: 0; border-radius: 10px; background: var(--line-strong); transition: background-color .2s var(--ease-out); pointer-events: none; }
-.switch i::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / .25); transition: transform .2s var(--ease-out); }
-.switch input:checked + i { background: var(--logo-box); }
-.switch input:checked + i::after { transform: translateX(14px); }
-.switch input:focus-visible + i { outline: 2px solid var(--logo-2); outline-offset: 2px; }
+/* Switch: the toggle from the landing page's coffee add-on (user liked it). A recessed well, a
+   green fill that fades in, a white knob that springs across and stretches while pressed, and a
+   check that draws on once it lands. Markup stays a plain checkbox: <span class="switch"><input><i></i></span>. */
+.switch { --sw-spring: linear(0, .25 6%, .62 13%, .9 21%, 1.04 29%, 1.08 36%, 1.05 46%, 1.005 62%, .996 74%, 1); position: relative; flex: none; width: 48px; height: 28px; }
+.switch input { position: absolute; inset: 0; z-index: 2; opacity: 0; margin: 0; cursor: pointer; }
+.switch i { position: absolute; inset: 0; isolation: isolate; border-radius: 999px; pointer-events: none; background: color-mix(in srgb, var(--surface) 88%, var(--ink)); box-shadow: inset 0 1px 2px rgb(20 18 12 / .12), inset 0 0 0 1px rgb(20 18 12 / .08); transition: background-color .2s ease; }
+/* the fill: fades in under the knob */
+.switch i::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: linear-gradient(var(--logo-2), var(--logo-box)); box-shadow: inset 0 1px 2px rgb(0 0 0 / .25); opacity: 0; transition: opacity .2s ease; }
+/* the knob */
+.switch i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 999px; background: linear-gradient(#fff, #f3f1ec); box-shadow: 0 1px 1px rgb(0 0 0 / .14), 0 3px 6px -1px rgb(0 0 0 / .2), inset 0 1px 0 #fff; transition: translate .38s var(--sw-spring), width .12s ease; }
+/* the check on the knob: rides with it and draws on, left to right, once the switch is on */
+.switch::after { content: ''; position: absolute; z-index: 1; top: 3px; left: 3px; width: 22px; height: 22px; pointer-events: none; background: var(--logo-box);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2.2 5.2 4.2 7.1 7.8 3.2' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 10px 10px no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2.2 5.2 4.2 7.1 7.8 3.2' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 10px 10px no-repeat;
+  clip-path: inset(0 100% 0 0); transition: translate .38s var(--sw-spring), clip-path .2s cubic-bezier(.23, 1, .32, 1); }
+.switch:has(input:checked)::after { translate: 20px 0; clip-path: inset(0 0 0 0); transition-delay: 0s, .12s; }
+.switch:has(input:checked:not(:disabled):active)::after { translate: 17.5px 0; }
+.switch:has(input:not(:checked):not(:disabled):active)::after { translate: 2.5px 0; }
+.switch input:checked + i::before { opacity: 1; }
+.switch input:checked + i::after { translate: 20px 0; }
+.switch input:not(:disabled):active + i::after { width: 27px; }
+.switch input:checked:not(:disabled):active + i::after { translate: 15px 0; }
+.switch input:focus-visible + i { outline: 2px solid var(--logo-2); outline-offset: 3px; }
+.switch input:disabled { cursor: default; } .switch input:disabled + i { opacity: .55; }
+@media (prefers-reduced-motion: reduce) { .switch i::after, .switch::after { transition: none; } }
 
 /* ---------- v0.4: grouping with AI ---------- */
 .text-btn.is-working { position: relative; overflow: hidden; }
@@ -1069,14 +1078,16 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 :where(button, a, [role="button"], select) { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 :where(button, [role="button"]) { user-select: none; -webkit-touch-callout: none; }
 :where(button, [role="button"]):active:not(:disabled) { transform: scale(.97); }
-:where(.cm-card, .set-card, .h-card, .rp-card):active { transform: scale(.99); }
+/* Not .cm-card: a commit card can be thousands of pixels tall, so even a 1% press shrink moves its title and
+   cart button out from under the pointer between mousedown and mouseup, and the click never lands. */
+:where(.set-card, .h-card, .rp-card):active { transform: scale(.99); }
 .modal-wrap.is-open { background: rgb(0 0 0 / .3); backdrop-filter: blur(2px); }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .modal-wrap.is-open, :root:not([data-theme="light"]) .pal-wrap.is-open { background: rgb(0 0 0 / .9); }
 }
 :root[data-theme="dark"] .modal-wrap.is-open, :root[data-theme="dark"] .pal-wrap.is-open { background: rgb(0 0 0 / .9); }
 @media (prefers-reduced-motion: reduce) {
-  :where(button, [role="button"]):active:not(:disabled), :where(.cm-card, .set-card, .h-card, .rp-card):active { transform: none; }
+  :where(button, [role="button"]):active:not(:disabled), :where(.set-card, .h-card, .rp-card):active { transform: none; }
   .modal-wrap, .modal { transition-duration: 0.01ms; }
 }
 
@@ -1087,7 +1098,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 .pal-item:active, .emo:active {
   transform: scale(.97);
 }
-.cm-card:active, .set-card:active, .h-card:active, .rp-card:active { transform: scale(.99); }
+.set-card:active, .h-card:active, .rp-card:active { transform: scale(.99); }
 
 
 /* Move menu: a short list of the other commits, opened from the file row's Move button. */
@@ -1381,6 +1392,11 @@ body:has(.cm-list) { background: var(--cm-ground); }
 .cm-discard { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; transition: opacity .15s ease, background .15s ease, color .15s ease; opacity: 0; position: absolute; right: 6px; top: 50%; translate: 0 -50%; }
 .cm-extra { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; min-width: 0; flex-wrap: wrap; transition: transform .2s cubic-bezier(.23, 1, .32, 1); }
 .cm-file:hover .cm-extra, .cm-file:focus-within .cm-extra { transform: translateX(-26px); }
+/* Move sits just left of the trash and works the same way: it shows on row hover, and a click opens the commit picker beside it. */
+.cm-move { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; transition: opacity .15s ease, background .15s ease, color .15s ease; opacity: 0; position: absolute; right: 34px; top: 50%; translate: 0 -50%; }
+.cm-file:hover .cm-move, .cm-move:focus-visible, .cm-move[aria-expanded="true"] { opacity: 1; }
+.cm-move:hover, .cm-move[aria-expanded="true"] { background: var(--hover); color: var(--ink); }
+.cm-file:has(.cm-move):is(:hover, :focus-within) .cm-extra { transform: translateX(-54px); }
 @media (prefers-reduced-motion: reduce) { .cm-extra { transition: none; } }
 /* with an emoji, the line under the message starts where the words start */
 .cm-card:has(.cm-subject.has-emoji) .cm-sub { padding-left: 48px; }
@@ -1417,3 +1433,167 @@ body:has(.cm-list) { background: var(--cm-ground); }
 .cm-chunk { border: 1px solid var(--line); background: var(--surface); transition: opacity .15s; border-radius: 8px; box-shadow: 0 0 0 .5px var(--line-strong); overflow: hidden; }
 .cm-chunk .cm-dv { margin: 0; border-radius: 0; box-shadow: none; border-top: .5px solid var(--line); max-height: 260px; }
 .cm-dv .dl.a, .cm-dv .dl.d { display: grid; min-width: 0; }
+
+/* ---------- Run: a project's commands ---------- */
+.run-btn { padding: 0 11px 0 9px; }
+.run-btn.is-live { color: var(--ink); }
+.run-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--logo-2); box-shadow: 0 0 0 3px color-mix(in srgb, var(--logo-2) 22%, transparent); animation: run-breathe 1.6s ease-in-out infinite; }
+@keyframes run-breathe { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--logo-2) 8%, transparent); } }
+/* The Run panel sits on the same soft ground as the cart, so its white pieces read as raised. */
+.modal-wrap.is-dock.is-run .modal { background: var(--cm-ground); --rn-paper: #fffefb; --rn-amber: #eda100; --rn-screen: #151514; --rn-screen-ink: #cfcdc3; }
+.modal-wrap.is-run .modal-body { padding-top: 6px; }
+.rn-in { display: flex; flex-direction: column; }
+
+/* The light: off, amber while it starts, green while it runs, red when it fell over. */
+.rn-led { flex: none; display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); box-shadow: inset 0 .5px 1px rgb(0 0 0 / .25); --c: var(--logo-2); }
+.is-boot > .rn-led, .is-boot .rn-deck-top .rn-led, .is-stopping > .rn-led, .is-stopping .rn-deck-top .rn-led { --c: var(--rn-amber); }
+.is-failed > .rn-led, .is-failed .rn-deck-top .rn-led { --c: var(--del); }
+:is(.is-boot, .is-live, .is-busy, .is-stopping, .is-failed, .is-done) > .rn-led, :is(.is-boot, .is-live, .is-busy, .is-stopping, .is-failed, .is-done) .rn-deck-top .rn-led { background: var(--c); box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--c) 20%, transparent), 0 0 7px color-mix(in srgb, var(--c) 70%, transparent); }
+.is-done > .rn-led, .is-done .rn-deck-top .rn-led { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--c) 16%, transparent); }
+:is(.is-live, .is-busy) > .rn-led, :is(.is-live, .is-busy) .rn-deck-top .rn-led { animation: rn-breathe 2s ease-in-out var(--rn-sync, 0s) infinite; }
+:is(.is-boot, .is-stopping) > .rn-led, :is(.is-boot, .is-stopping) .rn-deck-top .rn-led { animation: rn-blink .8s ease-in-out var(--rn-sync, 0s) infinite; }
+@keyframes rn-breathe { 50% { opacity: .62; } }
+@keyframes rn-blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+/* The deck: the main command is a cassette deck. The label says what's playing, the reels turn while
+   it runs (fast while a server warms up, steady once it's live, still when it jams), a counter keeps
+   time, and three chunky keys run it: Play stays down while it plays, Stop pops it back up. */
+.rn-deck { position: relative; z-index: 1; padding: 8px 12px 14px; border-radius: 16px; background: linear-gradient(#f4f3ef, #e4e2dc); box-shadow: var(--raise), inset 0 1px 0 rgb(255 255 255 / .9); }
+.rn-deck-top { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 4px 4px 2px; }
+.rn-state { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); }
+.is-idle .rn-state, .is-stopped .rn-state { color: var(--muted); }
+.is-live .rn-state, .is-busy .rn-state, .is-done .rn-state { color: var(--logo-box); }
+.is-failed .rn-state { color: var(--del); }
+.rn-brand { flex: 1; display: flex; align-items: center; justify-content: flex-start; gap: 4px; margin-left: 2px; color: #b9b6ad; text-shadow: 0 1px 0 rgb(255 255 255 / .9), 0 -1px 0 rgb(20 18 12 / .14); }
+.rn-brand .ic { filter: drop-shadow(0 1px 0 rgb(255 255 255 / .9)) drop-shadow(0 -.5px 0 rgb(20 18 12 / .2)); }
+.rn-brand b { font: 600 13px Akt, sans-serif; letter-spacing: -.03em; }
+.rn-brand i { margin-left: 3px; padding-left: 7px; border-left: 1px solid #cfccc4; box-shadow: -1px 0 0 rgb(255 255 255 / .8); font-size: 8.5px; font-style: normal; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; }
+.rn-deck-top .icon-btn { box-shadow: none; background: none; color: var(--muted); }
+.rn-deck-top .icon-btn:hover, .rn-deck-top .icon-btn.is-on { background: rgb(20 18 12 / .06); color: var(--ink); }
+
+/* the tape */
+.rn-tape { position: relative; height: 164px; padding: 10px; border-radius: 11px; background: linear-gradient(#2c2c2a, #1b1b1a); box-shadow: inset 0 2px 5px rgb(0 0 0 / .55), inset 0 0 0 1px rgb(255 255 255 / .04), 0 1px 0 rgb(255 255 255 / .8); }
+.rn-label { position: relative; display: flex; flex-direction: column; gap: 0; height: 62px; padding: 11px 10px 0; border-radius: 4px; overflow: hidden; color: var(--ink);
+  background: #fbf8ee; box-shadow: 0 1px 2px rgb(0 0 0 / .4); }
+.rn-label::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 4px; background: var(--logo-2); } /* same colours as the status light */
+.is-failed .rn-label::before { background: var(--del); } .is-idle .rn-label::before, .is-stopped .rn-label::before { background: var(--line-strong); } :is(.is-boot, .is-stopping) .rn-label::before { background: var(--rn-amber, #eda100); }
+.rn-lab-side { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--logo-box); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.is-failed .rn-lab-side { color: var(--del); } .is-idle .rn-lab-side, .is-stopped .rn-lab-side { color: var(--muted); } .is-boot .rn-lab-side { color: #a87300; }
+.rn-lab-main { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 15px; font-weight: 500; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0; border: 0; background: none; color: inherit; text-align: left; font-family: inherit; }
+.rn-lab-main.mono { font-family: "Geist Mono", monospace; font-size: 14px; }
+.rn-lab-main.is-err { display: block; font-size: 11.5px; font-weight: 500; color: #52514e; }
+.rn-lab-main.is-quiet { color: var(--muted); font-weight: 400; }
+.rn-lab-main .ic { flex: none; color: var(--logo-box); }
+button.rn-lab-main { cursor: pointer; width: max-content; max-width: 100%; border-radius: 4px; }
+@media (hover: hover) { button.rn-lab-main:hover { text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--logo-box) 50%, transparent); text-underline-offset: 3px; } }
+.rn-lab-cmd { padding: 6px 0 3px; border-bottom: 1px solid color-mix(in srgb, var(--logo-box) 16%, transparent); line-height: 1.2; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rn-lab-main { padding-bottom: 3px !important; border-bottom: 1px solid color-mix(in srgb, var(--logo-box) 16%, transparent) !important; line-height: 1.25; }
+/* the window with the two reels and the tape between them */
+.rn-window { position: absolute; left: 38px; right: 38px; bottom: 14px; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border-radius: 32px; background: #0d0d0c; box-shadow: inset 0 0 0 2px #3a3a37, inset 0 3px 6px rgb(0 0 0 / .6); }
+.rn-reel { position: relative; z-index: 1; flex: none; width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: #5a4632; transition: box-shadow 1.2s var(--ease-out); }
+/* how much tape is on each reel: it moves from left to right as it plays */
+.rn-reel.is-l { box-shadow: 0 0 0 0 #5a4632; } .rn-reel.is-r { box-shadow: 0 0 0 0 #5a4632; }
+.rn-deck:is(.is-idle, .is-boot) .rn-reel.is-l, .rn-deck.is-stopped .rn-reel.is-l { width: 46px; height: 46px; }
+.rn-deck:is(.is-idle, .is-boot, .is-stopped) .rn-reel.is-r { width: 32px; height: 32px; margin-right: 7px; }
+.rn-deck:is(.is-live, .is-busy, .is-done, .is-failed, .is-stopping) .rn-reel.is-l { width: 36px; height: 36px; margin-left: 5px; }
+.rn-deck:is(.is-live, .is-busy, .is-done, .is-failed, .is-stopping) .rn-reel.is-r { width: 42px; height: 42px; margin-right: 2px; }
+.rn-reel i { width: 26px; height: 26px; border-radius: 50%; background: radial-gradient(circle, #f2f0ea 0 4px, #1b1b1a 4px 5.5px, transparent 5.5px), conic-gradient(from 0deg, #e2dfd6 0 40deg, #9a978d 40deg 60deg, #e2dfd6 60deg 100deg, #9a978d 100deg 120deg, #e2dfd6 120deg 160deg, #9a978d 160deg 180deg, #e2dfd6 180deg 220deg, #9a978d 220deg 240deg, #e2dfd6 240deg 280deg, #9a978d 280deg 300deg, #e2dfd6 300deg 340deg, #9a978d 340deg 360deg); box-shadow: 0 0 0 1px rgb(0 0 0 / .4); }
+.rn-band { flex: 1; height: 3px; margin: 0 -4px; align-self: flex-end; margin-bottom: 9px; background: #5a4632; border-radius: 2px; }
+.rn-deck:is(.is-live, .is-busy) .rn-reel i { animation: rn-spin 2.4s linear var(--rn-sync, 0s) infinite; }
+.rn-deck.is-boot .rn-reel i { animation: rn-spin .7s linear var(--rn-sync, 0s) infinite; }
+.rn-deck.is-stopping .rn-reel i { animation: rn-spin 3.6s cubic-bezier(.2, .6, .4, 1) var(--rn-sync, 0s) infinite; }
+@keyframes rn-spin { to { transform: rotate(-360deg); } }
+.rn-screw { position: absolute; bottom: 8px; width: 7px; height: 7px; border-radius: 50%; background: radial-gradient(circle, #555 0 1px, #2a2a28 1px); box-shadow: inset 0 0 0 1px #3d3d3a; }
+.rn-screw.is-a { left: 12px; } .rn-screw.is-b { right: 12px; }
+
+/* the counter, the command and a level meter that dances while it plays */
+.rn-count { position: absolute; z-index: 2; left: 50%; top: 13px; transform: translateX(-50%); padding: 2px 6px; border-radius: 4px; background: #000; color: var(--logo-1); font-size: 11.5px; font-weight: 600; letter-spacing: .08em; box-shadow: inset 0 0 0 1px #34342f; font-variant-numeric: tabular-nums; }
+.is-idle .rn-count, .is-stopped .rn-count { color: #6d6b64; } .is-failed .rn-count { color: #f08a7c; }
+
+/* the keys: chunky, they travel down when pressed, and Play stays down while it plays */
+.rn-keys { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; margin-top: 12px; padding: 4px; border-radius: 13px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.rn-k { position: relative; display: flex; align-items: center; justify-content: center; gap: 7px; height: 40px; border: 0; border-radius: 9px; cursor: pointer; background: transparent; font: 500 13.5px Akt, sans-serif; letter-spacing: -.005em; color: var(--ink);
+  transition: background-color .18s ease, color .18s ease, box-shadow .18s ease, opacity .18s ease, transform .12s var(--ease-out); }
+.rn-k .ic { flex: none; }
+.rn-k span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.rn-k .ic { width: 17px; height: 17px; }
+.rn-k:active:not(:disabled) { transform: scale(.97); }
+.rn-k-out.is-on { background: #fff; box-shadow: 0 1px 2px rgb(20 18 12 / .12), 0 0 0 1px rgb(20 18 12 / .05); }
+.is-failed .rn-k-out[data-rn-log] .ic { color: var(--del); }
+.rn-k.is-down { background: #fff; color: #2f5a10; cursor: default; box-shadow: 0 1px 2px rgb(20 18 12 / .12), 0 0 0 1px rgb(20 18 12 / .05); }
+.rn-k.is-down .ic { color: var(--logo-box); }
+.rn-k[data-rn-stop] .ic { color: var(--del); }
+/* tooltip above each key */
+.rn-k[data-tip]::after { content: attr(data-tip); position: absolute; left: 50%; top: calc(100% + 9px); z-index: 5; padding: 5px 8px; border-radius: 7px; background: #0b0b0b; color: #fff; font: 500 12px Akt, sans-serif; letter-spacing: 0; white-space: nowrap; pointer-events: none; opacity: 0; transform: translate(-50%, -3px); transition: opacity .14s ease, transform .14s var(--ease-out); box-shadow: 0 4px 12px rgb(20 18 12 / .2); }
+.rn-k[data-tip]::before { content: ''; position: absolute; left: 50%; top: calc(100% + 4px); z-index: 6; width: 0; height: 0; margin-left: -5px; border: 5px solid transparent; border-top: 0; border-bottom-color: #0b0b0b; pointer-events: none; opacity: 0; transform: translateY(-3px); transition: opacity .14s ease, transform .14s var(--ease-out); }
+.rn-k[data-tip]:hover::before, .rn-k[data-tip]:focus-visible::before { opacity: 1; transform: none; transition-delay: .25s; }
+.rn-k[data-tip]:hover::after, .rn-k[data-tip]:focus-visible::after { opacity: 1; transform: translate(-50%, 0); transition-delay: .25s; }
+
+.rn-k:disabled:not(.is-down) { cursor: default; }
+.rn-k:disabled:not(.is-down) .ic { opacity: .38; }
+.rn-k.is-ink:not(:disabled) { background: #0b0b0b; color: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / .25); }
+@media (hover: hover) { .rn-k:not(:disabled):not(.is-down):not(.is-ink):hover { background: color-mix(in srgb, var(--ink) 6%, transparent); } .rn-k.is-ink:not(:disabled):hover { background: #262624; } }
+.rn-k:focus-visible, .rn-lab-main:focus-visible, .rn-chip:focus-visible, .rn-addbtn:focus-visible { outline: 2px solid var(--logo-2); outline-offset: 2px; }
+
+/* the moments: a fresh label slaps on when it goes live or finishes, the deck jolts when it jams */
+.rn-deck.is-fresh:is(.is-live, .is-done) .rn-label { animation: rn-label .6s cubic-bezier(.3, 1.4, .5, 1) both; }
+@keyframes rn-label { from { transform: translateY(-8px) rotate(-1.5deg); opacity: 0; } }
+.rn-deck.is-fresh.is-failed { animation: rn-jam .45s ease-out; }
+@keyframes rn-jam { 20% { transform: translateX(-3px) rotate(-.4deg); } 45% { transform: translateX(3px) rotate(.3deg); } 70% { transform: translateX(-1.5px); } }
+.rn-deck.is-fresh .rn-led::after { content: ''; display: block; width: 100%; height: 100%; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--c); animation: rn-ping .9s var(--ease-out) both; }
+@keyframes rn-ping { from { transform: scale(1); opacity: .9; } to { transform: scale(4.2); opacity: 0; } }
+.rn-deck + .rn-log { margin-top: 12px; }
+
+/* Output: a small dark screen. */
+.rn-log { position: relative; margin: 12px 0 0; padding: 11px 12px; max-height: 232px; overflow: auto; font-size: 11px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; border-radius: 12px; background: var(--rn-screen); color: var(--rn-screen-ink); box-shadow: inset 0 0 0 .5px rgb(255 255 255 / .08), 0 1px 2px rgb(20 18 12 / .2), 0 4px 8px -4px rgb(20 18 12 / .3); scrollbar-color: rgb(255 255 255 / .18) transparent; }
+.rn-ln.is-url { color: var(--logo-1); }
+.rn-ln.is-err { color: #f08a7c; }
+.rn-ln.is-none { color: #85837c; }
+.rn-ln.is-new { display: inline-block; width: 100%; animation: rn-line .32s var(--ease-out) both; }
+@keyframes rn-line { from { opacity: 0; transform: translateY(4px); } }
+.rn-caret { display: inline-block; width: 6px; height: 12px; vertical-align: -2px; border-radius: 1px; background: var(--logo-2); animation: rn-blink 1.1s steps(2, jump-none) var(--rn-sync, 0s) infinite; }
+
+/* The other commands: one raised card, a light and a play button each. */
+.rn-h { margin: 22px 2px 8px; }
+.rn-list { padding: 0 8px 0 12px; border-radius: 14px; background: var(--surface); box-shadow: var(--raise); }
+.rn-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; column-gap: 10px; padding: 11px 0; }
+.rn-trk { width: 22px; margin-top: 2px; font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rn-row.is-live .rn-trk, .rn-row.is-busy .rn-trk, .rn-row.is-done .rn-trk { color: var(--logo-box); } .rn-row.is-failed .rn-trk { color: var(--del); } .rn-row.is-boot .rn-trk { color: #a87300; }
+.rn-list .rn-row + .rn-row, .rn-list .rn-log + .rn-row { border-top: var(--dash); }
+.rn-list .rn-log { margin: 0 4px 12px 0; }
+.rn-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rn-main b { font-weight: 500; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rn-st { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 11.5px; font-weight: 500; color: var(--ink-2); }
+.rn-st .mono { font-size: 11px; color: var(--muted); }
+.rn-when { font-weight: 400; color: var(--muted); }
+.is-failed > .rn-main .rn-st > span:first-child { color: var(--del); }
+.is-live > .rn-main .rn-st > span:first-child, .is-busy > .rn-main .rn-st > span:first-child { color: var(--logo-box); }
+.rn-chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px 0 8px; border: 0; border-radius: 999px; cursor: pointer; background: color-mix(in srgb, var(--logo-2) 14%, transparent); color: var(--logo-box) !important; font-size: 11px !important; transition: transform var(--motion-fast-duration) var(--ease-spring-fast); }
+.rn-chip:active { transform: scale(.96); }
+.rn-tools { display: flex; align-items: center; gap: 4px; margin-top: 3px; }
+.rn-more { opacity: .55; } .rn-row:hover .rn-more, .rn-more:focus-visible, .rn-deck .rn-more { opacity: 1; }
+.rn-tools .icon-btn.is-on { background: var(--hover); color: var(--ink); }
+.rn-tools .rn-stop { color: var(--del); }
+.rn-tools .rn-more { box-shadow: none; background: none; }
+.rn-empty { color: var(--muted); margin: 4px 2px 16px; }
+
+/* Add your own: a dashed blank where the next card would go. */
+.rn-addbtn { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; height: 40px; margin-top: 12px; border: 1px dashed var(--line-strong); border-radius: 12px; background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; transition: color .15s ease, border-color .15s ease, background-color .15s ease, transform var(--motion-fast-duration) var(--ease-spring-fast); }
+@media (hover: hover) { .rn-addbtn:hover { color: var(--ink); border-color: var(--muted); background: color-mix(in srgb, var(--surface) 60%, transparent); } }
+.rn-addbtn:active { transform: scale(.985); }
+.rn-add { display: flex; flex-direction: column; margin-top: 12px; padding: 14px; border-radius: 14px; background: var(--surface); box-shadow: var(--raise); }
+.rn-add .field { margin-bottom: 12px; }
+.rn-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.35; color: var(--ink-2); }
+.rn-check input { margin-top: 2px; accent-color: var(--logo-box); }
+.rn-add-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+@media (prefers-reduced-motion: reduce) { .run-dot, .rn-led, .rn-led::after, .rn-reel i, .rn-deck, .rn-label, .rn-ln, .rn-caret { animation: none !important; } .rn-k, .rn-reel { transition: none; } }
+
+/* ---------- docked side panels: part of the app, like the cart (never a popup) ---------- */
+.modal-wrap.is-dock { inset: 0 0 0 auto; width: auto; padding: 0; background: none !important; backdrop-filter: none; pointer-events: none; z-index: 35; display: block; }
+.modal-wrap.is-dock .modal { pointer-events: auto; position: fixed; top: 0; right: 0; bottom: 0; height: 100%; max-height: none; width: 360px; border-radius: 0; opacity: 1; background: var(--surface); box-shadow: none; border-left: .5px solid var(--line-strong); transform: translateX(100%); transition: transform .48s cubic-bezier(.32, .72, 0, 1); }
+.modal-wrap.is-dock.is-open .modal { transform: none; }
+.modal-wrap.is-dock.is-closing .modal { transition-duration: .32s; transition-timing-function: cubic-bezier(.32, .72, 0, 1); }
+.modal-wrap.is-dock.is-ps .modal { width: 360px; }
+@media (min-width: 1180px) { body.has-dock .main { padding-right: calc(40px + var(--dock-w, 360px)); max-width: calc(1120px + var(--dock-w, 360px)); } }
+@media (max-width: 1179px) { .modal-wrap.is-dock .modal { box-shadow: var(--raise-lg); } }
+@media (prefers-reduced-motion: reduce) { .modal-wrap.is-dock .modal { transition: none; } }

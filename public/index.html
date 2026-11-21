@@ -29,6 +29,7 @@
           <div class="head-meta mono" id="meta"></div>
         </div>
         <div class="head-actions">
+          <button class="push-btn run-btn" id="runBtn" hidden title="Run this project"></button>
           <button class="push-btn" id="pushBtn" hidden title="Push your commits"></button>
           <a class="icon-btn" id="ghLink" target="_blank" rel="noopener" hidden title="Open the repo online"></a>
           <button class="icon-btn" id="projectBtn" hidden title="Project settings" aria-label="Project settings"></button>
@@ -41,7 +42,6 @@
           <button data-v="feature" role="tab">Features</button>
           <button data-v="release" role="tab">Releases</button>
           <button data-v="tree" role="tab">Tree</button>
-          <button data-v="health" role="tab">Health</button>
           <button data-v="commit" role="tab">Commit <span class="count mono" id="dirtyCount"></span></button>
         </div>
         <div class="seg scroll-fade-x" id="rangeSeg" aria-label="Time range">
@@ -50,6 +50,7 @@
           <button data-r="1y">1y</button>
           <button data-r="all">All</button>
         </div>
+        <button class="text-btn" id="copyRange" title="Copy this range as release notes (Markdown)"></button>
         <label class="search">
           <span id="searchIcon"></span>
           <input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false">

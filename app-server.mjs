@@ -11,6 +11,7 @@ import os from 'node:os';
 import { c, link, card, row, spinner, log, key } from './tui.mjs';
 import { commitRoutes } from './commit.mjs';
 import { insightRoutes } from './insights.mjs';
+import { runRoutes } from './run.mjs';
 import { updater } from './updater.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -328,6 +329,19 @@ async function readRepo(name, dir) {
     for (const t of tagNames) tags.push({ name: t, sha, date });
     commits.push({ sha, author, date, subject, type: c.type, guessed: !!c.guessed, mark: c.mark, text: c.text, add, del, files, areas, tags: tagNames });
   }
+  // A tag on a merge commit isn't in the log above (it skips merges), so pin it to the newest
+  // non-merge commit it contains. That way every tag shows up as a release.
+  try {
+    const seen = new Set(tags.map((t) => t.name));
+    const bySha = new Map(commits.map((c) => [c.sha, c]));
+    const refs = (await git(dir, ['for-each-ref', '--format=%(refname:short)', 'refs/tags'])).split('\n').map((x) => x.trim()).filter((x) => x && !seen.has(x));
+    for (const t of refs) {
+      const sha = (await git(dir, ['rev-list', '-n1', '--no-merges', t + '^{commit}']).catch(() => '')).trim();
+      const c = bySha.get(sha);
+      if (c && !c.tags.includes(t)) { c.tags.push(t); c.tags.sort((x, y) => y.localeCompare(x, undefined, { numeric: true })); }
+    }
+    if (refs.length) { tags.length = 0; for (const c of commits) for (const t of c.tags) tags.push({ name: t, sha: c.sha, date: c.date }); }
+  } catch {}
   const hasWorkflows = fs.existsSync(path.join(dir, '.github', 'workflows'));
   const web = toWeb(remote);
   const data = { name, branch, remote: web.url, provider: web.provider, head, commits, tags, hasWorkflows };
@@ -404,6 +418,11 @@ const insights = insightRoutes({
   repoDir: async (name) => (await listRepos()).find((r) => r.name === name)?.dir || null,
 });
 
+const runs = runRoutes({
+  repoDir: async (name) => (await listRepos()).find((r) => r.name === name)?.dir || null,
+  store: path.join(CONFIG_DIR, 'run.json'),
+});
+
 
 const updates = updater({
   dir: HERE,
@@ -462,6 +481,7 @@ const server = http.createServer(async (req, res) => {
     if (await updates(req, res, url, sendJson)) return;
     if (await commits(req, res, url, sendJson)) return;
     if (await insights(req, res, url, sendJson)) return;
+    if (await runs(req, res, url, sendJson)) return;
     if (url.pathname === '/api/repos/logo') {
       // A repo's own logo or icon, for its tile in Settings. Only for repos staged already lists.
       const want = expand(url.searchParams.get('path') || '');

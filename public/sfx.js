@@ -207,3 +207,9 @@ export function sfxGrouped(n = 3) {
 
 // Played when sounds are turned on, so you hear the volume.
 function chime() { note(hz(7), { dur: 0.4, vol: 0.12 }); note(hz(12), { at: 0.08, dur: 0.6, vol: 0.1 }); }
+
+// A tape deck key going down (Play) or popping back up (Stop): a short plastic clunk.
+export function sfxClunk(up = false) {
+  air({ dur: 0.05, vol: 0.08, from: up ? 2600 : 1800, to: 400, q: 1.4 });
+  note(hz(up ? -17 : -22), { dur: 0.08, vol: 0.09, type: 'sine', glide: 0.7, wet: false });
+}
