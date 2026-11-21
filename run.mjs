@@ -4,7 +4,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
+
+const WIN = process.platform === 'win32';
+const SHELL = process.env.SHELL || ['/bin/zsh', '/bin/bash'].find((s) => fs.existsSync(s)) || '/bin/sh';
 
 const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
 const has = (dir, f) => fs.existsSync(path.join(dir, f));
@@ -66,22 +69,31 @@ export function runRoutes({ repoDir, store }) {
     const [cmd, a] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
     execFile(cmd, a, () => {});
   };
+  // Stops the command and everything it started (a dev server's watchers, node under npm).
+  // Windows has no process groups, so taskkill walks the tree instead.
+  const killTree = (j, force) => {
+    if (WIN) { try { execFileSync('taskkill', ['/pid', String(j.child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} return; }
+    try { process.kill(-j.child.pid, force ? 'SIGKILL' : 'SIGTERM'); } catch { try { j.child.kill(force ? 'SIGKILL' : 'SIGTERM'); } catch {} }
+  };
   const stop = (j) => {
     if (j.state !== 'running') return;
     j.state = 'stopping';
-    try { process.kill(-j.child.pid, 'SIGTERM'); } catch { try { j.child.kill('SIGTERM'); } catch {} }
-    setTimeout(() => { if (j.state === 'stopping') { try { process.kill(-j.child.pid, 'SIGKILL'); } catch {} } }, 4000).unref();
+    killTree(j, false);
+    setTimeout(() => { if (j.state === 'stopping') killTree(j, true); }, 4000).unref();
   };
   // A staged restart shouldn't leave dev servers holding their ports with no way to stop them.
-  const killAll = () => { for (const j of jobs.values()) if (j.state === 'running' || j.state === 'stopping') { try { process.kill(-j.child.pid, 'SIGTERM'); } catch {} } };
+  const killAll = () => { for (const j of jobs.values()) if (j.state === 'running' || j.state === 'stopping') killTree(j, false); };
   process.on('exit', killAll);
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => { killAll(); process.exit(0); });
 
   function start(repo, dir, c, { openWhenReady }) {
     const key = repo + '\0' + c.id, old = jobs.get(key);
     if (old && (old.state === 'running' || old.state === 'stopping')) return old;
-    const shell = process.env.SHELL || '/bin/zsh';
-    const child = spawn(shell, ['-ilc', c.cmd], { cwd: dir, detached: true, env: { ...process.env, FORCE_COLOR: '0', CI: process.env.CI || '', BROWSER: 'none' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const env = { ...process.env, FORCE_COLOR: '0', CI: process.env.CI || '', BROWSER: 'none' };
+    // A login shell on macOS and Linux, so rbenv, nvm and the rest of your PATH are there. cmd on Windows.
+    const child = WIN
+      ? spawn(c.cmd, { cwd: dir, shell: true, windowsHide: true, env, stdio: ['ignore', 'pipe', 'pipe'] })
+      : spawn(SHELL, ['-ilc', c.cmd], { cwd: dir, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
     const j = { ...c, repo, child, state: 'running', code: null, url: null, at: Date.now(), ended: null, log: [], size: 0, openWhenReady };
     const onData = (buf) => {
       // the login shell's own noise about job control isn't the command's output
