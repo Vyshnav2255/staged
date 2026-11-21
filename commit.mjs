@@ -2153,7 +2153,6 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
   const lastDiscard = new Map(); // repo -> what the last discard threw away
   let styleCache = { at: 0, profile: null };
   let stylePromise = null;
-  let engineStatsCache = { at: 0, value: null };
   async function userStyle() {
     if (styleCache.profile && Date.now() - styleCache.at < 5 * 60_000) return styleCache.profile;
     if (!stylePromise) stylePromise = (async () => {
@@ -2171,74 +2170,25 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
     req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch (e) { reject(e); } });
   });
 
-  async function recentSubjects(dir) {
-    return (await git(dir, ['log', '-20', '--no-merges', '--format=%s']).catch(() => '')).split('\n').filter(Boolean);
-  }
-
   async function analyseRepo(name, dir, priorStyle, allLearned = loadLearned(store)) {
     const files = await readChanges(git, dir, makeAreaFn(dir));
     const hist = await historyFor(git, dir, path.join(path.dirname(store), 'group-index'), priorStyle);
     const learned = allLearned[hist.repoId] || allLearned[name] || {};
+    const cochange = cochangeFor(hist, files.map((f) => f.path), priorStyle.crossRepoPairs);
+    const apart = new Set(learned.apart || []);
     const groups = suggestGroups(files, {
-      cochange: cochangeFor(hist, files.map((f) => f.path), priorStyle.crossRepoPairs),
+      cochange,
       together: new Set(learned.together || []),
-      apart: new Set(learned.apart || []),
-      verbs: hist.verbs, tense: hist.tense,
+      apart,
+      verbs: hist.verbs, tense: hist.tense, history: hist.commits,
       emojiForType: { ...hist.emojiForType, ...(learned.emojiByType || {}) },
     });
+    const emojiForType = { ...hist.emojiForType, ...(learned.emojiByType || {}) };
     return { files, hist, learned, groups };
   }
 
   return async function handle(req, res, url, send) {
     if (!url.pathname.startsWith('/api/changes')) return false;
-    if (url.pathname === '/api/changes/engine-stats' && req.method === 'GET') {
-      if (engineStatsCache.value && Date.now() - engineStatsCache.at < 15000) {
-        send(res, 200, JSON.stringify(engineStatsCache.value));
-        return true;
-      }
-      const profile = await userStyle();
-      const learned = loadLearned(store);
-      let together = 0, apart = 0, emojiMappings = 0;
-      for (const value of Object.values(learned)) {
-        together += value.together?.length || 0;
-        apart += value.apart?.length || 0;
-        emojiMappings += Object.keys(value.emojiByType || {}).length;
-      }
-      const repos = listRepos ? await listRepos().catch(() => []) : [];
-      const pending = [];
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < repos.length) {
-          const repo = repos[cursor++], name = repo.name || path.basename(repo.dir || '');
-          try {
-            const status = await git(repo.dir, ['status', '--porcelain=v1', '-z', '-uall']);
-            if (!status) continue;
-            const result = await analyseRepo(name, repo.dir, profile, learned);
-            const decisions = result.groups.filter((group) => group.files.length > 1);
-            const decisionsWeight = decisions.reduce((sum, group) => sum + group.files.length * (group.files.length - 1) / 2, 0);
-            pending.push({ repo: name, groups: decisions.length, weight: decisionsWeight,
-              weightedConfidence: decisions.reduce((sum, group) => sum + group.confidence * group.files.length * (group.files.length - 1) / 2, 0),
-              reviewGroups: decisions.filter((group) => group.review).length });
-          } catch {}
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(4, repos.length) }, worker));
-      const currentWeight = pending.reduce((sum, item) => sum + item.weight, 0);
-      const stats = {
-        engine: 'Commit Compass',
-        repositories: profile.indexedRepos, commits: profile.indexedCommits, indexedFiles: profile.indexedFiles,
-        messageSamples: profile.commits, recurringPathPairs: profile.crossRepoPairs.size,
-        learnedTogether: together, learnedApart: apart, learnedEmojiMappings: emojiMappings,
-        style: { format: profile.format, tense: profile.tense, averageSubjectLength: profile.averageSubjectLength },
-        currentScore: currentWeight ? pending.reduce((sum, item) => sum + item.weightedConfidence, 0) / currentWeight : null,
-        currentScoreDecisions: pending.reduce((sum, item) => sum + item.groups, 0),
-        currentScoreRepos: pending.filter((item) => item.groups).length,
-        currentScoreReviewGroups: pending.reduce((sum, item) => sum + item.reviewGroups, 0),
-      };
-      engineStatsCache = { at: Date.now(), value: stats };
-      send(res, 200, JSON.stringify(stats));
-      return true;
-    }
     if (url.pathname === '/api/changes/pushes' && req.method === 'GET') {
       // Every push since a date, across all repos, read from git's own record: each time you push,
       // git moves the remote-tracking branch and writes "update by push" in that branch's reflog.
@@ -2302,22 +2252,6 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
         const branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim();
         return ok({ repo: name, branch, canUndo: lastCommitByTool.has(name), outgoing: await outgoingCommits(git, dir, lastCommitByTool.get(name)?.sha) }), true;
       }
-      if (sub === '/message-local' && req.method === 'POST') {
-        // The built-in writer, for just these files: used by "Rewrite" when no AI is around.
-        const body = await readJson(req);
-        const want = new Set(body.files || []);
-        const files = (await readChanges(git, dir, makeAreaFn(dir))).filter((f) => want.has(f.path));
-        if (!files.length) return fail('Pick at least one file', 400), true;
-        const hist = await historyFor(git, dir, path.join(path.dirname(store), 'group-index'), await userStyle());
-        const learnedAll = loadLearned(store), learned = learnedAll[hist.repoId] || learnedAll[name] || {};
-        const tweaks = files.length > 1 && files.every((f) => f.status !== 'A' && f.add + f.del <= 12);
-        return ok({ title: labelFor(files), ...messageFor(files, tweaks ? 'Small tweaks' : labelFor(files), tweaks, hist.verbs, hist.tense, { ...hist.emojiForType, ...(learned.emojiByType || {}) }) }), true;
-      }
-      if (sub === '/context' && req.method === 'GET') {
-        // What an on-device model needs to write in your voice: recent subjects and their tense.
-        const hist = await historyFor(git, dir, path.join(path.dirname(store), 'group-index'), await userStyle());
-        return ok({ recent: await recentSubjects(dir), tense: hist.tense }), true;
-      }
       if (sub === '/discard' && req.method === 'POST') {
         const body = await readJson(req);
         const current = parseStatus(await git(dir, ['status', '--porcelain=v1', '-z', '-uall']));
@@ -2349,11 +2283,10 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
         learned.emojiByType ||= {};
         learned.emojiByType[type] = emoji;
         saveLearned(store, all);
-        engineStatsCache = { at: 0, value: null };
         return ok({ saved: true }), true;
       }
       if (sub === '/learn' && req.method === 'POST') {
-        // { file, from: [paths left behind], to: [paths joined] }
+        // Single-file moves and explicit merge/dismiss decisions both teach path pairs.
         const body = await readJson(req);
         const all = loadLearned(store);
         const root = (await git(dir, ['rev-parse', '--show-toplevel']).catch(() => dir)).trim() || dir;
@@ -2361,6 +2294,8 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
         const r = (all[repoId] ||= { together: [...(old.together || [])], apart: [...(old.apart || [])] });
         const k = (a, b) => (a < b ? a + '\0' + b : b + '\0' + a);
         const tog = new Set(r.together), ap = new Set(r.apart);
+        for (const [a, b] of body.togetherPairs || []) { const key = k(a, b); tog.add(key); ap.delete(key); }
+        for (const [a, b] of body.apartPairs || []) { const key = k(a, b); ap.add(key); tog.delete(key); }
         for (const o of body.from || []) { const key = k(body.file, o); ap.add(key); tog.delete(key); }
         for (const o of body.to || []) { const key = k(body.file, o); tog.add(key); ap.delete(key); }
         r.together = [...tog].slice(-2000); r.apart = [...ap].slice(-2000);
@@ -2382,6 +2317,51 @@ export function commitRoutes({ git, makeAreaFn, repoDir, listRepos, onCommitted,
         styleCache.at = 0;
         onCommitted && onCommitted(name);
         return ok({ sha, files: picked.length }), true;
+      }
+      // Rename the newest commit, as long as it hasn't been pushed: only the first line changes,
+      // the description, the files and the author stay as they were.
+      if (sub === '/head' && req.method === 'GET') {
+        const head = (await git(dir, ['rev-parse', 'HEAD']).catch(() => '')).trim();
+        if (!head) return ok({ sha: '' }), true;
+        const subject = (await git(dir, ['log', '-1', '--format=%s', head])).trim();
+        const pushed = !!(await git(dir, ['branch', '-r', '--contains', head]).catch(() => '')).trim();
+        const upSha = pushed ? (await git(dir, ['rev-parse', '@{u}']).catch(() => '')).trim() : '';
+        return ok({ sha: head, subject, pushed, renamable: !pushed || upSha === head }), true;
+      }
+      if (sub === '/rename' && req.method === 'POST') {
+        const body = await readJson(req);
+        const subject = String(body.message || '').split('\n')[0].trim();
+        if (!subject) return fail('Write a commit message first', 400), true;
+        const head = (await git(dir, ['rev-parse', 'HEAD'])).trim();
+        if (body.sha && body.sha !== head) return fail('That isn’t the newest commit any more. Refresh and try again.', 409), true;
+        const onRemote = (await git(dir, ['branch', '-r', '--contains', head]).catch(() => '')).trim();
+        // Already pushed: only the newest commit on the branch it was pushed to, and only when asked.
+        // The remote is then updated with --force-with-lease, which refuses if anyone pushed since.
+        let up = null;
+        if (onRemote) {
+          const upstream = (await git(dir, ['rev-parse', '--abbrev-ref', '@{u}']).catch(() => '')).trim();
+          const upSha = upstream ? (await git(dir, ['rev-parse', '@{u}']).catch(() => '')).trim() : '';
+          if (!upstream || upSha !== head) return fail('Only the newest pushed commit can be renamed.', 409), true;
+          if (!body.pushed) return fail('That commit is already pushed. Renaming it rewrites it on the remote.', 409), true;
+          const remote = upstream.slice(0, upstream.indexOf('/')), rbranch = upstream.slice(upstream.indexOf('/') + 1);
+          up = { remote, rbranch };
+        }
+        const old = await git(dir, ['log', '-1', '--format=%B', head]);
+        const rest = old.replace(/^[^\n]*\n?/, '').replace(/\s+$/, '');
+        await git(dir, ['commit', '--amend', '--only', '--allow-empty', '--no-verify', '-m', rest ? `${subject}\n${rest}` : subject]);
+        const sha = (await git(dir, ['rev-parse', 'HEAD'])).trim();
+        if (up) {
+          try {
+            await git(dir, ['push', `--force-with-lease=refs/heads/${up.rbranch}:${head}`, up.remote, `HEAD:refs/heads/${up.rbranch}`]);
+          } catch (e) {
+            await git(dir, ['reset', '--soft', head]).catch(() => {}); // put the old commit back so nothing is out of step
+            return fail('Couldn’t update the remote, so the name is unchanged: ' + String(e.stderr || e.message || '').trim().split('\n').slice(-2).join(' '), 409), true;
+          }
+        }
+        const last = lastCommitByTool.get(name);
+        if (last && last.sha === head) last.sha = sha; // Undo still works on the renamed commit
+        onCommitted && onCommitted(name);
+        return ok({ sha }), true;
       }
       if (sub === '/undo' && req.method === 'POST') {
         const last = lastCommitByTool.get(name);

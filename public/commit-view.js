@@ -2,7 +2,7 @@ import { icon } from './icons.js';
 import { commitFold, discardOut } from './fx.js';
 import { pickEmoji as emojiPicker } from './emoji.js';
 import { sfxTick, sfxLand, sfxDrain, sfxApproved, sfxLaser, sfxStamp, sfxTear, sfxBeeps } from './sfx.js';
-import { confirmDialog, toast, ago, api } from './ui.js';
+import { confirmDialog, modal, toast, ago, api } from './ui.js';
 import { shareSpec } from './receipt-image.js';
 import { MARK, specHtml, receiptSpec, statementSpec, compareUrl, logPush, weekOf } from './receipt.js';
 const LEAD = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Component}|\uFE0F|\u200D)+\s*/u;
@@ -263,6 +263,7 @@ function fileRow(p, g) {
       ${hk.length && (all.length > 1 || split) ? `<button class="chip is-btn ${offN || split ? 'is-on' : ''}" data-chunks="${esc(p)}" data-g="${esc(g.id)}" aria-expanded="${hOpen}" title="${split ? `This commit takes ${hk.length} of the file's ${all.length} chunks; the rest are in other commits. Click to pick.` : 'Pick which chunks of this file go in'}">${split || offN ? `${hk.length - offN} of ${all.length} chunks` : `${all.length} chunks`}</button>` : ''}
       <span class="lines mono">${f.binary ? '<span class="muted">binary</span>' : `<span class="a">+${compact(v.add)}</span> <span class="d">−${compact(v.del)}</span>`}</span>
     </span>
+    ${cs.groups.length > 1 ? `<button class="cm-move" data-moveopen="${esc(p)}" data-g="${esc(g.id)}" aria-haspopup="menu" title="Move to another commit" aria-label="Move ${esc(base)} to another commit">${icon('FolderMoveTo', 14)}</button>` : ''}
     <button class="cm-discard" data-discard="${esc(p)}" data-g="${esc(g.id)}" title="Discard ${split ? 'these chunks of' : 'changes to'} ${esc(base)}" aria-label="Discard changes to ${esc(base)}">${icon('Delete02', 14)}</button>
   </div>
   ${hOpen && hk.length ? fresh(chunkView(f, offH, g), key) : ''}
@@ -689,6 +690,7 @@ function paintPanel(animate = false) {
     list = out.map((c, i) => `<li class="cmp-item is-out ${c.sha === P.fresh ? 'is-fresh' : ''}" data-k="${c.sha}">
         <i class="cmp-dot" aria-hidden="true"></i>
         <span class="cmp-main"><span class="cmp-subj" title="${esc(c.subject)}">${esc(c.subject)}</span><span class="mono muted">${c.sha.slice(0, 7)}${c.files ? ` · ${c.files} file${c.files === 1 ? '' : 's'}` : ''} · ${ago(c.at)}</span></span>
+        ${i === 0 && !demo ? `<button class="text-btn sm" data-cmp-rename ${cs.busy ? 'disabled' : ''} title="Change this commit's message">Rename</button>` : ''}
         ${i === 0 && c.undo && pd.canUndo && onCommitView() && !demo ? `<button class="text-btn sm" data-cmp-undo ${cs.busy ? 'disabled' : ''} title="Put this commit's changes back">Undo</button>` : ''}
       </li>`).join('');
     // Pushing is a big moment, so it's a hold, not a click: the bar charges, each commit lights up
@@ -769,12 +771,48 @@ function onPanelClick(e) {
     if (P.order.length < 2) { P.mode = null; P.order = []; }
     paintPanel(); return draw();
   }
+  if (t('[data-cmp-rename]')) return renameLast(cartKey());
   if (t('[data-cmp-undo]')) {
     return run('undo', async () => {
       await api(`/api/changes/undo?repo=${encodeURIComponent(cs.repo)}`, {});
       toast('Undid the last commit. Its files are back in your changes.');
     });
   }
+}
+
+// ---------- rename the last commit ----------
+// Before a push it's a plain amend. After a push it's the newest commit only, the person is told it
+// rewrites the remote, and the server updates it with a safe force push.
+export async function renameLast(repo = cartKey(), onDone) {
+  if (!repo || repo === 'all') return toast('Open a repo first');
+  let h;
+  try { h = await api(`/api/changes/head?repo=${encodeURIComponent(repo)}`); } catch (e) { return toast(e.message); }
+  if (!h.sha) return toast('This repo has no commits yet');
+  if (!h.renamable) return toast('Only the newest pushed commit can be renamed');
+  const m = modal({
+    title: 'Rename last commit',
+    body: `<label class="field"><span>Message <em class="muted mono">${esc(h.sha.slice(0, 7))}</em></span><input data-rn value="${esc(h.subject)}" spellcheck="true" autofocus></label>
+      ${h.pushed ? `<p class="modal-text">${icon('Alert02', 13)} Already pushed. Saving changes it on the remote too, unless someone has pushed since.</p>` : ''}`,
+    actions: `<button class="text-btn bordered" data-no>Cancel</button><button class="btn-primary" data-yes>${h.pushed ? 'Rename and update remote' : 'Rename'}</button>`,
+  });
+  const input = m.el.querySelector('[data-rn]'), yes = m.el.querySelector('[data-yes]');
+  setTimeout(() => input.select(), 40);
+  m.el.querySelector('[data-no]').onclick = () => m.close();
+  const save = async () => {
+    const message = input.value.trim();
+    if (!message) return input.focus();
+    if (message === h.subject) return m.close();
+    yes.disabled = true; yes.textContent = h.pushed ? 'Updating remote…' : 'Renaming…';
+    try {
+      await api(`/api/changes/rename?repo=${encodeURIComponent(repo)}`, { sha: h.sha, message, pushed: h.pushed });
+      m.close(); toast(h.pushed ? 'Renamed, and the remote is updated' : 'Renamed');
+      onDone?.();
+      await refreshOutgoing();
+      if (onCommitView() && cs.repo === repo) loadChanges(cs.repo, { keep: true });
+    } catch (e) { yes.disabled = false; yes.textContent = h.pushed ? 'Rename and update remote' : 'Rename'; toast(e.message); }
+  };
+  yes.onclick = save;
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); save(); } });
 }
 
 // ---------- hold to push ----------
@@ -824,21 +862,28 @@ async function pushNow(btn) {
   btn.classList.add('is-approved');
   if (lbl) lbl.innerHTML = `${icon('Tick02', 14)}Approved`;
   if (!calm()) { sfxApproved(); await new Promise((ok) => setTimeout(ok, 420)); }
-  if (lbl) lbl.textContent = 'Pushing…';
   const upstream = practice ? 'nowhere (practice)' : pd.outgoing?.upstream || 'the remote', branch = practice ? 'practice' : pd.branch;
-  try {
-    await Promise.all([practice ? new Promise((ok) => setTimeout(ok, 600)) : api(`/api/x/push?repo=${encodeURIComponent(repo)}`, {})]);
-    let no = 1;
-    try { const k = `staged-push-no:${repo}`; no = (+localStorage.getItem(k) || 0) + 1; localStorage.setItem(k, String(no)); } catch {}
-    const link = practice ? '' : compareUrl(route.remote, route.provider, pd.outgoing?.base, items[0]?.sha);
-    const R = { id: String(Date.now()), items, repo, name: practice ? 'practice' : repo, upstream, branch, at: Date.now(), practice, no, link };
-    R.spec = receiptSpec(R);
+  // The receipt starts printing straight away and the push runs while it feeds out, so the wait
+  // is the printer working, not a button that looks stuck. The stamp waits for the remote.
+  const k = `staged-push-no:${repo}`;
+  let no = 1;
+  try { no = (+localStorage.getItem(k) || 0) + 1; } catch {}
+  const link = practice ? '' : compareUrl(route.remote, route.provider, pd.outgoing?.base, items[0]?.sha);
+  const R = { id: String(Date.now()), items, repo, name: practice ? 'practice' : repo, upstream, branch, at: Date.now(), practice, no, link };
+  R.spec = receiptSpec(R);
+  R.sent = (practice ? new Promise((ok) => setTimeout(ok, 600)) : api(`/api/x/push?repo=${encodeURIComponent(repo)}`, {})).then(() => {
+    try { localStorage.setItem(k, String(no)); } catch {}
     if (!practice) logPush(R);
-    P.pushed = R;
-  } catch (e) { toast(e.message); }
-  P.pushing = false; panelEl?.classList.remove('is-sending');
+    return true;
+  }, (e) => { toast(e.message); return false; });
+  P.pushed = R;
+  panelEl?.classList.remove('is-sending');
   paintPanel();
-  if (practice) return;
+  // P.pushing stays on until the remote answers, so closing the receipt early can't start a second push.
+  const ok = await R.sent;
+  P.pushing = false;
+  if (!ok && !curSheet()) paintPanel();
+  if (practice || !ok) return;
   await refreshOutgoing();
   if (onCommitView()) loadChanges(cs.repo, { keep: true });
   onPushed?.();
@@ -846,9 +891,23 @@ async function pushNow(btn) {
 // The receipt glides up out of the printer at the bottom of the panel in one smooth pass, like a
 // laser printer: it warms up, feeds the page out evenly, eases to a stop, then gets stamped.
 function printReceipt() {
+  const sheet = curSheet();
   const wrap = panelEl?.querySelector('.rcpt-wrap'), paper = panelEl?.querySelector('.rcpt'), prn = panelEl?.querySelector('.prn');
   const stamp = () => { const st = panelEl?.querySelector('.rcpt-stamp'); if (!st) return; st.classList.add('is-on'); if (!calm()) { st.classList.add('is-slam'); sfxStamp(); } };
-  const done = () => { wrap?.classList.remove('is-printing'); prn?.classList.remove('is-on'); if (!calm()) { sfxBeeps(0.38); prn?.classList.add('is-beep'); setTimeout(() => prn?.classList.remove('is-beep'), 1200); } setTimeout(stamp, calm() ? 0 : 1050); };
+  const done = async () => {
+    // Still pushing once the paper is out: the printer's light keeps breathing until the remote answers.
+    const ok = await (sheet?.sent ?? true);
+    if (curSheet() !== sheet) return;
+    if (!ok) return unprint();
+    wrap?.classList.remove('is-printing'); prn?.classList.remove('is-on'); if (!calm()) { sfxBeeps(0.38); prn?.classList.add('is-beep'); setTimeout(() => prn?.classList.remove('is-beep'), 1200); } setTimeout(stamp, calm() ? 0 : 1050);
+  };
+  // The push failed: no stamp, the paper slides back into the printer and the cart comes back.
+  const unprint = () => {
+    const back = () => { if (cs.panel.pushed === sheet) { cs.panel.pushed = null; paintPanel(); } };
+    prn?.classList.remove('is-on');
+    if (!paper || calm()) return back();
+    paper.animate([{ transform: 'none' }, { transform: 'translateY(100%)' }], { duration: 420, easing: 'cubic-bezier(.5, 0, .75, 0)', fill: 'forwards' }).finished.then(back, back);
+  };
   if (!paper || calm()) return done();
   // the paper feeds at a steady speed, like a real printer, so a longer receipt takes longer
   // (about 4.5ms a pixel), and the motor sound runs exactly as long as the paper moves
@@ -921,11 +980,14 @@ function onClick(e) {
     const g = groupById(b.dataset.commit);
     return warnOk([g]).then((go) => {
       if (!go) return;
-      const land = commitFold(host.querySelector(`[data-group="${CSS.escape(g.id)}"]`));
+      let land = null;
       return run(g.id, async () => {
-        const r = await commitGroup(g);
-        cs.banner = { html: `Committed <b>${esc(r.subject)}</b> <span class="mono muted">${r.sha.slice(0, 7)} · ${r.n} file${r.n > 1 ? 's' : ''}</span>`, undo: true, push: true, kind: 'commit' };
-      }).then(() => land(cs.banner?.kind === 'commit' ? host.querySelector('.cm-banner .cm-dot') : false));
+        // after run's first redraw, so the card being closed is the one on screen
+        land = commitFold(host.querySelector(`[data-group="${CSS.escape(g.id)}"]`));
+        const [r] = await Promise.all([commitGroup(g), land.ready]);
+        if (!g.files.length) cs.groups = cs.groups.filter((x) => x !== g); // gone for good: don't draw it again before the reload
+        closedRepos.delete(cs.repo); cs.panel.fresh = r.sha; cs.panel.made = true;
+      }).then(() => { const ok = cs.panel.made; cs.panel.made = false; land?.(ok ? landTarget() : false); });
     });
   }
   if ((b = t('[data-commitall]'))) {
@@ -934,25 +996,14 @@ function onClick(e) {
     const g = order[0];
     return warnOk([g]).then((go) => {
       if (!go) return;
-      const land = commitFold(host.querySelector(`[data-group="${CSS.escape(g.id)}"]`));
+      let land = null;
       return run(g.id, async () => {
-        const r = await commitGroup(g);
-        cs.banner = { html: `Committed <b>${esc(r.subject)}</b> <span class="mono muted">${r.sha.slice(0, 7)}</span>`, undo: true, push: true, kind: 'commit' };
-      }).then(() => land(cs.banner?.kind === 'commit' ? host.querySelector('.cm-banner .cm-dot') : false));
-    });
-  }
-  if ((b = t('[data-pushnow]'))) {
-    const n = (cs.banner?.html.match(/Made (\d+) commit/) || [])[1] || 1;
-    b.classList.add('is-pushing');
-    return run('push', async () => {
-      await Promise.all([api(`/api/x/push?repo=${encodeURIComponent(cs.repo)}`, {}), pushLaunch(host.querySelector('[data-pushnow]') || b, +n)]);
-      cs.banner = { html: `Pushed to ${esc(ctx.host?.name || 'your remote')}. You're all caught up.`, kind: 'pushed' };
-    });
-  }
-  if ((b = t('[data-undo]'))) {
-    return run('undo', async () => {
-      await api(`/api/changes/undo?repo=${encodeURIComponent(cs.repo)}`, {});
-      cs.banner = { html: 'Undid the last commit. Its files are back in your changes.' };
+        // after run's first redraw, so the card being closed is the one on screen
+        land = commitFold(host.querySelector(`[data-group="${CSS.escape(g.id)}"]`));
+        const [r] = await Promise.all([commitGroup(g), land.ready]);
+        if (!g.files.length) cs.groups = cs.groups.filter((x) => x !== g); // gone for good: don't draw it again before the reload
+        closedRepos.delete(cs.repo); cs.panel.fresh = r.sha; cs.panel.made = true;
+      }).then(() => { const ok = cs.panel.made; cs.panel.made = false; land?.(ok ? landTarget() : false); });
     });
   }
 }
@@ -1021,7 +1072,7 @@ function moveFile(p, fromId, to) {
   toast('Moved. It will remember this next time.');
 }
 let moveMenu = null;
-function closeMoveMenu() { moveMenu?.remove(); moveMenu = null; removeEventListener('pointerdown', outsideMove, true); removeEventListener('keydown', keyMove, true); }
+function closeMoveMenu() { moveMenu?.opener?.removeAttribute('aria-expanded'); moveMenu?.remove(); moveMenu = null; removeEventListener('pointerdown', outsideMove, true); removeEventListener('keydown', keyMove, true); }
 const outsideMove = (e) => { if (moveMenu && !moveMenu.contains(e.target) && !e.target.closest('[data-moveopen], [data-more]')) closeMoveMenu(); };
 const keyMove = (e) => {
   if (!moveMenu) return;
@@ -1035,7 +1086,7 @@ function openMoveMenu(btn) {
   const g = groupById(btn.dataset.g), p = btn.dataset.moveopen;
   const others = cs.groups.filter((x) => x !== g);
   moveMenu = document.createElement('div');
-  moveMenu.className = 'cm-menu'; moveMenu.setAttribute('role', 'menu'); moveMenu.opener = btn;
+  moveMenu.className = 'cm-menu'; moveMenu.setAttribute('role', 'menu'); moveMenu.opener = btn; btn.setAttribute('aria-expanded', 'true');
   moveMenu.innerHTML = `<p class="cm-menu-h mono muted">Move ${esc(p.split('/').pop())} to</p>
     ${others.map((o, i) => `<button role="menuitem" data-moveto="${esc(o.id)}"><span class="cm-num mono">${cs.groups.indexOf(o) + 1}</span><span>${esc(clip(subjectFor(o), 56))}</span></button>`).join('')}
     <button role="menuitem" data-moveto="__new"><span class="cm-num mono">+</span><span>New commit</span></button>`;

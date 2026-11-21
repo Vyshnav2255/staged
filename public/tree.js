@@ -1,6 +1,7 @@
 // Git tree: every branch, merge and tag, drawn as lanes that grow in when you open it.
 import { icon } from './icons.js';
 import { esc, ago, dLong, api, copy, compact, reducedMotion, modal } from './ui.js';
+import { renameLast } from './commit-view.js';
 
 const ROW = 36;      // row height
 const LANE = 16;     // lane spacing
@@ -221,6 +222,7 @@ function detailHtml(c, d) {
     <div class="t-detail-refs">${refPills(c.refs)}</div>
     ${body ? `<pre class="t-body">${esc(body)}</pre>` : ''}
     <div class="t-detail-tools">
+      ${c.sha === st.data?.head ? `<button class="text-btn bordered" data-rename title="Change this commit's message, even after a push">${icon('PencilEdit02', 14)}Rename</button>` : ''}
       <button class="text-btn bordered" data-copysha="${c.sha}">${icon('Copy01', 14)}${c.sha.slice(0, 7)}</button>
       ${ctx.remote ? `<a class="text-btn bordered" href="${esc(ctx.commitUrl(c.sha))}" target="_blank" rel="noopener">${icon(ctx.host.icon, 14)}Open on ${esc(ctx.host.name)}</a>` : ''}
       ${c.parents.length > 1 ? `<span class="mono muted">merge of ${c.parents.length} lines</span>` : ''}
@@ -274,8 +276,12 @@ async function onClick(e) {
     const c = st.data.commits.find((x) => x.sha === sha);
     for (const r of host.querySelectorAll('.t-row')) r.classList.toggle('is-open', r.dataset.sha === sha);
     st.open = sha;
-    const m = modal({ title: 'Commit', body: detailHtml(c, null), side: true, onClose: () => { st.open = null; host.querySelector('.t-row.is-open')?.classList.remove('is-open'); } });
-    m.el.addEventListener('click', (ev) => { const cb = ev.target.closest('[data-copysha]'); if (cb) copy(cb.dataset.copysha, 'Commit id copied'); });
+    const m = modal({ title: 'Commit', body: detailHtml(c, null), side: true, repo: st.repo, onClose: () => { if (st.open !== sha) return; st.open = null; host.querySelector('.t-row.is-open')?.classList.remove('is-open'); } });
+    m.el.addEventListener('click', (ev) => {
+      const cb = ev.target.closest('[data-copysha]'); if (cb) copy(cb.dataset.copysha, 'Commit id copied');
+      // Only the newest commit can be renamed; the tree redraws with the new message once it's saved.
+      if (ev.target.closest('[data-rename]')) { m.close(); renameLast(st.repo, () => load(false)); }
+    });
     let d;
     try { d = await api(`/api/x/commit?repo=${encodeURIComponent(st.repo)}&sha=${sha}`); } catch (err) { d = { sha, message: c.subject + '\n\n' + err.message, files: [] }; }
     const body = m.el.querySelector('.modal-body');
