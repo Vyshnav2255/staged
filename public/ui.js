@@ -49,33 +49,61 @@ export function copy(text, msg = 'Copied') {
 }
 
 // Modal: returns { el, close }. `wide` for drawers with more content.
-export function modal({ title, body, actions = '', wide = false, side = false, onClose }) {
+// A side panel is part of the app, never a popup: it docks on the right like the cart, slides in,
+// pushes the page over instead of covering it, and leaves the page usable (no backdrop). Only one
+// docks at a time; opening another replaces it. Esc or its close button puts it away.
+let docked = null;
+export const closeDock = () => docked?.close();
+// A docked panel can belong to a repo. When you pick another repo it either follows you
+// (follow(repo) reopens it for the new one) or puts itself away.
+export function syncDock(repo) {
+  const d = docked;
+  if (!d || !d.repo || d.repo === repo) return;
+  if (d.follow && repo && repo !== 'all') d.follow(repo); else d.close();
+}
+export function modal({ title, body, actions = '', wide = false, side = false, onClose, repo = null, follow = null }) {
+  if (side) docked?.close(true);
   const wrap = document.createElement('div');
-  wrap.className = 'modal-wrap' + (side ? ' is-side' : '');
-  wrap.innerHTML = `<div class="modal ${wide ? 'is-wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
-    <button type="button" class="modal-handle" aria-label="Close sheet"></button>
+  wrap.className = 'modal-wrap' + (side ? ' is-side is-dock' : '');
+  wrap.innerHTML = `<div class="modal ${wide ? 'is-wide' : ''}" role="dialog" ${side ? '' : 'aria-modal="true"'} aria-label="${esc(title)}">
     <header class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn modal-x" aria-label="Close">${icon('Cancel01', 16)}</button></header>
     <div class="modal-body scroll-fade">${body}</div>
     ${actions ? `<footer class="modal-foot">${actions}</footer>` : ''}
   </div>`;
   document.body.appendChild(wrap);
+  if (side) {
+    requestAnimationFrame(() => {
+      document.body.style.setProperty('--dock-w', wrap.querySelector('.modal').offsetWidth + 'px');
+      document.body.classList.add('has-dock');
+    });
+  }
   requestAnimationFrame(() => wrap.classList.add('is-open'));
   const prev = document.activeElement;
-  const close = () => {
+  let gone = false;
+  // swap: another panel is taking this one's place, so the page stays pushed over
+  const close = (swap = false) => {
+    if (gone) return; gone = true;
     wrap.classList.add('is-closing');
     wrap.classList.remove('is-open');
     document.removeEventListener('keydown', onKey, true);
     setTimeout(() => wrap.remove(), exitFallbackMs('slow'));
-    prev && prev.focus && prev.focus();
+    if (side) { if (docked === handle) docked = null; if (!swap) document.body.classList.remove('has-dock'); }
+    if (!swap && prev && prev.focus && prev.isConnected) prev.focus();
     onClose && onClose();
   };
-  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const handle = { el: wrap, repo, follow, close: (swap) => close(swap === true) };
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    // a docked panel only takes Esc when you're in it or nothing else is focused
+    if (side && document.activeElement && document.activeElement !== document.body && !wrap.contains(document.activeElement)) return;
+    e.stopPropagation(); close();
+  };
   document.addEventListener('keydown', onKey, true);
-  wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); });
-  wrap.querySelector('.modal-x').addEventListener('click', close);
-  wrap.querySelector('.modal-handle').addEventListener('click', close);
+  if (!side) wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); });
+  wrap.querySelector('.modal-x').addEventListener('click', () => close());
   setTimeout(() => (wrap.querySelector('[autofocus]') || wrap.querySelector('input, textarea, button.btn-primary'))?.focus(), 30);
-  return { el: wrap, close };
+  if (side) docked = handle;
+  return handle;
 }
 
 export function confirmDialog({ title, text, ok = 'Continue', danger = false }) {
@@ -97,7 +125,7 @@ export const TYPE_LABEL = { feature: 'Feature', ui: 'Design', fix: 'Fix', perf: 
 export const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // Where a repo lives: GitHub, GitLab, Bitbucket or another git host.
-export const HOSTS = {
+const HOSTS = {
   github: { name: 'GitHub', icon: 'Github', commit: '/commit/' },
   gitlab: { name: 'GitLab', icon: 'Gitlab', commit: '/-/commit/' },
   bitbucket: { name: 'Bitbucket', icon: 'Link01', commit: '/commits/' },

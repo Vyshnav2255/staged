@@ -28,7 +28,7 @@ export function openProjectSettings(repo, { learned, onChange } = {}) {
         </button>`).join('')}
       </div>`;
   };
-  const m = modal({ title: `${repo} settings`, body: `<div data-ps>${body()}</div>`, side: true });
+  const m = modal({ title: `${repo} settings`, body: `<div data-ps>${body()}</div>`, side: true, repo, follow: () => dispatchEvent(new Event('staged:project-settings')) });
   m.el.classList.add('is-ps');
   m.el.addEventListener('click', (e) => {
     const b = e.target.closest('[data-style]'); if (!b) return;

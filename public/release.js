@@ -34,7 +34,7 @@ export function openStory(name, commits, repo) {
     </div>
   </div>`;
   const m = modal({
-    title: `The story of ${name}`, body, side: true,
+    title: `The story of ${name}`, body, side: true, repo,
     actions: `<span class="mono muted" style="margin-right:auto">${esc(repo)} · last change ${dShort.format(new Date(last.t))}</span><button class="text-btn bordered" data-storycopy>${icon('Copy01', 14)}Copy as notes</button>`,
   });
   m.el.querySelector('[data-storycopy]').onclick = () => copy(notesMarkdown(name, commits, false), 'Story copied');
@@ -49,7 +49,7 @@ function nextVersion(last, unreleased) {
   return hasFeature ? `${v}${a}.${+b + 1}.0` : `${v}${a}.${b}.${+c + 1}`;
 }
 
-export function releaseSections(repo) {
+function releaseSections(repo) {
   const sections = [];
   let cur = { name: 'Unreleased', date: null, commits: [] };
   for (const c of repo.commits) {
@@ -109,7 +109,7 @@ export function openRelease(repo, onDone) {
   };
 }
 
-export function changelogMarkdown(repo) {
+function changelogMarkdown(repo) {
   let md = `# Changelog\n\nAll notable changes to ${repo.name}.\n`;
   if (repo.tags.length) {
     for (const s of releaseSections(repo)) {
