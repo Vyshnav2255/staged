@@ -17,7 +17,7 @@ function draw() {
     <article class="rd-body">${html}</article>
     <nav class="rd-toc" aria-label="On this page"><div class="rd-toc-h mono">On this page</div>${toc.map((t) => `<a href="#" data-to="${t.id}">${esc(t.text)}</a>`).join('')}</nav>
   </div>`;
-  host.querySelector('.rd-toc').addEventListener('click', (e) => {
+  host.querySelector('.rd').addEventListener('click', (e) => {
     const a = e.target.closest('[data-to]'); if (!a) return;
     e.preventDefault();
     host.querySelector('#' + a.dataset.to)?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
@@ -33,6 +33,7 @@ function inline(s) {
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\[([^\]]+)\]\(#([a-z0-9-]+)\)/g, '<a href="#" data-to="rd-$2">$1</a>')
     .replace(/(^|[\s(])(https?:\/\/localhost:\d+\/?)/g, '$1<a href="$2">$2</a>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[+i])}</code>`);
 }
@@ -61,6 +62,7 @@ function render(md) {
       out.push(`<h${n} id="${id}">${inline(text)}</h${n}>`); i++; continue;
     }
     if (/^<img\s/.test(l)) { i++; continue; } // logo sits in the hero instead
+    if (/^<a\s[^>]*>\s*<img\s/.test(l)) { i++; continue; } // badges load from the web; the app stays offline
     if (/^\|/.test(l)) {
       const rows = [];
       while (i < lines.length && /^\|/.test(lines[i])) rows.push(lines[i++]);
@@ -76,7 +78,7 @@ function render(md) {
       continue;
     }
     const buf = [];
-    while (i < lines.length && lines[i].trim() && !/^(#|```|\||[-*]\s|<img)/.test(lines[i])) buf.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !/^(#|```|\||[-*]\s|<img|<a\s[^>]*>\s*<img)/.test(lines[i])) buf.push(lines[i++]);
     out.push(`<p>${inline(buf.join(' '))}</p>`);
   }
   const hero = `<header class="rd-hero"><img src="brand/staged-icon.svg" width="56" height="56" alt=""><div><div class="rd-name">staged</div><div class="muted mono">README.md</div></div></header>`;
