@@ -3,7 +3,7 @@
 // panel from the Run button in the repo header, or from ⌘K.
 import { icon } from './icons.js';
 import { esc, modal, toast, api, ago as since } from './ui.js';
-import { sfxApproved, sfxDrain, sfxClunk } from './sfx.js';
+import { sfxApproved, sfxDrain, sfxClunk, warmHum, sfxError, sfxKey, sfxOpen, sfxCopy } from './sfx.js';
 
 const cache = new Map(); // repo -> { commands, jobs }
 const q = (repo) => `repo=${encodeURIComponent(repo)}`;
@@ -41,11 +41,19 @@ export function openRun(repo) {
   let d = cache.get(repo), logOf = null, adding = false, timer = null, stuck = true, shown = null;
   const was = new Map(), seen = new Map(); // id -> last phase / how many output lines were already shown
   const jobOf = (id) => d?.jobs?.find((j) => j.id === id);
-  const log = (c, j, on) => (logOf === c.id && j ? `<pre class="rn-log mono scroll-fade" data-rn-pre data-id="${esc(c.id)}">${j.log ? lines(j.log) : '<span class="rn-ln is-none">No output yet</span>'}${on ? '<i class="rn-caret"></i>' : ''}</pre>` : '');
+  const log = (c, j, on) => (logOf === c.id && j ? `<div class="rn-logwrap"><pre class="rn-log mono scroll-fade" data-rn-pre data-id="${esc(c.id)}">${j.log ? lines(j.log) : '<span class="rn-ln is-none">No output yet</span>'}${on ? '<i class="rn-caret"></i>' : ''}</pre>${j.log ? `<button class="rn-copy" data-rn-copy="${esc(c.id)}" aria-label="${j.state === 'failed' ? 'Copy the error report' : 'Copy the output'}">${icon('Copy01', 12)}<span>${j.state === 'failed' ? 'Copy error' : 'Copy output'}</span></button>` : ''}</div>` : '');
+  // What the copy button puts on the clipboard: enough to debug from anywhere (an issue, a chat, Claude).
+  // The last 30 lines, not just the red one: the line before an error is often the real cause.
+  const report = (c, j) => {
+    const out = String(j.log || '').replace(/\n+$/, '').split('\n'), tail = out.slice(-30);
+    const end = j.ended || Date.now(), how = j.state === 'failed' ? `failed${j.code != null ? ` (exit code ${j.code})` : ''}` : j.state === 'running' ? (j.url ? `running at ${j.url}` : 'running') : j.state;
+    return [`Project: ${repo}${c.from && c.from !== 'yours' ? ` (${c.from})` : ''}`, `Command: ${c.cmd}`, `Result: ${how} after ${took(end - j.at)}`, `Ran: ${new Date(j.at).toLocaleString()}`, '',
+      `Output${out.length > tail.length ? ` (last ${tail.length} of ${out.length} lines)` : ''}:`, ...tail].join('\n') + '\n';
+  };
   const logBtn = (c, j) => (j ? `<button class="icon-btn sm ${logOf === c.id ? 'is-on' : ''}" data-rn-log="${esc(c.id)}" title="Output" aria-label="Show output">${icon('Terminal', 14)}</button>` : '');
   const moreBtn = (c) => `<button class="icon-btn sm rn-more" data-rn-more="${esc(c.id)}" title="More" aria-label="More for ${esc(c.label)}">${icon('MoreHorizontal', 14)}</button>`;
   // The main command is a cassette deck: the tape's label says what it's playing (the address once a
-  // server is up), the reels turn while it runs, a counter keeps time, and three chunky keys run it.
+  // server is up), the reels turn while it runs, a counter keeps time, and a flat tray of icon keys runs it.
   const deck = (c) => {
     const j = jobOf(c.id), ph = phaseOf(c, j), on = live(j);
     const label = ph === 'live' ? `<span class="rn-lab-main mono">${esc(host(j.url))}</span>`
@@ -125,25 +133,32 @@ export function openRun(repo) {
     seen.clear(); if (p) seen.set(p.dataset.id, p.querySelectorAll('.rn-ln').length);
     for (const [id, ph] of fresh) {
       byId('.rn-deck, .rn-row', id).forEach((n) => n.classList.add('is-fresh'));
-      if (ph === 'live') sfxApproved(); else if (ph === 'failed') sfxDrain();
+      if (ph === 'live') sfxApproved(); else if (ph === 'failed') sfxError();
     }
+    // the warm-up hum plays while anything here is still getting ready
+    warmHum((d?.commands || []).some((c) => phaseOf(c, jobOf(c.id)) === 'boot'));
     stamp();
   };
   const beat = setInterval(stamp, 1000);
   // While the panel is open, follow the output: every second when something runs, slower otherwise.
-  const tick = async () => { d = (await loadRun(repo)) || d; if (m.el.isConnected) { paint(); timer = setTimeout(tick, running(repo).length ? 1000 : 4000); } };
+  const tick = async () => { d = (await loadRun(repo)) || d; if (!m.el.isConnected) warmHum(false); if (m.el.isConnected) { paint(); clearTimeout(timer); timer = setTimeout(tick, running(repo).length ? 1000 : 4000); } };
   if (d) paint();
   tick();
-  const act = async (fn) => { try { const r = await fn(); if (r?.commands) d.commands = r.commands; } catch (e) { toast(e.message); } d = (await loadRun(repo)) || d; paint(); };
+  const act = async (fn) => { try { const r = await fn(); if (r?.commands) d.commands = r.commands; } catch (e) { toast(e.message); } d = (await loadRun(repo)) || d; paint(); clearTimeout(timer); timer = setTimeout(tick, 1000); };
   m.el.addEventListener('click', (e) => {
     const t = (s) => e.target.closest(s); let b;
-    if ((b = t('[data-rn-go]'))) { const id = b.dataset.rnGo; logOf = id; stuck = true; sfxClunk(); return act(() => api(`/api/run/start?${q(repo)}`, { id })); }
-    if ((b = t('[data-rn-stop]'))) { sfxClunk(true); return act(() => api(`/api/run/stop?${q(repo)}`, { id: b.dataset.rnStop })); }
-    if ((b = t('[data-rn-open]'))) return act(() => api(`/api/run/open?${q(repo)}`, { id: b.dataset.rnOpen }));
-    if ((b = t('[data-rn-log]'))) { logOf = logOf === b.dataset.rnLog ? null : b.dataset.rnLog; stuck = true; return paint(); }
+    if ((b = t('[data-rn-go]'))) { const id = b.dataset.rnGo; logOf = id; stuck = true; sfxClunk(); warmHum(true); return act(() => api(`/api/run/start?${q(repo)}`, { id })); }
+    if ((b = t('[data-rn-stop]'))) { sfxClunk(true); warmHum(false); return act(() => api(`/api/run/stop?${q(repo)}`, { id: b.dataset.rnStop })); }
+    if ((b = t('[data-rn-open]'))) { sfxOpen(); return act(() => api(`/api/run/open?${q(repo)}`, { id: b.dataset.rnOpen })); }
+    if ((b = t('[data-rn-copy]'))) {
+      const c = d.commands.find((x) => x.id === b.dataset.rnCopy), j = c && jobOf(c.id); if (!j) return;
+      const lab = b.querySelector('span'), was = lab.textContent;
+      return navigator.clipboard.writeText(report(c, j)).then(() => { sfxCopy(); b.classList.add('is-done'); b.firstElementChild.outerHTML = icon('Tick02', 12); lab.textContent = 'Copied'; setTimeout(() => { if (!b.isConnected) return; b.classList.remove('is-done'); b.firstElementChild.outerHTML = icon('Copy01', 12); lab.textContent = was; }, 1600); }, () => toast("Couldn't copy"));
+    }
+    if ((b = t('[data-rn-log]'))) { logOf = logOf === b.dataset.rnLog ? null : b.dataset.rnLog; sfxKey(!!logOf); stuck = true; return paint(); }
     if (t('[data-rn-add]')) { adding = true; paint(); return box().querySelector('[name=cmd]')?.focus(); }
     if (t('[data-rn-cancel]')) { adding = false; return paint(); }
-    if ((b = t('[data-rn-more]'))) return moreMenu(b, d.commands.find((c) => c.id === b.dataset.rnMore), d.commands[0]?.id === b.dataset.rnMore);
+    if ((b = t('[data-rn-more]'))) { sfxKey(!menu); return moreMenu(b, d.commands.find((c) => c.id === b.dataset.rnMore), d.commands[0]?.id === b.dataset.rnMore); }
   });
   m.el.addEventListener('submit', (e) => {
     e.preventDefault();

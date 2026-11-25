@@ -213,3 +213,62 @@ export function sfxClunk(up = false) {
   air({ dur: 0.05, vol: 0.08, from: up ? 2600 : 1800, to: 400, q: 1.4 });
   note(hz(up ? -17 : -22), { dur: 0.08, vol: 0.09, type: 'sine', glide: 0.7, wet: false });
 }
+// The scale settles after a run of Shrink: one short soft beep, like a kitchen scale reading a weight.
+export function sfxSettle() {
+  note(hz(19), { at: 0.95, dur: 0.09, vol: 0.05, type: 'triangle', wet: false });
+}
+// Warming up, for as long as a dev server is getting ready: like an amp's valves coming on, a low soft hum
+// that swells in, lifts a little, then breathes quietly until the server is live (or fails, or is stopped).
+// warmHum(true) starts it if it isn't playing; warmHum(false) fades it out. It gives up on its own after 90 s.
+let hum = null;
+export function warmHum(on) {
+  if (!on) {
+    if (!hum) return;
+    const { a, g, oscs, cap } = hum; hum = null; clearTimeout(cap);
+    const t = a.currentTime;
+    g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + 0.3);
+    for (const o of oscs) o.stop(t + 0.35);
+    return;
+  }
+  if (hum) return;
+  const a = audio();
+  if (!a) return;
+  const t = a.currentTime + 0.06;
+  const g = a.createGain();
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.04, t + 0.6); g.gain.linearRampToValueAtTime(0.026, t + 1.4);
+  g.connect(out); g.connect(room);
+  const oscs = [];
+  for (const [f, type, lvl] of [[hz(-29), 'sine', 1], [hz(-17), 'triangle', 0.3]]) {
+    const o = a.createOscillator(); o.type = type;
+    o.frequency.setValueAtTime(f * 0.9, t); o.frequency.exponentialRampToValueAtTime(f, t + 0.8);
+    const lg = a.createGain(); lg.gain.value = lvl;
+    o.connect(lg).connect(g); o.start(t); oscs.push(o);
+  }
+  // a slow breath on the volume so the hold doesn't sound like a test tone
+  const lfo = a.createOscillator(), depth = a.createGain();
+  lfo.frequency.value = 0.45; depth.gain.value = 0.008;
+  lfo.connect(depth).connect(g.gain); lfo.start(t); oscs.push(lfo);
+  air({ at: 0.08, dur: 0.7, vol: 0.016, from: 300, to: 1400, q: 0.6 });
+  hum = { a, g, oscs, cap: setTimeout(() => warmHum(false), 90000) };
+}
+// Something failed: two soft, slightly buzzy notes falling a minor third, with a dull knock under the first.
+export function sfxError() {
+  note(hz(-9), { dur: 0.16, vol: 0.07, type: 'triangle', wet: true });
+  note(hz(-12), { at: 0.15, dur: 0.32, vol: 0.07, type: 'triangle', wet: true });
+  note(hz(-33), { dur: 0.1, vol: 0.08, glide: 0.5, wet: false });
+}
+// A small deck key (output, the … menu): a light plastic tick, a touch higher when it opens.
+export function sfxKey(open = true) {
+  tick({ vol: 0.05 });
+  note(hz(open ? -12 : -15), { dur: 0.06, vol: 0.05, type: 'triangle', glide: 0.8, wet: false });
+}
+// Opening the live page: two quick bright notes going up, like a tab popping open.
+export function sfxOpen() {
+  note(hz(7), { dur: 0.12, vol: 0.07, wet: true });
+  note(hz(14), { at: 0.07, dur: 0.22, vol: 0.06, wet: true });
+}
+// Copied: a short soft snip.
+export function sfxCopy() {
+  tick({ vol: 0.045 });
+  note(hz(19), { at: 0.015, dur: 0.07, vol: 0.04, wet: false });
+}
