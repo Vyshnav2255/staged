@@ -268,8 +268,8 @@ function renderChart(list) {
       const isTop = j === present.length - 1;
       const r = Math.min(3, barW / 2, h);
       segs += isTop
-        ? `<path d="${roundTop(x, y0, barW, h, r)}" fill="var(--t-${t})"/>`
-        : `<rect x="${x}" y="${y0 + 2}" width="${barW}" height="${Math.max(1, h)}" fill="var(--t-${t})"/>`;
+        ? `<path d="${roundTop(x, y0, barW, h, r)}" fill="var(--t-${t})"/><path class="st-diag" d="${roundTop(x, y0, barW, h, r)}" fill="url(#st-diag)"/>`
+        : `<rect x="${x}" y="${y0 + 2}" width="${barW}" height="${Math.max(1, h)}" fill="var(--t-${t})"/><rect class="st-diag" x="${x}" y="${y0 + 2}" width="${barW}" height="${Math.max(1, h)}" fill="url(#st-diag)"/>`;
       acc += v;
     });
     const label = i % labelEvery === 0 || i === buckets.length - 1
@@ -353,8 +353,8 @@ function mixBar(counts, w = 72) {
   const present = TYPES.filter((t) => counts[t]);
   present.forEach((t, i) => {
     const cw = (counts[t] / total) * w;
-    const gap = i < present.length - 1 ? 1.5 : 0;
-    out += `<rect x="${x}" y="0" width="${Math.max(1, cw - gap)}" height="6" rx="1.5" fill="var(--t-${t})"/>`;
+    const gap = 0;
+    out += `<rect x="${x}" y="0" width="${Math.max(1, cw - gap)}" height="6" fill="var(--t-${t})"/><rect class="st-diag" x="${x}" y="0" width="${Math.max(1, cw - gap)}" height="6" fill="url(#st-diag)"/>`;
     x += cw;
   });
   const title = present.map((t) => `${TYPE_LABEL[t]} ${counts[t]}`).join(' · ');
