@@ -1522,10 +1522,11 @@ button.rn-lab-main { cursor: pointer; width: max-content; max-width: 100%; borde
 .rn-screw.is-a { left: 12px; } .rn-screw.is-b { right: 12px; }
 
 /* the counter, the command and a level meter that dances while it plays */
-.rn-count { position: absolute; z-index: 2; left: 50%; top: 13px; transform: translateX(-50%); padding: 2px 6px; border-radius: 4px; background: #000; color: var(--logo-1); font-size: 11.5px; font-weight: 600; letter-spacing: .08em; box-shadow: inset 0 0 0 1px #34342f; font-variant-numeric: tabular-nums; }
+/* centred by its margins, not a transform, and 8px a digit (6.9 + 1.1), so the box and its ring sit on whole pixels */
+.rn-count { position: absolute; z-index: 2; left: 0; right: 0; top: 13px; width: fit-content; height: 20px; margin: 0 auto; padding: 0 5.5px 0 6.5px; border-radius: 4px; background: #000; color: var(--logo-1); font-size: 11.5px; font-weight: 600; line-height: 20px; letter-spacing: 1.1px; box-shadow: inset 0 0 0 1px #34342f; font-variant-numeric: tabular-nums; }
 .is-idle .rn-count, .is-stopped .rn-count { color: #6d6b64; } .is-failed .rn-count { color: #f08a7c; }
 
-/* the keys: chunky, they travel down when pressed, and Play stays down while it plays */
+/* the keys: flat, icon only, in one tray; Run stays lit while it plays */
 .rn-keys { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; margin-top: 12px; padding: 4px; border-radius: 13px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .rn-k { position: relative; display: flex; align-items: center; justify-content: center; gap: 7px; height: 40px; border: 0; border-radius: 9px; cursor: pointer; background: transparent; font: 500 13.5px Akt, sans-serif; letter-spacing: -.005em; color: var(--ink);
   transition: background-color .18s ease, color .18s ease, box-shadow .18s ease, opacity .18s ease, transform .12s var(--ease-out); }
@@ -1538,11 +1539,11 @@ button.rn-lab-main { cursor: pointer; width: max-content; max-width: 100%; borde
 .rn-k.is-down { background: #fff; color: #2f5a10; cursor: default; box-shadow: 0 1px 2px rgb(20 18 12 / .12), 0 0 0 1px rgb(20 18 12 / .05); }
 .rn-k.is-down .ic { color: var(--logo-box); }
 .rn-k[data-rn-stop] .ic { color: var(--del); }
-/* tooltip above each key */
-.rn-k[data-tip]::after { content: attr(data-tip); position: absolute; left: 50%; top: calc(100% + 9px); z-index: 5; padding: 5px 8px; border-radius: 7px; background: #0b0b0b; color: #fff; font: 500 12px Akt, sans-serif; letter-spacing: 0; white-space: nowrap; pointer-events: none; opacity: 0; transform: translate(-50%, -3px); transition: opacity .14s ease, transform .14s var(--ease-out); box-shadow: 0 4px 12px rgb(20 18 12 / .2); }
+/* tooltip under each key. Centred by its margins (a -50% transform lands on half pixels and blurs the text), and a long address is cut short. */
+.rn-k[data-tip]::after { content: attr(data-tip); position: absolute; left: -120px; right: -120px; top: calc(100% + 9px); z-index: 5; width: fit-content; max-width: 240px; margin: 0 auto; padding: 5px 8px; border-radius: 7px; background: #0b0b0b; color: #fff; font: 500 12px/16px Akt, sans-serif; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; opacity: 0; transform: translateY(-3px); transition: opacity .14s ease, transform .14s var(--ease-out); box-shadow: 0 4px 12px rgb(20 18 12 / .2); }
 .rn-k[data-tip]::before { content: ''; position: absolute; left: 50%; top: calc(100% + 4px); z-index: 6; width: 0; height: 0; margin-left: -5px; border: 5px solid transparent; border-top: 0; border-bottom-color: #0b0b0b; pointer-events: none; opacity: 0; transform: translateY(-3px); transition: opacity .14s ease, transform .14s var(--ease-out); }
 .rn-k[data-tip]:hover::before, .rn-k[data-tip]:focus-visible::before { opacity: 1; transform: none; transition-delay: .25s; }
-.rn-k[data-tip]:hover::after, .rn-k[data-tip]:focus-visible::after { opacity: 1; transform: translate(-50%, 0); transition-delay: .25s; }
+.rn-k[data-tip]:hover::after, .rn-k[data-tip]:focus-visible::after { opacity: 1; transform: none; transition-delay: .25s; }
 
 .rn-k:disabled:not(.is-down) { cursor: default; }
 .rn-k:disabled:not(.is-down) .ic { opacity: .38; }
