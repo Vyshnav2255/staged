@@ -11,6 +11,27 @@ const LEAD = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Component}|\uFE0F|\u200D
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const compact = (n) => (n >= 10000 ? (n / 1000).toFixed(0) + 'k' : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
 const STATUS = { A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed', U: 'Conflict' };
+
+// Empty-state art: the cart, loaded (everything committed, waiting to push) and empty (nothing to push).
+const ART_LOADED = `<svg class="cart-art" viewBox="0 0 160 120" aria-hidden="true">
+  <path class="ca-d" d="M20 100H140"/>
+  <rect class="ca-f" x="85" y="19" width="12" height="11" rx="1.5"/>
+  <rect class="ca-f" x="54" y="24" width="24" height="26" rx="2"/><path class="ca-l" d="M66 24v8"/>
+  <rect class="ca-f" x="82" y="30" width="18" height="20" rx="2"/><path class="ca-l" d="M86 36h6"/>
+  <rect class="ca-f" x="103" y="35" width="11" height="15" rx="1.5"/>
+  <path class="ca-f" d="M44 44H120L112 76H54Z"/><path class="ca-l" d="M26 36H38L44 44"/>
+  <path class="ca-l ca-m" d="M47.5 55H117.2M51 66H114.5M63 44L66 76M82 44V76M101 44L98 76"/><path class="ca-l" d="M54 76L57 87H108"/>
+  <circle class="ca-f" cx="63" cy="92" r="5"/><circle class="ca-f" cx="103" cy="92" r="5"/>
+  <g class="ca-swing"><path class="ca-l" d="M32 36v7"/><rect class="ca-f" x="25" y="43" width="14" height="17" rx="2.5"/><path class="ca-g" d="M28.5 52l2.5 2.5l4.5-5"/></g>
+</svg>`;
+const ART_EMPTY = `<svg class="cart-art" viewBox="0 0 160 120" aria-hidden="true">
+  <path class="ca-d" d="M20 100H140"/>
+  <g class="ca-bob"><rect class="ca-ghost" x="69" y="10" width="26" height="22" rx="2.5"/><path class="ca-l ca-m" d="M82 17v8M78 21h8"/></g>
+  <path class="ca-f" d="M44 44H120L112 76H54Z"/><path class="ca-l" d="M26 36H38L44 44"/>
+  <path class="ca-l ca-m" d="M47.5 55H117.2M51 66H114.5M63 44L66 76M82 44V76M101 44L98 76"/>
+  <path class="ca-l" d="M54 76L57 87H108"/>
+  <circle class="ca-f" cx="63" cy="92" r="5"/><circle class="ca-f" cx="103" cy="92" r="5"/>
+</svg>`;
 const GITMOJI = [
   ['✨', 'feat', 'New feature'], ['🎉', 'feat', 'Big milestone'], ['💄', 'style', 'UI and styles'], ['💫', 'style', 'Animations'],
   ['🎨', 'style', 'Structure and format'], ['🍱', 'chore', 'Assets'], ['🐛', 'fix', 'Bug fix'], ['🚑️', 'fix', 'Hotfix'],
@@ -399,9 +420,8 @@ function draw() {
 
   paintPanel();
   // The Commit tab's badge: how many commits are ready, once they are sorted.
-  { const dc = document.getElementById('dirtyCount'); if (dc && ctx.repo) { dc.dataset.repo = ctx.repo; dc.classList.toggle('is-dot', false); dc.textContent = total ? String(cs.groups.length) : ''; } }
   if (!total) {
-    paintHost(banner + (outgoing().length ? `<div class="empty cm-done">${icon('ShoppingCartCheck01', 18)}<h3>Everything is in the cart</h3><p>Hold to push when you're ready.</p></div>` : `<div class="empty"><h3>Nothing to commit</h3><p>${esc(ctx.repo)} is clean on ${esc(d.branch)}.</p></div>`));
+    paintHost(banner + (outgoing().length ? `<div class="empty cm-done cm-art">${ART_LOADED}<h3>Everything is in the cart</h3><p>Nothing left to commit. Hold to push when you're ready.</p></div>` : `<div class="empty cm-art">${ART_EMPTY}<h3>Your cart is empty</h3><p>${esc(ctx.repo)} is clean on ${esc(d.branch)}. Commits you make wait in the cart until you push.</p></div>`));
     return;
   }
 
