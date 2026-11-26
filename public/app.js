@@ -745,13 +745,23 @@ function ctxFor(view) {
 }
 
 let lastPlace = '';
+// Moving to another repo or tab cross-fades the page (the sidebar and cart stay put) with the
+// browser's view transitions; plain refreshes redraw in place.
 function render() {
   if (!state.data) return;
-  writeHash();
+  if (state.view === 'release') state.view = 'week'; // Releases live on a repo's Overview now
   const place = state.repo + '|' + state.view;
   const moved = lastPlace && place !== lastPlace;
-  lastPlace = place;
-  if (moved) requestAnimationFrame(() => document.querySelectorAll('.main > :not(.head):not([hidden])').forEach((x) => { if (!x.matches('.controls')) enter(x); }));
+  if (moved && document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches && !document.hidden) {
+    document.startViewTransition(() => renderNow());
+    return;
+  }
+  renderNow();
+}
+function renderNow() {
+  if (!state.data) return;
+  writeHash();
+  lastPlace = state.repo + '|' + state.view;
   renderSidebar();
   renderHeader();
   { const r = state.data.repos.find((x) => x.name === state.repo); setPanelRoute({ repo: state.repo, view: state.view, remote: r?.remote || '', provider: r?.provider || '' }, () => { refreshRepoState(); load(false); }); }
@@ -759,11 +769,14 @@ function render() {
   const main = document.querySelector('.main');
   for (const x of VIEWS) main.classList.toggle('is-' + x, x === v);
   main.classList.toggle('is-home', isHome());
+  main.classList.toggle('is-searching', !!state.q); // while searching, only the matching changes show
   const homeEl = $('#home');
   homeEl.hidden = !isHome();
   if (isHome()) { mountHome(homeEl, ctxFor('home')); for (const x of PANE_VIEWS) { const el = document.getElementById('pane-' + x); if (el) el.hidden = true; } return; }
   main.classList.toggle('is-pane', PANE_VIEWS.includes(v));
   $('#q').placeholder = v === 'commit' ? 'Filter files' : v === 'tree' ? 'Find in tree' : 'Search changes';
+  // Nothing to search in a repo with no commits yet (unless a search is already typed).
+  { const r = state.data.repos.find((x) => x.name === state.repo); $('.search').hidden = !state.q && ['week', 'feature', 'release'].includes(v) && state.repo !== 'all' && !(r?.commits?.length); }
   for (const x of PANE_VIEWS) { const el = document.getElementById('pane-' + x); if (el) el.hidden = x !== v; }
   $('#list').hidden = PANE_VIEWS.includes(v);
   if (PANE_VIEWS.includes(v)) {
@@ -920,7 +933,7 @@ initPalette((q) => {
   items.push({ group: 'Go to', label: 'README', hint: 'how staged works', run: () => { state.view = 'readme'; render(); scrollTo({ top: 0 }); } });
   items.push({ group: 'Go to', label: 'About', hint: 'who makes staged, and buy me a coffee', run: openAbout });
   for (const r of repos) items.push({ group: 'Repos', label: r.name, hint: r.dirty ? `${r.dirty} uncommitted` : r.last ? ago(r.last) : '', run: goRepo(r.name) });
-  const views = [['week', 'Weeks'], ['feature', 'Features'], ['release', 'Releases'], ['tree', 'Tree'], ['commit', 'Commit']];
+  const views = [['week', 'Overview'], ['feature', 'Features'], ['tree', 'Tree'], ['commit', 'Commit']];
   for (const [v, label] of views) items.push({ group: 'Views', label, hint: state.repo === 'all' ? '' : state.repo, run: () => { state.view = v; render(); } });
   const cur = repos.find((r) => r.name === state.repo);
   if (cur) {
@@ -963,7 +976,7 @@ $('#legend').addEventListener('click', (e) => {
   render();
 });
 let qT;
-$('#q').addEventListener('input', (e) => { clearTimeout(qT); qT = setTimeout(() => { state.q = e.target.value.trim(); render(); }, 120); });
+$('#q').addEventListener('input', (e) => { clearTimeout(qT); qT = setTimeout(() => { state.q = e.target.value.trim(); fluid(render); }, 120); });
 $('#list').addEventListener('click', (e) => {
   const t = e.target.closest('[data-toggle]');
   if (t) { const id = t.dataset.toggle; state.open.has(id) ? state.open.delete(id) : state.open.add(id); render(); return; }
