@@ -38,7 +38,7 @@ function inline(s) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[+i])}</code>`);
 }
 
-// Small Markdown renderer: headings, paragraphs, lists, tables, code fences, the logo image.
+// Small Markdown renderer: headings, paragraphs, lists, tables, code fences, callouts. HTML blocks are skipped.
 function render(md) {
   const lines = md.replace(/\r/g, '').split('\n');
   const out = [], toc = [];
@@ -61,8 +61,16 @@ function render(md) {
       if (n === 2) toc.push({ id, text });
       out.push(`<h${n} id="${id}">${inline(text)}</h${n}>`); i++; continue;
     }
-    if (/^<img\s/.test(l)) { i++; continue; } // logo sits in the hero instead
-    if (/^<a\s[^>]*>\s*<img\s/.test(l)) { i++; continue; } // badges load from the web; the app stays offline
+    if (/^\s*<\/?[a-z!]/i.test(l) || /^\s*&nbsp;/.test(l)) { i++; continue; } // GitHub-only HTML (centred header, badges, images): the hero covers it and the app stays offline
+    if (/^-{3,}\s*$/.test(l)) { i++; continue; } // section rules: headings already separate sections here
+    if (/^>/.test(l)) {
+      const buf = [];
+      while (i < lines.length && /^>/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ''));
+      const kind = (buf[0].match(/^\[!(\w+)\]\s*$/) || [])[1];
+      if (kind) buf.shift();
+      out.push(`<aside class="rd-note">${kind ? `<div class="rd-note-h mono">${esc(kind.toLowerCase())}</div>` : ''}<p>${inline(buf.join(' '))}</p></aside>`);
+      continue;
+    }
     if (/^\|/.test(l)) {
       const rows = [];
       while (i < lines.length && /^\|/.test(lines[i])) rows.push(lines[i++]);
@@ -78,7 +86,7 @@ function render(md) {
       continue;
     }
     const buf = [];
-    while (i < lines.length && lines[i].trim() && !/^(#|```|\||[-*]\s|<img|<a\s[^>]*>\s*<img)/.test(lines[i])) buf.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !/^(#|```|\||[-*]\s|\s*<\/?[a-z!]|>|-{3,}\s*$)/i.test(lines[i])) buf.push(lines[i++]);
     out.push(`<p>${inline(buf.join(' '))}</p>`);
   }
   const hero = `<header class="rd-hero"><img src="brand/staged-icon.svg" width="56" height="56" alt=""><div><div class="rd-name">staged</div><div class="muted mono">README.md</div></div></header>`;
