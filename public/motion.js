@@ -98,43 +98,32 @@ export function exitFallbackMs(tier) {
   return Math.ceil(token.exit.duration * 1000 + 100);
 }
 
-function springEasing(bounce) {
-  const damping = bounce ? 1 - bounce * 2.5 : 1;
-  const omega = 8;
-  const valueAt = (t) => {
-    if (damping === 1) return 1 - (1 + omega * t) * Math.exp(-omega * t);
-    const damped = omega * Math.sqrt(1 - damping * damping);
-    return 1 - Math.exp(-damping * omega * t) * (
-      Math.cos(damped * t) + damping / Math.sqrt(1 - damping * damping) * Math.sin(damped * t)
-    );
-  };
-  const end = valueAt(1);
-  const points = Array.from({ length: 21 }, (_, i) => `${(valueAt(i / 20) / end).toFixed(4)} ${i * 5}%`);
-  return `linear(${points.join(', ')})`;
-}
-
 export function initMotionSystem() {
   const style = document.documentElement.style;
-  for (const tier of Object.keys(spring)) {
-    const token = spring[tier];
-    style.setProperty(`--motion-${tier}-duration`, `${token.duration * 1000}ms`);
-    style.setProperty(`--motion-${tier}-exit-duration`, `${token.exit.duration * 1000}ms`);
+  for (const [k, v] of Object.entries(CSSV)) { style.setProperty(`--dur-${k}`, `${v.ms}ms`); style.setProperty(`--ease-${k}`, v.ease); }
+  style.setProperty('--dur-exit', `${MS.exit}ms`); style.setProperty('--ease-exit', EASE.exit);
+  style.setProperty('--dur-close', `${MS.close}ms`); style.setProperty('--ease-close', EASE.close);
+  // The older tokens follow the same springs, so every existing transition joins in.
+  const map = { fast: 'quick', moderate: 'smooth', slow: 'smooth' };
+  for (const [old, now] of Object.entries(map)) {
+    style.setProperty(`--motion-${old}-duration`, `${CSSV[now].ms}ms`);
+    style.setProperty(`--motion-${old}-exit-duration`, `${spring[old].exit.duration * 1000}ms`);
+    style.setProperty(`--ease-spring-${old}`, CSSV[now].ease);
   }
-  if (!globalThis.CSS?.supports?.('transition-timing-function', 'linear(0, 1)')) return;
-  for (const tier of Object.keys(spring)) style.setProperty(`--ease-spring-${tier}`, springEasing(spring[tier].bounce));
+  style.setProperty('--ease-out', CSSV.smooth.ease);
+  style.setProperty('--ease-drawer', CSSV.smooth.ease);
 }
 
 // Segmented controls get a sliding thumb behind the selected button.
-function placeThumb(seg, animate) {
+function placeThumb(seg, move) {
   const on = seg.querySelector('button[aria-selected="true"]');
   let th = seg.querySelector(':scope > .seg-thumb');
   if (!on) { if (th) th.style.opacity = '0'; return; }
-  if (!th) { th = document.createElement('i'); th.className = 'seg-thumb'; th.setAttribute('aria-hidden', 'true'); seg.prepend(th); animate = false; }
-  const x = on.offsetLeft, w = on.offsetWidth, h = on.offsetHeight, y = on.offsetTop;
-  if (!animate || calm()) th.style.transition = 'none';
-  th.style.transform = `translate(${x}px, ${y}px)`;
-  th.style.width = w + 'px'; th.style.height = h + 'px'; th.style.opacity = '1';
-  if (!animate || calm()) { th.offsetWidth; th.style.transition = ''; }
+  if (!th) { th = document.createElement('i'); th.className = 'seg-thumb'; th.setAttribute('aria-hidden', 'true'); seg.prepend(th); move = false; }
+  const to = { x: on.offsetLeft, y: on.offsetTop, width: on.offsetWidth, height: on.offsetHeight };
+  th.style.opacity = '1';
+  // A spring that can be caught mid-way: click two tabs fast and the thumb bends toward the second.
+  animate(th, { x: to.x, y: to.y, width: to.width, height: to.height }, move ? SPRING.smooth : { duration: 0 });
   seg.classList.add('has-thumb');
 }
 export function initSegs() {
