@@ -1239,15 +1239,43 @@ body.has-cmp .glance, body.has-cmp #pushBtn, body.has-cmp #meta .is-ahead { disp
 .cm-menu button.is-danger .cm-menu-ic { color: var(--del); }
 .row .area.is-more { display: none; }
 .row:hover .area.is-more { display: inline-flex; }
-#copyRange { margin-left: auto; }
-.main:not(.is-week) #copyRange, .main.is-home #copyRange { display: none; }
 .main.is-feature #stats, .main.is-feature .chart-card { display: none; }
-.hv-tiles { display: grid; gap: 10px; margin-bottom: 26px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.hv-tiles { display: grid; gap: 10px; margin-bottom: 26px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+/* the 6-month heatmap is a compact tile beside the other two, not a full-width panel */
+.hv-heat { grid-template-rows: auto 1fr auto; gap: 8px; }
+.hv-heat .hm { grid-auto-columns: 9px; grid-template-rows: repeat(7, 9px); gap: 2px; align-self: center; }
+.hv-heat .hm-c { width: 9px; aspect-ratio: auto; height: 9px; border-radius: 2px; }
+.hv-heat .hm-key { font-size: 10.5px; gap: 3px; justify-self: end; }
+.hv-heat .hm-key .hm-c { width: 8px; height: 8px; }
+.home { container-type: inline-size; }
+@container (max-width: 820px) { .hv-tiles { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .hv-heat { grid-column: 1 / -1; } }
+/* Home cards: what's running, and each repo waiting on you */
+.hv-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; margin-bottom: 26px; }
+.hv-card { position: relative; display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; min-height: 132px; border-radius: var(--radius); background: var(--surface); box-shadow: var(--raise); min-width: 0; }
+.hv-card.is-skel { background: linear-gradient(100deg, var(--surface) 30%, var(--hover) 50%, var(--surface) 70%) 0 0 / 300% 100%; animation: skel 1.4s ease-in-out infinite; }
+.hv-card.is-old::before { content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 2px; border-radius: 1px; background: var(--t-ui); }
+.hv-card.is-old .hv-wage { color: var(--t-ui); }
+.hv-card-h { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hv-card-h .hv-wname { flex: 1; min-width: 0; }
+.hv-host { display: inline-flex; color: var(--muted); }
+.hv-nums { display: flex; flex-wrap: wrap; gap: 6px 22px; }
+.hv-n { display: flex; flex-direction: column; gap: 1px; }
+.hv-n b { font-size: 24px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.hv-n small { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.hv-card-f { display: flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 10px; border-top: var(--dash); }
+.hv-live { position: relative; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--logo-2); }
+.hv-live::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 1.5px solid var(--logo-2); opacity: 0; }
+@media (prefers-reduced-motion: no-preference) { .hv-live::after { animation: rn-ring 1.8s ease-out infinite; } }
+.hv-run-what { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.hv-run-what b { font-weight: 500; font-size: 15px; }
+.hv-run-what code { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hv-run .hv-card-f .text-btn.bordered { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hv-stop { margin-left: auto; color: var(--del); }
+.hv-stop .ic { color: var(--del); }
+.hv-boot { font-size: 12px; }
 .hv-sub .up { color: var(--add); } .hv-sub .down { color: var(--t-ui); }
-.home-row.is-one { grid-template-columns: minmax(0, 1fr); }
 .t-branches { margin-bottom: 14px; }
 .stats { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
-.main.is-week:not(.is-home) #copyRange + .search { margin-left: 8px; }
 .cm-head + .cm-why { margin: -6px 0 10px 44px; }
 .cm-head ~ .cm-msg { padding: 0 14px 12px 44px; }
 

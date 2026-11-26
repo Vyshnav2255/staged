@@ -547,7 +547,7 @@ function group(id, title, sub, commits, opts = {}) {
   </section>`;
 }
 
-let notesSource = new Map(), notesRange = null;
+let notesSource = new Map();
 let featureIndex = new Map();
 
 function renderWeek(list) {
@@ -835,7 +835,7 @@ function pickRepoPane(el, v) {
 
 // ---------- notes ----------
 function notes(id) {
-  const src = id === 'range' ? notesRange : notesSource.get(id);
+  const src = notesSource.get(id);
   if (!src) return;
   let md = `## ${src.title}\n`;
   for (const t of TYPES) {
@@ -991,8 +991,6 @@ $('#list').addEventListener('click', (e) => {
   if (e.target.closest('[data-release]') && repo) return openRelease(repo, () => load(false));
   if (e.target.closest('[data-changelog]') && repo) return openChangelog(repo, () => load(false));
 });
-$('#copyRange').innerHTML = `${icon('Layers01', 14)}Copy notes`;
-$('#copyRange').addEventListener('click', () => notes('range'));
 addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
