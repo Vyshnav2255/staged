@@ -3,7 +3,6 @@
 // below slide up into the gap instead of jumping.
 import { sfxFold, sfxLand, sfxDiscard } from './sfx.js';
 const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
-const GLIDE = 'cubic-bezier(.22,1,.36,1)';
 
 
 const center = (r) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
@@ -69,34 +68,6 @@ export function commitFold(card) {
   };
   land.ready = collapse.finished.catch(() => {});
   return land;
-}
-
-// ⌘K and Settings preview: play the commit moment without committing anything.
-export function previewCommit() {
-  const main = document.querySelector('.main');
-  const real = document.querySelector('.cm-card');
-  const card = real || (() => {
-    const c = document.createElement('section');
-    c.className = 'cm-card fx-demo-card';
-    c.innerHTML = '<header class="cm-head"><span class="cm-num mono">1</span><b>✨ Added a lovely new thing</b></header><p class="cm-why">preview, nothing is committed</p>';
-    (main.querySelector('.controls') || main.firstElementChild).after(c);
-    return c;
-  })();
-  card.scrollIntoView({ block: 'center', behavior: 'instant' });
-  const land = commitFold(card);
-  const banner = document.createElement('div');
-  banner.className = 'cm-banner is-commit fx-demo';
-  banner.innerHTML = '<i class="cm-dot" aria-hidden="true"></i><span>Committed <b>✨ Added a lovely new thing</b> <span class="mono muted">preview · nothing was committed</span></span>';
-  card.classList.add('fx-hide');
-  setTimeout(() => {
-    (main.querySelector('.controls') || main.querySelector('.head')).after(banner);
-    land(banner.querySelector('.cm-dot'));
-  }, 280);
-  setTimeout(() => {
-    document.querySelectorAll('.fx-demo-card').forEach((x) => x.remove());
-    if (real) { card.classList.remove('fx-hide'); card.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 420, easing: GLIDE }); }
-  }, 1500);
-  setTimeout(() => banner.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(-4px)' }], { duration: 320, easing: 'ease-in', fill: 'forwards' }).finished.then(() => banner.remove()), 3600);
 }
 
 // Discard: the row slips away to the left and folds shut, then the list redraws.
