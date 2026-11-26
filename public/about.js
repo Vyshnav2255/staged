@@ -82,7 +82,7 @@ function draw() {
         <p>It sorts every change across your git repos into commits, and it does all of it <mark>on your computer</mark>. There is <mark>no account</mark> to make and <mark>no tracking</mark> of any kind. It <mark>needs no AI</mark> either. The grouping and the messages come from your own history.</p>
         <p>It is free, and it stays free.</p>
         <div class="ab-sign">
-          <span class="ab-ava"><img src="brand/maker.png" alt="" onerror="this.remove()"><b>V</b></span>
+          <span class="ab-ava"><img src="brand/maker.webp" alt="" onerror="this.remove()"><b>V</b></span>
           <span class="ab-who"><b>Vyshnav Gangadharan</b><span>Made with ♥ in the open</span></span>
         </div>
       </div>

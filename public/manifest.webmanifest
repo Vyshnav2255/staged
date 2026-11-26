@@ -7,8 +7,8 @@
   "background_color": "#fafaf9",
   "theme_color": "#fafaf9",
   "icons": [
-    { "src": "brand/staged-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "brand/staged-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "brand/staged-192.webp", "sizes": "192x192", "type": "image/png" },
+    { "src": "brand/staged-512.webp", "sizes": "512x512", "type": "image/png" },
     { "src": "brand/staged-icon.svg", "sizes": "any", "type": "image/svg+xml" }
   ]
 }
