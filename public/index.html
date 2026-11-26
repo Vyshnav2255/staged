@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><pattern id="st-diag" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="1" height="4" fill="rgb(255 255 255 / .22)"/></pattern></defs></svg>
   <div class="shell">
     <aside class="side">
       <a class="brand" href="#repo=all&amp;view=week" id="brandHome" title="Home"><svg class="brand-mark" viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true"><path d="M18 18H6C5.05719 18 4.58579 18 4.29289 17.7071C4 17.4142 4 16.9428 4 16C4 15.0572 4 14.5858 4.29289 14.2929C4.58579 14 5.05719 14 6 14H18C18.9428 14 19.4142 14 19.7071 14.2929C20 14.5858 20 15.0572 20 16C20 16.9428 20 17.4142 19.7071 17.7071C19.4142 18 18.9428 18 18 18Z" fill="var(--logo-box)" fill-opacity=".18" stroke="var(--logo-box)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 10H20" stroke="var(--logo-2)" stroke-width="1.75" stroke-linecap="round"/><path d="M4 6H20" stroke="var(--logo-1)" stroke-width="1.75" stroke-linecap="round"/></svg><span class="brand-word">staged</span></a>
@@ -38,9 +39,8 @@
 
       <div class="controls">
         <div class="seg scroll-fade-x" id="viewSeg" role="tablist" aria-label="Group changes">
-          <button data-v="week" role="tab">Weeks</button>
+          <button data-v="week" role="tab">Overview</button>
           <button data-v="feature" role="tab">Features</button>
-          <button data-v="release" role="tab">Releases</button>
           <button data-v="tree" role="tab">Tree</button>
           <button data-v="commit" role="tab">Commit <span class="count mono" id="dirtyCount"></span></button>
         </div>
@@ -60,6 +60,11 @@
       <section class="home" id="home" hidden></section>
 
       <section class="stats" id="stats" aria-label="Summary"></section>
+
+      <div class="ov-pair">
+        <section class="stack-card" id="stack" aria-label="Codebase" hidden></section>
+        <section class="weight-slot" id="weight" aria-label="Repo weight" hidden></section>
+      </div>
 
       <section class="chart-card">
         <div class="chart-head">

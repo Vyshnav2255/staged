@@ -112,6 +112,21 @@ html { overscroll-behavior: none; }
 
 /* ---------- stats ---------- */
 .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+/* codebase card on a repo's Overview: language mix, what it's built with, and the basics */
+.stack-card { margin-top: 14px; border: 1px solid transparent; border-radius: var(--radius); background: var(--surface); box-shadow: var(--raise); padding: 16px; }
+.stack-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.stack-head h2 { font-size: 14px; font-weight: 500; margin: 0; }
+.stack-head .mono { font-size: 12px; }
+.stack-langs { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 6px; font-size: 12px; color: var(--ink-2); }
+.stack-langs span { display: inline-flex; align-items: center; gap: 6px; }
+.stack-langs i { width: 8px; height: 8px; border-radius: 3px; }
+.stack-langs b { font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.stack-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; align-items: center; padding: 9px 0; border-top: var(--dash); font-size: 13px; }
+.stack-row:first-of-type { margin-top: 8px; }
+.stack-k { color: var(--muted); }
+.stack-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.stack-chips .chip.is-strong { color: var(--ink); font-weight: 500; }
+.main.is-home .stack-card, .main.is-pane .stack-card { display: none; }
 .stat { padding: 14px 16px 15px; min-width: 0; }
 .stat + .stat { border-left: .5px solid var(--line-strong); }
 .stat-label { color: var(--muted); font-size: 12px; }
@@ -265,7 +280,7 @@ html { overscroll-behavior: none; }
 .pane[hidden], .list[hidden] { display: none; }
 .seg .count { font-size: 11px; color: var(--muted); margin-left: 2px; }
 .seg .count:empty { display: none; }
-.seg .count.is-dot { display: inline-block; width: 6px; height: 6px; margin: 0 0 1px 4px; border-radius: 50%; background: var(--muted); vertical-align: middle; }
+.seg .count.is-dot { display: block; flex: none; width: 6px; height: 6px; margin: 0 0 0 6px; padding: 0; border-radius: 50%; background: var(--t-ui); align-self: center; }
 .muted { color: var(--muted); }
 .a { color: var(--add); }
 .d { color: var(--del); }
@@ -663,6 +678,8 @@ html { overscroll-behavior: none; }
 .home { margin-bottom: 20px; }
 .home-head { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 10px; }
 .home-head .h-sub { margin: 0; }
+.home-head .home-stmt { margin-left: auto; color: var(--ink-2); }
+.home-head .home-stmt .ic { color: var(--muted); }
 
 
 
@@ -675,7 +692,7 @@ html { overscroll-behavior: none; }
 
 
 
-.home-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.home-dot { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); align-self: center; }
 .home-dot.is-dirty { background: var(--t-ui); } .home-dot.is-ahead { background: var(--logo-2); } .home-dot.is-behind { background: var(--t-feature); }
 
 
@@ -1511,39 +1528,48 @@ body:has(.cm-list) { background: var(--cm-ground); }
 
 /* The deck: the main command is a cassette deck. The label says what's playing, the reels turn while
    it runs (fast while a server warms up, steady once it's live, still when it jams), a counter keeps
-   time, and three chunky keys run it: Play stays down while it plays, Stop pops it back up. */
-.rn-deck { position: relative; z-index: 1; padding: 8px 12px 14px; border-radius: 16px; background: linear-gradient(#f4f3ef, #e4e2dc); box-shadow: var(--raise), inset 0 1px 0 rgb(255 255 255 / .9); }
-.rn-deck-top { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 4px 4px 2px; }
-.rn-state { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); }
+   time, and a flat tray of icon keys runs it: Run stays lit while it plays. */
+.rn-deck { position: relative; z-index: 1; padding: 8px 12px 12px; border-radius: 16px; background: linear-gradient(#f5f5f4, #e7e5e4); box-shadow: var(--raise), inset 0 1px 0 rgb(255 255 255 / .9);
+  /* the deck is a light object on either theme (as the sidebar is always dark), so it carries the light ink with it */
+  --ink: #0c0a09; --ink-2: #57534e; --muted: #78716c; --line-strong: #d6d3d1; --del: #b91c1c; color: var(--ink); }
+/* Everything on the lid sits on one baseline, 15px down: the mark's last pixel row, both words, the status and the light. */
+.rn-deck-top { display: flex; align-items: baseline; gap: 7px; height: 30px; padding: 3px 4px 0 2px; line-height: 16px; }
+.rn-state { margin-right: -.12em; font-size: 10.5px; line-height: 16px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); } /* the margin takes back the tracking after the last letter */
 .is-idle .rn-state, .is-stopped .rn-state { color: var(--muted); }
 .is-live .rn-state, .is-busy .rn-state, .is-done .rn-state { color: var(--logo-box); }
 .is-failed .rn-state { color: var(--del); }
-.rn-brand { flex: 1; display: flex; align-items: center; justify-content: flex-start; gap: 4px; margin-left: 2px; color: #b9b6ad; text-shadow: 0 1px 0 rgb(255 255 255 / .9), 0 -1px 0 rgb(20 18 12 / .14); }
-.rn-brand .ic { filter: drop-shadow(0 1px 0 rgb(255 255 255 / .9)) drop-shadow(0 -.5px 0 rgb(20 18 12 / .2)); }
-.rn-brand b { font: 600 13px Akt, sans-serif; letter-spacing: -.03em; }
-.rn-brand i { margin-left: 3px; padding-left: 7px; border-left: 1px solid #cfccc4; box-shadow: -1px 0 0 rgb(255 255 255 / .8); font-size: 8.5px; font-style: normal; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; }
+/* The brand is pressed into the lid. No dark shadow and no blur: the letters are filled with a ramp that is darker at the
+   top of the x-height and lighter at the baseline (the shade a recess would have), and one hard white edge sits 1px below. */
+.rn-brand { flex: 1; display: flex; align-items: baseline; justify-content: flex-start; gap: 3px; color: #a8a29e; filter: drop-shadow(0 1px 0 rgb(255 255 255 / .9)); }
+/* 12px, so the mark's strokes are 2px apart; the half pixel puts each on its own pixel row, the last one on the baseline */
+.rn-brand .ic { transform: translate(.5px, 2.5px); }
+.rn-brand b, .rn-brand i { color: transparent; -webkit-background-clip: text; background-clip: text; }
+.rn-brand b { font: 600 13px/16px Akt, sans-serif; letter-spacing: -.03em; background-image: linear-gradient(#a8a29e 5px, #d6d3d1 12px); }
+.rn-brand i { position: relative; margin-left: 4px; padding-left: 7.5px; font-size: 9px; line-height: 16px; font-style: normal; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; background-image: linear-gradient(#a8a29e 4px, #d6d3d1 11px); } /* 9px: its capitals are as tall as the x-height of "staged" */
+.rn-brand i::before { content: ''; position: absolute; left: 0; bottom: 3px; width: 1px; height: 11px; background: #d6d3d1; } /* from the top of the t to the foot of the g */
 .rn-deck-top .icon-btn { box-shadow: none; background: none; color: var(--muted); }
-.rn-deck-top .icon-btn:hover, .rn-deck-top .icon-btn.is-on { background: rgb(20 18 12 / .06); color: var(--ink); }
+.rn-deck-top .icon-btn:hover, .rn-deck-top .icon-btn.is-on { background: rgb(12 10 9 / .06); color: var(--ink); }
 
 /* the tape */
-.rn-tape { position: relative; height: 164px; padding: 10px; border-radius: 11px; background: linear-gradient(#2c2c2a, #1b1b1a); box-shadow: inset 0 2px 5px rgb(0 0 0 / .55), inset 0 0 0 1px rgb(255 255 255 / .04), 0 1px 0 rgb(255 255 255 / .8); }
+.rn-tape { position: relative; height: 164px; padding: 10px; border-radius: 11px; background: linear-gradient(#292524, #1c1917); box-shadow: inset 0 2px 5px rgb(0 0 0 / .55), inset 0 0 0 1px rgb(255 255 255 / .04), 0 1px 0 rgb(255 255 255 / .8); }
 .rn-label { position: relative; display: flex; flex-direction: column; gap: 0; height: 62px; padding: 11px 10px 0; border-radius: 4px; overflow: hidden; color: var(--ink);
-  background: #fbf8ee; box-shadow: 0 1px 2px rgb(0 0 0 / .4); }
+  background: #fafaf9; box-shadow: 0 1px 2px rgb(0 0 0 / .4); }
 .rn-label::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 4px; background: var(--logo-2); } /* same colours as the status light */
-.is-failed .rn-label::before { background: var(--del); } .is-idle .rn-label::before, .is-stopped .rn-label::before { background: var(--line-strong); } :is(.is-boot, .is-stopping) .rn-label::before { background: var(--rn-amber, #eda100); }
+.is-failed .rn-label::before { background: var(--del); } .is-idle .rn-label::before, .is-stopped .rn-label::before { background: var(--line-strong); } :is(.is-boot, .is-stopping) .rn-label::before { background: var(--rn-amber, #f59e0b); }
 .rn-lab-side { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--logo-box); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.is-failed .rn-lab-side { color: var(--del); } .is-idle .rn-lab-side, .is-stopped .rn-lab-side { color: var(--muted); } .is-boot .rn-lab-side { color: #a87300; }
-.rn-lab-main { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 15px; font-weight: 500; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0; border: 0; background: none; color: inherit; text-align: left; font-family: inherit; }
+.is-failed .rn-lab-side { color: var(--del); } .is-idle .rn-lab-side, .is-stopped .rn-lab-side { color: var(--muted); } .is-boot .rn-lab-side { color: #a16207; }
+.rn-lab-main { display: block; min-width: 0; font-size: 15px; font-weight: 500; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0; border: 0; background: none; color: inherit; text-align: left; font-family: inherit; }
 .rn-lab-main.mono { font-family: "Geist Mono", monospace; font-size: 14px; }
-.rn-lab-main.is-err { display: block; font-size: 11.5px; font-weight: 500; color: #52514e; }
+.rn-lab-main.is-err { display: block; font-size: 11.5px; font-weight: 500; color: #57534e; }
 .rn-lab-main.is-quiet { color: var(--muted); font-weight: 400; }
-.rn-lab-main .ic { flex: none; color: var(--logo-box); }
+.rn-lab-main .ic { display: inline-block; margin-left: 6px; vertical-align: -2px; color: var(--logo-box); }
 button.rn-lab-main { cursor: pointer; width: max-content; max-width: 100%; border-radius: 4px; }
 @media (hover: hover) { button.rn-lab-main:hover { text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--logo-box) 50%, transparent); text-underline-offset: 3px; } }
-.rn-lab-cmd { padding: 6px 0 3px; border-bottom: 1px solid color-mix(in srgb, var(--logo-box) 16%, transparent); line-height: 1.2; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rn-lab-main { padding-bottom: 3px !important; border-bottom: 1px solid color-mix(in srgb, var(--logo-box) 16%, transparent) !important; line-height: 1.25; }
+.rn-lab-cmd { height: 23px; padding: 6px 0 3px; border-bottom: 1px solid color-mix(in srgb, var(--logo-box) 16%, transparent); line-height: 13px; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* both lines are 23px whatever is written on them, so the two rules land on whole pixels and never move between states */
+.rn-lab-main { flex: none; height: 23px; padding-bottom: 3px !important; border-bottom: 1px solid color-mix(in srgb, var(--logo-box) 16%, transparent) !important; line-height: 19px; }
 /* the window with the two reels and the tape between them */
-.rn-window { position: absolute; left: 38px; right: 38px; bottom: 14px; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border-radius: 32px; background: #0d0d0c; box-shadow: inset 0 0 0 2px #3a3a37, inset 0 3px 6px rgb(0 0 0 / .6); }
+.rn-window { position: absolute; left: 38px; right: 38px; bottom: 14px; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border-radius: 32px; background: #0c0a09; box-shadow: inset 0 0 0 2px #44403c, inset 0 3px 6px rgb(0 0 0 / .6); }
 .rn-reel { position: relative; z-index: 1; flex: none; width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: #5a4632; transition: box-shadow 1.2s var(--ease-out); }
 /* how much tape is on each reel: it moves from left to right as it plays */
 .rn-reel.is-l { box-shadow: 0 0 0 0 #5a4632; } .rn-reel.is-r { box-shadow: 0 0 0 0 #5a4632; }
@@ -1629,7 +1655,7 @@ button.rn-lab-main { cursor: pointer; width: max-content; max-width: 100%; borde
 .is-live > .rn-main .rn-st > span:first-child, .is-busy > .rn-main .rn-st > span:first-child { color: var(--logo-box); }
 .rn-chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px 0 8px; border: 0; border-radius: 999px; cursor: pointer; background: color-mix(in srgb, var(--logo-2) 14%, transparent); color: var(--logo-box) !important; font-size: 11px !important; transition: transform var(--motion-fast-duration) var(--ease-spring-fast); }
 .rn-chip:active { transform: scale(.96); }
-.rn-tools { display: flex; align-items: center; gap: 4px; margin-top: 3px; }
+.rn-tools { display: flex; align-items: center; align-self: center; gap: 4px; }
 .rn-more { opacity: .55; } .rn-row:hover .rn-more, .rn-more:focus-visible, .rn-deck .rn-more { opacity: 1; }
 .rn-tools .icon-btn.is-on { background: var(--hover); color: var(--ink); }
 .rn-tools .rn-stop { color: var(--del); }

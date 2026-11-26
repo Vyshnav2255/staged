@@ -1,29 +1,83 @@
-// Health: site weight per week, and images worth a look. Branches and stashes live on Tree.
+// Repo weight on a repo's Overview, and Media: a docked side panel with the heavy images and videos and a
+// Shrink button. Branches and stashes live on Tree.
 import { icon } from './icons.js';
-import { esc, ago, bytes, api, copy, dShort, dLong } from './ui.js';
+import { bar } from './bar.js';
+import { esc, ago, bytes, api, copy, toast, dShort, dLong, modal } from './ui.js';
+import { sfxClunk, sfxSettle } from './sfx.js';
 
 const CATS = ['images', 'css', 'js', 'fonts', 'media'];
 const CAT_LABEL = { images: 'Images', css: 'CSS', js: 'JavaScript', fonts: 'Fonts', media: 'Audio & video' };
 const CAT_COLOR = { images: 'var(--t-feature)', css: 'var(--t-ui)', js: 'var(--t-fix)', fonts: 'var(--t-perf)', media: 'var(--t-refactor)' };
 
-const st = { repo: null, weight: null, images: null, state: null, error: '', weeks: 26 };
-let host = null, ctx = null;
+const st = { repo: null, weight: null, images: null, state: null, error: '', weeks: 12 };
+// Shrink: tools available, files being worked on, and the last result per path.
+const sh = { tools: null, busy: new Set(), setup: false, done: new Map(), last: null, run: null };
+// Numbers that count to their new value when a file finishes: key -> { from, to, at }.
+const ticks = new Map();
+// kHost: the Repo weight card beside Codebase on Overview. mHost: the Media panel's body while it's open.
+let kHost = null, mHost = null, media = null, ctx = null;
 
-export function mountHealth(el, context) {
-  host = el; ctx = context;
-  if (!host.dataset.healthBound) { host.addEventListener('click', onClick); host.dataset.healthBound = '1'; }
-  if (st.repo !== ctx.repo) { st.repo = ctx.repo; st.weight = st.images = st.state = null; load(); }
-  else draw();
+function bind(el) {
+  if (el.dataset.healthBound) return;
+  el.addEventListener('click', onClick);
+  el.addEventListener('error', (e) => { if (e.target.matches?.('.md-thumb img')) e.target.remove(); }, true);
+  el.dataset.healthBound = '1';
 }
+function use(repo) {
+  if (st.repo === repo) return false;
+  st.repo = repo; st.weight = st.images = st.state = null; sh.last = null; sh.done = new Map(); sh.fresh = null; ticks.clear();
+  load();
+  return true;
+}
+
+// Overview: the Repo weight card, with a line about heavy media that opens the Media panel.
+// The page's range (4w, 12w, 1y, All) sets how many weeks it weighs; the server stops at two years.
+const WEEKS = { '4w': 4, '12w': 12, '1y': 52, all: 104 };
+// Weigh the repo without showing a card (the stats timeline on Overview draws the weight itself).
+export function primeWeight(context) {
+  ctx = context;
+  const weeks = WEEKS[ctx.range] || 12;
+  if (weeks !== st.weeks) { st.weeks = weeks; if (st.repo === ctx.repo) { st.weight = null; reweigh(); } }
+  use(ctx.repo);
+}
+// The card beside Codebase: what the repo is made of, its heaviest images and videos, and the way into Media.
+export function mountKinds(el, context) {
+  kHost = el; bind(el);
+  ctx = { ...context, onWeight: ctx?.onWeight || context.onWeight };
+  const weeks = WEEKS[ctx.range] || 12;
+  if (weeks !== st.weeks) { st.weeks = weeks; if (st.repo === ctx.repo) { st.weight = null; reweigh(); } }
+  if (!use(ctx.repo)) draw();
+}
+function reweigh() {
+  const repo = st.repo, weeks = st.weeks;
+  api(`/api/x/weight?repo=${encodeURIComponent(repo)}&weeks=${weeks}`).then((r) => { if (st.repo === repo && st.weeks === weeks) { st.weight = r.weeks; draw(); ctx?.onWeight?.(); } }).catch(() => {});
+}
+
+// Media: docked on the right like Run, and it follows the repo you pick.
+export function openMedia(repo, context) {
+  if (!repo || repo === 'all') return toast('Open a repo first');
+  if (context) ctx = context;
+  if (media) { const m = media; media = null; mHost = null; m.close(true); }
+  use(repo);
+  const m = modal({ title: 'Media', body: '<div data-md></div>', side: true, repo, follow: (r) => openMedia(r), onClose: () => { if (media === m) { media = null; mHost = null; } } });
+  m.el.classList.add('is-ps', 'is-media');
+  media = m; mHost = m.el.querySelector('[data-md]'); bind(mHost);
+  draw();
+  return m;
+}
+export const mediaOpen = () => !!media;
 
 async function load() {
   draw();
   const r = encodeURIComponent(st.repo);
+  if (!sh.tools) api('/api/shrink/status').then((t) => { sh.tools = t; draw(); }).catch(() => {});
+  api(`/api/shrink/last?repo=${r}`).then((x) => { sh.last = x.run; draw(); }).catch(() => {});
+  const weeks = st.weeks;
   const [w, im] = await Promise.allSettled([
-    api(`/api/x/weight?repo=${r}&weeks=${st.weeks}`), api(`/api/x/images?repo=${r}`),
+    api(`/api/x/weight?repo=${r}&weeks=${weeks}`), api(`/api/x/images?repo=${r}`),
   ]);
   if (st.repo !== ctx.repo) return;
-  st.weight = w.status === 'fulfilled' ? w.value.weeks : [];
+  if (st.weeks === weeks) { st.weight = w.status === 'fulfilled' ? w.value.weeks : []; ctx?.onWeight?.(); } // else the newer range is already on its way
   st.images = im.status === 'fulfilled' ? im.value.images : [];
   st.error = [w, im].find((x) => x.status === 'rejected')?.reason?.message || '';
   draw();

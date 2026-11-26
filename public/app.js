@@ -182,12 +182,42 @@ function greeting() {
 }
 
 // ---------- render: stats ----------
+// The stats card is one timeline: every week of the range once, oldest on the left, this week on the right.
+// Two lanes share the same columns: the work (one rounded pill per week, stacked by commit type) and the
+// repo's weight (a line). A sentence on top says where things stand; pointing at a week bands it through both lanes and swaps the sentence for that week.
+const fmtBytes = (b) => b >= 1048576 ? `${(b / 1048576).toFixed(b >= 10485760 ? 0 : 1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+// weekly buckets for the range, oldest first
+function statWeeks(list) {
+  const n0 = RANGES[range()];
+  const oldest = list.length ? Math.min(...list.map((c) => c.t)) : Date.now();
+  const n = n0 === Infinity ? Math.min(104, Math.round((weekStart(Date.now()) - weekStart(oldest)) / WEEK) + 1) : n0;
+  const now = weekStart(Date.now());
+  const out = Array.from({ length: n }, (_, i) => ({ t: now - (n - 1 - i) * WEEK, cs: [] }));
+  for (const c of list) { const i = n - 1 - Math.round((now - weekStart(c.t)) / WEEK); if (i >= 0 && i < n) out[i].cs.push(c); }
+  return out;
+}
+let statList = [];
 function renderStats(list) {
-  const n = RANGES[range()];
+  statList = list;
+  if (state.repo !== 'all') primeWeight({ ...ctxFor('week'), onWeight: paintStats }); // the weight arrives after the commits
+  paintStats();
+}
+// The weight line: the area is an HTML box clipped to the series, so its stripes are the Repo weight bar's own CSS
+// stripes at 1:1 pixels (never stretched); the stroke does not scale and has round caps; the right end is a round dot.
+function weightLine(v, mark) {
+  const max = Math.max(...v) * 1.16 || 1, n = v.length - 1;
+  const X = (i) => +((i / n) * 100).toFixed(3), Y = (x) => +(100 - (x / max) * 100).toFixed(3);
+  return `<div class="tl-area" style="clip-path:polygon(0% 100%, ${v.map((x, i) => `${X(i)}% ${Y(x)}%`).join(', ')}, 100% 100%)"></div>
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points="${v.map((x, i) => `${X(i)},${Y(x)}`).join(' ')}" class="tl-line"/></svg>
+    ${mark != null && mark > 0 && mark < n ? `<i class="tl-dot is-jump" style="left:${X(mark)}%;top:${Y(v[mark])}%"></i>` : ''}<i class="tl-dot" style="left:100%;top:${Y(v[n])}%"></i>`;
+}
+function paintStats() {
+  const el = $('#stats'), repo = state.repo;
+  if (repo === 'all') { el.innerHTML = ''; return; } // Home has its own cards; these belong to a repo's Overview
+  const list = statList, n = RANGES[range()];
   let prev = null;
   if (n !== Infinity) {
-    const end = rangeStart();
-    const start = end - n * WEEK;
+    const end = rangeStart(), start = end - n * WEEK;
     prev = allCommits().filter((c) => c.t >= start && c.t < end && matches(c));
   }
   const sum = (l) => ({ commits: l.length, add: l.reduce((s, c) => s + c.add, 0), del: l.reduce((s, c) => s + c.del, 0), feat: l.filter((c) => c.type === 'feature').length });
@@ -385,15 +415,68 @@ function countTypes(list) {
   return c;
 }
 
+// Search matches are marked in lime, so you can see why a row is in the list.
+function hit(text) {
+  const t = esc(text);
+  if (!state.q || state.q.length < 2) return t;
+  const q = esc(state.q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return t.replace(new RegExp(`(${q})`, 'gi'), '<mark class="q-hit">$1</mark>');
+}
+
+// Typing a search moves things instead of cutting: the stats, chart and codebase card fold away
+// (and back), rows that stay glide to their new places and rows that join fade in.
+const FLIP_SEL = '.row[data-k], .group-head, .feat';
+const flipKey = (el) => el.dataset.k || (el.dataset.feat ? 'f:' + el.dataset.feat : el.classList.contains('group-head') ? 'g:' + el.parentElement.id : null);
+const SEARCH_HIDES = '.stats, .chart-card, .stack-card';
+const EASE = M_EASE.smooth;
+function fluid(update) {
+  const main = document.querySelector('.main'), list = $('#list');
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || !list || list.hidden || !main.animate) return update();
+  const was = main.classList.contains('is-searching');
+  const base0 = list.getBoundingClientRect().top;
+  const before = new Map();
+  for (const el of list.querySelectorAll(FLIP_SEL)) { const k = flipKey(el); if (k) before.set(k, el.getBoundingClientRect().top - base0); }
+  const blocks = [...main.querySelectorAll(SEARCH_HIDES)].filter((el) => !el.hidden);
+  const heights = new Map(blocks.map((el) => [el, el.offsetHeight]));
+  for (const el of blocks) el.getAnimations().forEach((a) => a.cancel());
+  update();
+  const now = main.classList.contains('is-searching');
+  const fold = (el, out) => {
+    const cs = getComputedStyle(el);
+    const full = { height: (out ? heights.get(el) : el.offsetHeight) + 'px', opacity: 1, marginTop: cs.marginTop, paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom, transform: 'translateY(0)' };
+    const none = { height: '0px', opacity: 0, marginTop: '0px', paddingTop: '0px', paddingBottom: '0px', transform: 'translateY(-6px)' };
+    el.style.overflow = 'hidden';
+    const an = el.animate(out ? [full, none] : [none, full], { duration: out ? MS.quick : MS.smooth, easing: out ? M_EASE.quick : EASE });
+    an.onfinish = an.oncancel = () => { el.style.overflow = ''; if (out) el.classList.remove('is-leaving'); };
+  };
+  if (!was && now) for (const el of blocks) { el.classList.add('is-leaving'); fold(el, true); }
+  if (was && !now) for (const el of main.querySelectorAll(SEARCH_HIDES)) if (!el.hidden && el.offsetHeight) fold(el, false);
+  const base = list.getBoundingClientRect().top, vh = innerHeight;
+  let fresh = 0;
+  for (const el of list.querySelectorAll(FLIP_SEL)) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom < -40 || r.top > vh + 40) continue; // off screen: nothing to see
+    const k = flipKey(el), old = before.get(k);
+    if (old != null) {
+      const dy = old - (r.top - base);
+      if (Math.abs(dy) > 1) el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: MS.smooth, easing: EASE });
+    } else {
+      el.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: MS.smooth, delay: Math.min(fresh++, 12) * 18, easing: EASE, fill: 'backwards' });
+    }
+  }
+  const empty = list.querySelector(':scope > .empty');
+  if (empty) empty.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: MS.smooth, easing: EASE });
+}
+
 function row(c) {
   const showRepo = state.repo === 'all';
   const areas = c.areas.slice(0, 3).map((a, i) => `<span class="area${i ? ' is-more' : ''}">${esc(a)}</span>`).join('') + (c.areas.length > 3 ? `<span class="area is-more">+${c.areas.length - 3}</span>` : '');
   const d = new Date(c.t);
   const when = Date.now() - c.t < 6 * DAY ? ago(c.t) : dShort.format(d);
   const sha = c.sha.slice(0, 7);
-  return `<div class="row">
+  return `<div class="row" data-k="${esc(c.repo + ':' + c.sha)}">
     <span class="type ${c.guessed ? 'guessed' : ''}" style="--c:var(--t-${c.type})" title="${c.guessed ? 'Guessed from the message' : esc(c.mark || TYPE_LABEL[c.type])}"><span class="dot" style="background:var(--t-${c.type})"></span>${TYPE_LABEL[c.type]}</span>
-    <span class="subject"><span class="subject-text">${esc(c.text || c.subject)}</span>${areas ? `<span class="areas">${areas}</span>` : ''}</span>
+    <span class="subject"><span class="subject-text">${hit(c.text || c.subject)}</span>${areas ? `<span class="areas">${areas}</span>` : ''}</span>
     ${showRepo ? `<span class="repo-tag">${esc(c.repo)}</span>` : ''}
     <span class="lines mono"><span class="a">+${compact(c.add)}</span> <span class="d">−${compact(c.del)}</span></span>
     ${c.url ? `<a class="sha mono" href="${esc(c.url)}" target="_blank" rel="noopener" title="${esc(c.author)} · ${dLong.format(d)} ${dTime.format(d)}">${sha}</a>` : `<span class="sha mono" title="${esc(c.author)}">${sha}</span>`}
@@ -543,10 +626,56 @@ function pane(name) {
   return el;
 }
 
+// ---------- codebase: language mix, frameworks and tooling for the open repo ----------
+const stacks = new Map();
+async function loadStack(name) {
+  try {
+    const s = await api(`/api/x/stack?repo=${encodeURIComponent(name)}`);
+    const changed = JSON.stringify(stacks.get(name)) !== JSON.stringify(s);
+    stacks.set(name, s);
+    if (changed && state.data && state.repo === name) { renderHeader(); renderStack(); }
+  } catch {}
+}
+// Codebase colours come from the same five as the Repo weight bar (no language brand colours), so
+// JavaScript is the same green and CSS the same orange in both cards.
+const LANG_KIND = { JavaScript: 'js', TypeScript: 'js', JSX: 'js', TSX: 'js', Vue: 'js', Svelte: 'js', Astro: 'js', CoffeeScript: 'js',
+  CSS: 'css', SCSS: 'css', Sass: 'css', Less: 'css', Stylus: 'css', HTML: 'markup', Liquid: 'markup', Handlebars: 'markup', Nunjucks: 'markup', EJS: 'markup', Pug: 'markup' };
+const KIND_COLOR = { js: 'var(--t-fix)', css: 'var(--t-ui)', markup: 'var(--t-feature)' };
+const SPARE = ['var(--t-perf)', 'var(--t-refactor)', 'var(--t-feature)', 'var(--t-fix)', 'var(--t-ui)'];
+const fmtSize = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`;
+function renderStack() {
+  const el = $('#stack');
+  const sk = state.repo !== 'all' && state.view === 'week' ? stacks.get(state.repo) : null;
+  el.hidden = !sk || !sk.languages.length;
+  if (el.hidden) { el.innerHTML = ''; return; }
+  const langs = sk.languages.filter((l) => l.share >= 0.005);
+  // Languages outside the known kinds take the remaining colours in order, then grey.
+  const spare = SPARE.filter((c) => !langs.some((l) => KIND_COLOR[LANG_KIND[l.name]] === c));
+  const own = new Map(); let k = 0;
+  for (const l of langs) if (!LANG_KIND[l.name]) own.set(l.name, spare[k++] || 'var(--t-other)');
+  const color = (n) => KIND_COLOR[LANG_KIND[n]] || own.get(n) || 'var(--t-other)';
+  const pct = (x) => (x >= 0.1 ? Math.round(x * 100) : (x * 100).toFixed(1)) + '%';
+  const facts = [['Package manager', sk.packageManager], ['License', sk.license], ['Files', `${sk.files.toLocaleString()} · ${fmtSize(sk.size)}`]].filter(([, v]) => v);
+  el.innerHTML = `<div class="stack-head"><h2>Codebase</h2></div>
+    ${bar(langs.map((l) => ({ value: l.share, color: color(l.name), title: `${l.name} ${pct(l.share)}` })), { cls: 'stack-bar' })}
+    <div class="stack-langs">${langs.map((l) => `<span><i style="background:${color(l.name)}"></i>${esc(l.name)} <b class="mono">${pct(l.share)}</b></span>`).join('')}</div>
+    ${facts.map(([k, v]) => `<div class="stack-row"><span class="stack-k">${k}</span><span class="mono">${esc(v)}</span></div>`).join('')}`;
+}
+
+// Repo weight sits beside the Codebase card on a repo's Overview; its media line opens the Media panel.
+function renderWeight() {
+  const el = $('#weight');
+  // Beside Codebase: what the repo is made of (the weight per week is the Repo weight graph in the stats card).
+  if (state.repo === 'all' || state.view !== 'week') { el.hidden = true; el.innerHTML = ''; return; } // Overview only
+  el.hidden = false;
+  mountKinds(el, { ...ctxFor('week'), onWeight: paintStats });
+}
+
 async function refreshRepoState() {
   if (state.repo === 'all') return;
   const name = state.repo;
   loadRun(name);
+  loadStack(name);
   try {
     const s = await api(`/api/x/state?repo=${encodeURIComponent(name)}`);
     state.repoState = { ...s, repo: name };
@@ -602,12 +731,14 @@ function render() {
   renderLegend();
   const list = visible();
   renderStats(list);
-  notesRange = { title: range() === 'all' ? 'All changes' : `Last ${state.range}`, commits: list };
+  renderStack();
+  renderWeight();
   renderChart(list);
   notesSource = new Map();
   const listEl = $('#list');
   listEl.classList.toggle('all-repos', state.repo === 'all');
-  listEl.innerHTML = v === 'week' ? renderWeek(list) : v === 'feature' ? renderFeature(list) : renderRelease(list);
+  // A repo's Overview ends with its releases, across all time; the commit by commit list lives in Tree.
+  listEl.innerHTML = v === 'week' ? (state.repo !== 'all' ? `<h2 class="ov-h">Releases</h2>${renderRelease(allCommits().filter(matches))}` : renderWeek(list)) : v === 'feature' ? renderFeature(list) : renderRelease(list);
 }
 
 // Settings is its own page. Commit and Home can open it at a section.
@@ -720,12 +851,11 @@ initPalette((q) => {
   const repos = state.data ? state.data.repos : [];
   const goRepo = (name, view) => () => { state.repo = name; if (view) state.view = view; else if (GLOBAL_VIEWS.includes(state.view)) state.view = 'week'; state.repoState = null; render(); refreshRepoState(); scrollTo({ top: 0 }); };
   items.push({ group: 'Go to', label: 'Home', hint: 'what is waiting, across every repo', run: goHome });
-  items.push({ group: 'Actions', label: 'Preview commit animation', hint: 'nothing is committed', run: () => setTimeout(previewCommit, 200) });
-  items.push({ group: 'Actions', label: 'Try the cart and push', hint: 'practice, nothing is pushed', run: () => setTimeout(practiceCart, 200) });
   items.push({ group: 'Actions', label: "Print this week's statement", hint: 'every push this week, added up', run: () => setTimeout(openStatement, 200) });
   items.push({ group: 'Actions', label: soundOn() ? 'Turn sounds off' : 'Turn sounds on', hint: 'commit and push sounds', run: () => { setSound(!soundOn()); toast(soundOn() ? 'Sounds on' : 'Sounds off'); } });
   items.push({ group: 'Go to', label: 'Settings', hint: 'Repos, sound, updates', run: () => openSettings() });
   if (state.repo !== 'all') {
+    items.push({ group: 'Actions', label: 'Shrink media', hint: `${state.repo}: heavy images and videos`, run: () => setTimeout(() => openMedia(state.repo, ctxFor('week')), 200) });
     items.push({ group: 'Run', label: 'Run…', hint: `${state.repo}: all its commands`, run: () => setTimeout(() => openRun(state.repo), 200) });
     for (const c of runCache(state.repo)?.commands || []) items.push({ group: 'Run', label: `Run ${c.label}`, hint: c.cmd, run: () => { runCommand(state.repo, c.id); toast(`Running ${c.label}${c.kind === 'serve' ? '. The page opens when it’s ready.' : ''}`); } });
   }
