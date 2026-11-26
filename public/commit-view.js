@@ -572,20 +572,10 @@ const closedRepos = new Set();
 let route = { repo: null, view: null }, onPushed = null;
 const NO_PANEL = ['readme', 'settings'];
 const onRepoView = () => !!route.repo && route.repo !== 'all' && !NO_PANEL.includes(route.view) && pd.repo === route.repo;
-// Practice cart: sample commits you can hold-to-push for real feel, with nothing committed or pushed.
+// The practice cart was removed; demo stays null, so the cart always shows the repo's real commits.
 let demo = null;
 const cartKey = () => (demo ? '__practice' : route.repo);
 const outgoing = () => (demo ? demo.items : onRepoView() ? pd.outgoing?.commits || [] : []);
-export function practiceCart() {
-  const now = Date.now(), sha = () => [...crypto.getRandomValues(new Uint8Array(20))].map((b) => b.toString(16).padStart(2, '0')).join('');
-  demo = { items: [
-    { subject: '🐛 Fixed the sidebar moving with scroll', files: 1, add: 4, del: 2, at: now - 60000 },
-    { subject: '💄 Gave the cart a printed receipt', files: 2, add: 86, del: 3, at: now - 240000 },
-    { subject: '✨ Added hold to push', files: 3, add: 112, del: 18, at: now - 600000 },
-  ].map((c) => ({ ...c, sha: sha() })) };
-  cs.panel.pushed = null; cs.panel.lastN = 3;
-  paintPanel(true);
-}
 const onCommitView = () => onRepoView() && route.view === 'commit' && !!host?.isConnected && ctx?.view === 'commit' && cs.repo === route.repo;
 // A printed sheet: this repo's push receipt, or the weekly statement (which can show anywhere).
 let stmt = null;

@@ -2,8 +2,6 @@
 import { icon } from './icons.js';
 import { esc, toast } from './ui.js';
 import { soundOn, setSound, sfxGrouped } from './sfx.js';
-import { previewCommit } from './fx.js';
-import { practiceCart } from './commit-view.js';
 import { checkNow } from './update.js';
 
 let host = null, ctx = null, repoInfo = null, scan = null, fresh = new Set();
@@ -33,10 +31,16 @@ function draw() {
           <div class="set-row-main"><b>Sounds</b><span class="muted">Soft sounds when you commit, push and discard.</span></div>
           <span class="switch"><input type="checkbox" data-sound ${soundOn() ? 'checked' : ''}><i></i></span>
         </label>
-        <div class="set-row">
-          <div class="set-row-main"><b>Try them</b><span class="muted">Plays the moments without committing or pushing anything.</span></div>
-          <div class="set-btns"><button class="text-btn bordered sm" data-preview="commit">Commit</button><button class="text-btn bordered sm" data-preview="push">Push</button></div>
-        </div>
+      </div>
+    </section>
+
+    <section class="set-sec" id="set-sidebar">
+      <header class="set-h"><h2>Sidebar</h2></header>
+      <div class="set-card">
+        <label class="set-row is-toggle">
+          <div class="set-row-main"><b>Compact sidebar</b><span class="muted">One line per repo, with files to commit or the running server at the right.</span></div>
+          <span class="switch"><input type="checkbox" data-compact ${document.body.classList.contains('side-compact') ? 'checked' : ''}><i></i></span>
+        </label>
       </div>
     </section>
 
@@ -195,11 +199,15 @@ async function onClick(e) {
     return;
   }
   if ((b = e.target.closest('[data-unfolder]'))) { if (await manage({ action: 'remove', path: b.dataset.unfolder })) toast(`Removed ${b.dataset.unfolder}`); return; }
-  if ((b = e.target.closest('[data-preview]'))) { b.dataset.preview === 'commit' ? previewCommit() : practiceCart(); return; }
   if ((b = e.target.closest('[data-check]'))) return checkNow();
 }
 function onChange(e) {
   const el = e.target;
   if (el.matches('[data-showrepo]')) { manage({ action: el.checked ? 'show' : 'hide', path: el.dataset.showrepo }); return; }
   if (el.matches('[data-sound]')) { setSound(el.checked); return; }
+  if (el.matches('[data-compact]')) {
+    document.body.classList.toggle('side-compact', el.checked);
+    try { localStorage.setItem('staged.sidebar', el.checked ? 'compact' : 'comfortable'); } catch {}
+    return;
+  }
 }
