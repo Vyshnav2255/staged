@@ -1,5 +1,5 @@
 import { icon } from './icons.js';
-import { exitFallbackMs } from './motion.js';
+import { exitFallbackMs, MS } from './motion.js';
 // Small shared helpers: escaping, numbers, dates, modal, toast, API calls.
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const compact = (n) => (n >= 10000 ? (n / 1000).toFixed(0) + 'k' : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
@@ -40,7 +40,7 @@ export function toast(msg, { action, onAction, ms } = {}) {
   t.hidden = false;
   t.classList.remove('is-out');
   clearTimeout(toastT);
-  const hide = () => { clearTimeout(toastT); t.classList.add('is-out'); toastT = setTimeout(() => (t.hidden = true), exitFallbackMs('fast')); };
+  const hide = () => { clearTimeout(toastT); t.classList.add('is-out'); toastT = setTimeout(() => (t.hidden = true), MS.close + 50); };
   toastT = setTimeout(hide, ms || (action ? 6000 : 2200));
 }
 
@@ -86,7 +86,7 @@ export function modal({ title, body, actions = '', wide = false, side = false, o
     wrap.classList.add('is-closing');
     wrap.classList.remove('is-open');
     document.removeEventListener('keydown', onKey, true);
-    setTimeout(() => wrap.remove(), exitFallbackMs('slow'));
+    setTimeout(() => wrap.remove(), side ? MS.close + 80 : exitFallbackMs('slow'));
     if (side) { if (docked === handle) docked = null; if (!swap) document.body.classList.remove('has-dock'); }
     if (!swap && prev && prev.focus && prev.isConnected) prev.focus();
     onClose && onClose();

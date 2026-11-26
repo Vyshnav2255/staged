@@ -4,6 +4,7 @@
 import { icon } from './icons.js';
 import { esc, modal, toast, api, ago as since } from './ui.js';
 import { sfxApproved, sfxDrain, sfxClunk, warmHum, sfxError, sfxKey, sfxOpen, sfxCopy } from './sfx.js';
+import { leave } from './motion.js';
 
 const cache = new Map(); // repo -> { commands, jobs }
 const q = (repo) => `repo=${encodeURIComponent(repo)}`;
@@ -169,7 +170,7 @@ export function openRun(repo) {
   });
   // Make a command the main button, or take it off the list.
   let menu = null;
-  const closeMenu = () => { menu?.opener?.removeAttribute('aria-expanded'); menu?.remove(); menu = null; removeEventListener('pointerdown', outside, true); removeEventListener('keydown', menuKey, true); };
+  const closeMenu = () => { menu?.opener?.removeAttribute('aria-expanded'); leave(menu); menu = null; removeEventListener('pointerdown', outside, true); removeEventListener('keydown', menuKey, true); };
   // a press on the same "…" is left to its click, which closes the menu; anywhere else closes it now
   const outside = (e) => { if (menu && !menu.contains(e.target) && e.target.closest?.('[data-rn-more]')?.dataset.rnMore !== menu.for) closeMenu(); };
   const menuKey = (e) => { if (e.key === 'Escape' && menu) { e.stopPropagation(); const id = menu.for; closeMenu(); box().querySelector(`[data-rn-more="${CSS.escape(id)}"]`)?.focus(); } };

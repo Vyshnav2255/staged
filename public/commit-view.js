@@ -1,4 +1,5 @@
 import { icon } from './icons.js';
+import { MS, EASE as M_EASE, leave } from './motion.js';
 import { commitFold, discardOut } from './fx.js';
 import { pickEmoji as emojiPicker } from './emoji.js';
 import { sfxTick, sfxLand, sfxDrain, sfxApproved, sfxLaser, sfxStamp, sfxTear, sfxBeeps } from './sfx.js';
@@ -292,7 +293,7 @@ function fileRow(p, g) {
 }
 
 // Diffs and chunk pickers open and close with their real height, so the cards below glide instead of jumping.
-const EASE = 'cubic-bezier(0.23, 1, 0.32, 1)';
+const EASE = M_EASE.smooth, EASE_Q = M_EASE.quick;
 const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 function boxFrames(el, open) {
   const cs2 = getComputedStyle(el);
@@ -612,7 +613,7 @@ async function refreshOutgoing() {
 // The panel and the page move together on one curve: it slides in from the edge while the page
 // makes room, and slides back out while the page settles. Rows keep their place across redraws
 // (FLIP), so a new commit pushes the others down instead of the list blinking.
-const SLIDE = 'cubic-bezier(0.32, 0.72, 0, 1)';
+const SLIDE = M_EASE.smooth;
 let lastMode = '';
 function landTarget() {
   const dot = panelEl?.querySelector('.cmp-item .cmp-dot');
@@ -737,9 +738,9 @@ function paintPanel(animate = false) {
   if (sheet && !sheet.printed) { sheet.printed = true; printReceipt(); }
   else if (sheet) panelEl.querySelector('.rcpt-stamp')?.classList.add('is-on');
   const bar = panelEl.querySelector('.cmp-prog');
-  if (bar) { bar.style.transform = `scaleX(${prog})`; if (!calm()) bar.animate([{ transform: `scaleX(${prevProg})` }, { transform: `scaleX(${prog})` }], { duration: 520, easing: SLIDE }); }
+  if (bar) { bar.style.transform = `scaleX(${prog})`; if (!calm()) bar.animate([{ transform: `scaleX(${prevProg})` }, { transform: `scaleX(${prog})` }], { duration: MS.smooth, easing: SLIDE }); }
   if (!calm()) {
-    if (animate) panelEl.animate([{ transform: 'translateX(100%)' }, { transform: 'none' }], { duration: 480, easing: SLIDE });
+    if (animate) panelEl.animate([{ transform: 'translateX(100%)' }, { transform: 'none' }], { duration: MS.smooth, easing: SLIDE });
     let n = 0;
     // A commit just made: its row opens a slot at the top and the rows below are pushed down by it
     // (no separate slide for them), then it fades in as the commit's dot lands.
@@ -747,17 +748,17 @@ function paintPanel(animate = false) {
     if (fresh) {
       const h = fresh.offsetHeight;
       fresh.style.overflow = 'hidden';
-      fresh.animate([{ height: '0px', paddingTop: '0px', paddingBottom: '0px', marginTop: '0px', marginBottom: '0px' }, { height: h + 'px' }], { duration: 560, delay: 200, easing: SLIDE, fill: 'backwards' }).finished.then(() => { fresh.style.overflow = ''; }, () => {});
-      fresh.animate([{ opacity: 0, transform: 'translateY(-8px) scale(.98)' }, { opacity: 1, transform: 'none' }], { duration: 460, delay: 520, easing: SLIDE, fill: 'backwards' });
+      fresh.animate([{ height: '0px', paddingTop: '0px', paddingBottom: '0px', marginTop: '0px', marginBottom: '0px' }, { height: h + 'px' }], { duration: MS.smooth, delay: 120, easing: SLIDE, fill: 'backwards' }).finished.then(() => { fresh.style.overflow = ''; }, () => {});
+      fresh.animate([{ opacity: 0, transform: 'translateY(-8px) scale(.98)' }, { opacity: 1, transform: 'none' }], { duration: MS.smooth, delay: 220, easing: SLIDE, fill: 'backwards' });
     }
     for (const li of panelEl.querySelectorAll('.cmp-item')) {
       if (fresh) break;
       const was = before.get(li.dataset.k);
       if (was != null) {
         const dy = was - li.getBoundingClientRect().top;
-        if (Math.abs(dy) > 1) li.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 520, easing: SLIDE });
+        if (Math.abs(dy) > 1) li.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: MS.smooth, easing: SLIDE });
       } else if ((animate || switched) && !li.classList.contains('is-fresh')) {
-        li.animate([{ opacity: 0, transform: 'translateX(18px)' }, { opacity: 1, transform: 'none' }], { duration: 420, delay: (animate ? 160 : 40) + n++ * 45, easing: SLIDE, fill: 'backwards' });
+        li.animate([{ opacity: 0, transform: 'translateX(18px)' }, { opacity: 1, transform: 'none' }], { duration: MS.smooth, delay: (animate ? 120 : 30) + n++ * 35, easing: SLIDE, fill: 'backwards' });
       }
     }
   }
@@ -864,7 +865,7 @@ function startCharge(btn) {
     if (fa) {
       const m = new DOMMatrixReadOnly(getComputedStyle(fill).transform);
       fa.cancel();
-      fill.animate([{ transform: `scaleX(${m.a})` }, { transform: 'scaleX(0)' }], { duration: 380, easing: SLIDE });
+      fill.animate([{ transform: `scaleX(${m.a})` }, { transform: 'scaleX(0)' }], { duration: MS.smooth, easing: SLIDE });
     }
     if (held > 160) sfxDrain();
     // a tap instead of a hold: the button gives a little shake so you know to keep pressing
@@ -1092,7 +1093,7 @@ function moveFile(p, fromId, to) {
   toast('Moved. It will remember this next time.');
 }
 let moveMenu = null;
-function closeMoveMenu() { moveMenu?.opener?.removeAttribute('aria-expanded'); moveMenu?.remove(); moveMenu = null; removeEventListener('pointerdown', outsideMove, true); removeEventListener('keydown', keyMove, true); }
+function closeMoveMenu() { moveMenu?.opener?.removeAttribute('aria-expanded'); leave(moveMenu); moveMenu = null; removeEventListener('pointerdown', outsideMove, true); removeEventListener('keydown', keyMove, true); }
 const outsideMove = (e) => { if (moveMenu && !moveMenu.contains(e.target) && !e.target.closest('[data-moveopen], [data-more]')) closeMoveMenu(); };
 const keyMove = (e) => {
   if (!moveMenu) return;
@@ -1153,37 +1154,62 @@ function openMoreMenu(btn) {
 }
 
 
-// Drag a file by its grip onto another commit (or the "new commit" strip) to move it there.
+// Drag a file by its grip or its name onto another commit (or the "new commit" strip) to move it there.
+// The row lifts into a small card that follows the pointer, the commits it can land on light up, and the
+// one under the pointer says "Move here".
 let drag = null;
 function dragStart(e) {
-  const grip = e.target.closest('.cm-grip'); if (!grip || e.button !== 0) return;
-  const row = grip.closest('.cm-file'); if (!row) return;
+  if (e.button !== 0 || cs.groups.length < 1) return;
+  const handle = e.target.closest('.cm-grip, .cm-path, .cm-status, .cm-file > .cm-extra .lines');
+  if (!handle) return;
+  const row = handle.closest('.cm-file'); if (!row || !host.contains(row)) return;
   const sx = e.clientX, sy = e.clientY;
   const move = (ev) => {
     if (!drag) {
-      if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+      if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return;
       const r = row.getBoundingClientRect();
-      const ghost = row.cloneNode(true); ghost.classList.add('cm-ghost');
-      Object.assign(ghost.style, { width: Math.min(r.width, 380) + 'px', left: r.left + 'px', top: r.top + 'px' });
+      const name = row.querySelector('.cm-path')?.innerHTML || esc(row.dataset.row);
+      const lines = row.querySelector('.lines')?.innerHTML || '';
+      const ghost = document.createElement('div');
+      ghost.className = 'cm-ghost';
+      ghost.innerHTML = `<span class="cm-ghost-grip"><i></i></span><span class="cm-ghost-name">${name}</span><span class="lines mono">${lines}</span>`;
+      const dx = Math.min(Math.max(sx - r.left, 16), 240);
+      Object.assign(ghost.style, { left: ev.clientX - dx + 'px', top: ev.clientY - 20 + 'px' });
       document.body.appendChild(ghost);
-      drag = { p: row.dataset.row, from: row.dataset.g, row, ghost, dx: sx - r.left, dy: sy - r.top, over: null };
-      row.classList.add('is-lifted'); host.classList.add('is-dragging');
-      if (!calm()) ghost.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.02) rotate(-.6deg)' }], { duration: 160, easing: EASE, fill: 'forwards' });
+      drag = { p: row.dataset.row, from: row.dataset.g, row, ghost, dx, dy: 20, over: null };
+      row.classList.add('is-lifted'); host.classList.add('is-dragging'); document.body.classList.add('is-grabbing');
+      row.closest('.cm-card')?.classList.add('is-source');
+      if (!calm()) ghost.animate([{ transform: 'scale(.96)', opacity: 0 }, { transform: 'scale(1.03) rotate(-1.5deg)', opacity: 1 }], { duration: MS.quick, easing: EASE_Q, fill: 'forwards' });
+      else ghost.style.transform = 'none';
     }
     drag.ghost.style.left = ev.clientX - drag.dx + 'px'; drag.ghost.style.top = ev.clientY - drag.dy + 'px';
     drag.ghost.hidden = true; const under = document.elementFromPoint(ev.clientX, ev.clientY); drag.ghost.hidden = false;
     let tgt = under?.closest('[data-drop]'); if (tgt && tgt.dataset.drop === drag.from) tgt = null;
-    if (tgt !== drag.over) { drag.over?.classList.remove('is-over'); tgt?.classList.add('is-over'); drag.over = tgt; }
+    if (tgt !== drag.over) { drag.over?.classList.remove('is-over'); tgt?.classList.add('is-over'); drag.over = tgt; drag.ghost.classList.toggle('is-armed', !!tgt); }
+    // Keep the page moving when dragging near the top or bottom edge.
+    const edge = 60;
+    if (ev.clientY < edge) scrollBy(0, -12); else if (ev.clientY > innerHeight - edge) scrollBy(0, 12);
   };
   const up = () => {
     removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
-    if (!drag) return; // a plain click: the grip opens the move menu
-    const d = drag; drag = null; grip.dataset.dragged = '1'; setTimeout(() => delete grip.dataset.dragged, 0);
-    host.classList.remove('is-dragging'); d.row.classList.remove('is-lifted'); d.over?.classList.remove('is-over');
+    if (!drag) return; // a plain click: the grip opens the move menu, the name opens the diff
+    const d = drag; drag = null;
+    // The click that ends a drag shouldn't also open the diff or the move menu.
+    const swallow = (ce) => { ce.stopPropagation(); ce.preventDefault(); };
+    addEventListener('click', swallow, { capture: true, once: true });
+    setTimeout(() => removeEventListener('click', swallow, true), 60);
+    host.classList.remove('is-dragging'); document.body.classList.remove('is-grabbing');
+    d.row.classList.remove('is-lifted'); d.over?.classList.remove('is-over');
+    host.querySelector('.cm-card.is-source')?.classList.remove('is-source');
     const to = d.over?.dataset.drop;
-    if (to) { d.ghost.remove(); moveFile(d.p, d.from, to); return; }
+    if (to) {
+      const box = d.over.getBoundingClientRect(), g = d.ghost.getBoundingClientRect();
+      if (calm()) { d.ghost.remove(); moveFile(d.p, d.from, to); return; }
+      d.ghost.animate([{ transform: 'scale(1.03) rotate(-1.5deg)', opacity: 1 }, { transform: `translate(${box.left + 24 - g.left}px, ${box.top + 24 - g.top}px) scale(.9)`, opacity: 0 }], { duration: MS.smooth, easing: EASE, fill: 'forwards' }).finished.then(() => d.ghost.remove(), () => d.ghost.remove());
+      moveFile(d.p, d.from, to); return;
+    }
     const r = d.row.getBoundingClientRect(), g = d.ghost.getBoundingClientRect();
-    d.ghost.animate([{ transform: `translate(0,0)` }, { transform: `translate(${r.left - g.left}px, ${r.top - g.top}px)` }], { duration: calm() ? 0 : 220, easing: EASE }).finished.then(() => d.ghost.remove(), () => d.ghost.remove());
+    d.ghost.animate([{ transform: 'scale(1.03) rotate(-1.5deg)' }, { transform: `translate(${r.left - g.left}px, ${r.top - g.top}px)`, opacity: .4 }], { duration: calm() ? 0 : MS.smooth, easing: EASE, fill: 'forwards' }).finished.then(() => d.ghost.remove(), () => d.ghost.remove());
   };
   addEventListener('pointermove', move); addEventListener('pointerup', up); addEventListener('pointercancel', up);
 }
