@@ -719,19 +719,21 @@ function paintPanel(animate = false) {
     list = out.map((c, i) => `<li class="cmp-item is-out ${c.sha === P.fresh ? 'is-fresh' : ''}" data-k="${c.sha}">
         <i class="cmp-dot" aria-hidden="true"></i>
         <span class="cmp-main"><span class="cmp-subj" title="${esc(c.subject)}">${esc(c.subject)}</span><span class="mono muted">${c.sha.slice(0, 7)}${c.files ? ` · ${c.files} file${c.files === 1 ? '' : 's'}` : ''} · ${ago(c.at)}</span></span>
-        ${i === 0 && !demo ? `<button class="text-btn sm" data-cmp-rename ${cs.busy ? 'disabled' : ''} title="Change this commit's message">Rename</button>` : ''}
+        ${c.safe === false ? `<span class="sp-pill is-risk">${icon('Alert02', 12)}Not safe</span>` : ''}
+        ${c.risks ? `<span class="sp-why">${esc(c.risks[0].why[0].toUpperCase() + c.risks[0].why.slice(1))}.${c.risks.length > 1 ? ` And ${c.risks.length - 1} more.` : ''}</span>` : ''}
         ${i === 0 && c.undo && pd.canUndo && onCommitView() && !demo ? `<button class="text-btn sm" data-cmp-undo ${cs.busy ? 'disabled' : ''} title="Put this commit's changes back">Undo</button>` : ''}
       </li>`).join('');
     // Pushing is a big moment, so it's a hold, not a click: the bar charges, each commit lights up
     // from the oldest, and letting go early drains it back.
-    const total = `<div class="cmp-total"><span>Total</span><span class="mono">${tf} file${tf === 1 ? '' : 's'} · <b class="a">+${ta}</b> <b class="d">−${td}</b></span></div>`;
+    const risky = out.filter((c) => c.safe === false).length;
+    const verdict = risky ? `<p class="sp-sum">${icon('Alert02', 13)}${out.length - risky} of ${out.length} safe to push. Commit what ${risky === 1 ? 'it needs' : 'they need'} first.</p>` : '';
+    const total = verdict + `<div class="cmp-total"><span>Total</span><span class="mono">${tf} file${tf === 1 ? '' : 's'} · <b class="a">+${ta}</b> <b class="d">−${td}</b></span></div>`;
     if (remote) foot = total + (P.pushing
       ? `<button class="btn-primary cmp-push is-pushing is-approved" disabled>${icon('ArrowUp02', 15)}<span class="cmp-lbl">Pushing…</span></button>`
       : `<button class="btn-primary cmp-push" data-cmp-push ${cs.busy ? 'disabled' : ''} aria-label="Hold to push ${n} commit${n === 1 ? '' : 's'}"><i class="cmp-charge" aria-hidden="true"></i><span class="cmp-lbl"><span class="cmp-lbl-idle">Hold to push</span><span class="cmp-lbl-hold">Keep holding…</span></span></button>`);
   }
   const html = `${sheet ? '' : `<header class="cmp-head">
       <div class="cmp-titles"><h3>${title}</h3>${sub ? `<p class="mono">${sub}</p>` : ''}</div>
-      ${mode === 'out' ? `<button class="icon-btn sm" data-stmt title="This week's statement" aria-label="This week's statement">${icon('ReceiptText', 15)}</button>` : ''}
       ${P.mode === 'run' ? '' : `<button class="icon-btn sm cmp-x" data-cmp-close aria-label="Close">${icon('Cancel01', 14)}</button>`}
       ${prog != null ? '<i class="cmp-prog" aria-hidden="true"></i>' : ''}</header>`}
     ${body ?? `<ol class="cmp-list scroll-fade">${list}</ol>`}
@@ -806,7 +808,6 @@ function onPanelClick(e) {
     if (P.order.length < 2) { P.mode = null; P.order = []; }
     paintPanel(); return draw();
   }
-  if (t('[data-cmp-rename]')) return renameLast(cartKey());
   if (t('[data-cmp-undo]')) {
     return run('undo', async () => {
       await api(`/api/changes/undo?repo=${encodeURIComponent(cs.repo)}`, {});
@@ -944,12 +945,15 @@ function printReceipt() {
     paper.animate([{ transform: 'none' }, { transform: 'translateY(100%)' }], { duration: 420, easing: 'cubic-bezier(.5, 0, .75, 0)', fill: 'forwards' }).finished.then(back, back);
   };
   if (!paper || calm()) return done();
-  // the paper feeds at a steady speed, like a real printer, so a longer receipt takes longer
-  // (about 4.5ms a pixel), and the motor sound runs exactly as long as the paper moves
-  const warm = 380, ms = Math.round(Math.max(900, Math.min(7000, paper.offsetHeight * 4.5)));
+  // The paper starts with its top edge right at the printer's slot (the bottom of the panel), so it
+  // shows the moment the motor starts. A receipt taller than the panel used to start a whole paper
+  // length down, out of sight, and the motor ran for seconds before anything appeared.
+  // It feeds at a steady speed (about 4.5ms a pixel), and the motor runs exactly as long as it moves.
+  const from = Math.max(1, Math.round((wrap ? wrap.getBoundingClientRect().bottom : paper.getBoundingClientRect().bottom) - paper.getBoundingClientRect().top));
+  const warm = 380, ms = Math.round(Math.max(900, Math.min(7000, from * 4.5)));
   sfxLaser(warm, ms);
   const a = warm / (warm + ms), z = (warm + ms) / (warm + ms + 120);
-  paper.animate([{ transform: 'translateY(100%)', offset: 0 }, { transform: 'translateY(100%)', offset: a * z }, { transform: 'translateY(-0.6%)', offset: z }, { transform: 'none', offset: 1 }],
+  paper.animate([{ transform: `translateY(${from}px)`, offset: 0 }, { transform: `translateY(${from}px)`, offset: a * z }, { transform: 'translateY(-3px)', offset: z }, { transform: 'none', offset: 1 }],
     { duration: warm + ms + 120, easing: 'linear', fill: 'backwards' }).finished.then(done, done);
 }
 // Done: the receipt is torn off and the panel slides away.
@@ -1130,7 +1134,6 @@ function openMoveMenu(btn) {
   Object.assign(moveMenu.style, { width: w + 'px', left: Math.max(12, Math.min(r.right - w, innerWidth - w - 12)) + 'px' });
   const below = r.bottom + 6 + moveMenu.offsetHeight < innerHeight;
   moveMenu.style.top = (below ? r.bottom + 6 : Math.max(12, r.top - 6 - moveMenu.offsetHeight)) + 'px';
-  if (!calm()) moveMenu.animate([{ opacity: 0, transform: `translateY(${below ? -4 : 4}px) scale(.98)` }, { opacity: 1, transform: 'none' }], { duration: 160, easing: EASE });
   moveMenu.addEventListener('click', (e) => { const b = e.target.closest('[data-moveto]'); if (!b) return; closeMoveMenu(); moveFile(p, g?.id, b.dataset.moveto); });
   addEventListener('pointerdown', outsideMove, true); addEventListener('keydown', keyMove, true);
   moveMenu.querySelector('button')?.focus();
@@ -1151,7 +1154,6 @@ function openMoreMenu(btn) {
   Object.assign(moveMenu.style, { width: w + 'px', left: Math.max(12, Math.min(r.right - w, innerWidth - w - 12)) + 'px' });
   const below = r.bottom + 6 + moveMenu.offsetHeight < innerHeight;
   moveMenu.style.top = (below ? r.bottom + 6 : Math.max(12, r.top - 6 - moveMenu.offsetHeight)) + 'px';
-  if (!calm()) moveMenu.animate([{ opacity: 0, transform: `translateY(${below ? -4 : 4}px) scale(.98)` }, { opacity: 1, transform: 'none' }], { duration: 160, easing: EASE });
   moveMenu.addEventListener('click', (e) => {
     const b = e.target.closest('[data-act]'); if (!b) return;
     closeMoveMenu();
