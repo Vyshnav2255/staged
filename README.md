@@ -1,99 +1,91 @@
-# staged
+<div align="center">
 
-<img src="public/brand/staged-icon.svg" width="64" alt="staged">
+<img src="public/brand/staged-icon.svg" width="96" alt="staged app icon" />
 
-<a href="https://buymeacoffee.com/vyshnav"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-b07a3e?logo=buymeacoffee&logoColor=white" alt="Buy me a coffee"></a>
+<h1>staged</h1>
 
-**Every change across your git repos, sorted into features, commits and releases.** staged reads the git repos on your computer and shows them on `localhost`. It also runs each project's own commands from one button. Nothing leaves your computer, there is no account, no AI, and no dependencies. It works on macOS, Windows and Linux.
+<p><b>Commit your work. Properly.</b></p>
 
-## Quick start
+<p>
+  A fun, friendly app for git that takes the place of the terminal. It sorts your changes into commits, names them for you, and runs your dev servers.
+</p>
 
-You need [Node 18+](https://nodejs.org) and git. No dependencies.
+<p>
+  <a href="https://staged.vyshnav.xyz"><img src="https://img.shields.io/badge/website-staged.vyshnav.xyz-111111?style=flat" alt="Website" /></a>
+  <a href="https://github.com/Vyshnav2255/staged/releases/latest"><img src="https://img.shields.io/github/v/release/Vyshnav2255/staged?label=latest&color=2ea043" alt="Latest release" /></a>
+  <a href="#requirements"><img src="https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-555555?style=flat" alt="macOS, Windows and Linux" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-source--available-blue?style=flat" alt="License: source-available" /></a>
+  <a href="https://buymeacoffee.com/vyshnav"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-b07a3e?style=flat&logo=buymeacoffee&logoColor=white" alt="Buy me a coffee" /></a>
+</p>
 
-```sh
-git clone --branch v1.0.0 https://github.com/Vyshnav2255/staged.git
-cd staged
-npm start
-```
+<p>
+  <a href="#get-started"><b>Get started</b></a>
+  &nbsp;·&nbsp;
+  <a href="#commits-that-sort-and-name-themselves">How grouping works</a>
+  &nbsp;·&nbsp;
+  <a href="#run-your-project">Run</a>
+  &nbsp;·&nbsp;
+  <a href="https://staged.vyshnav.xyz">Website</a>
+</p>
 
-This clones the latest release. staged updates itself from there, so you don't need to clone again.
+<img src="docs/readme/hero.webp" width="760" alt="staged's Commit screen: three suggested commits on the left and the cart on the right" />
 
-It asks how you want to run it:
+</div>
 
-- **Keep it running** (recommended): in the background and at every login, until you stop it. You never start it again, and it picks up updates by itself. On a Mac it shows up as **staged**, with its icon, in System Settings › General › Login Items. On Linux it's a systemd user service (`staged.service`), and on Windows it's in your Startup folder.
-- **Just for now**: in that Terminal window. Press `o` to open it, `r` to restart and `q` to quit.
+---
 
-It lives at http://localhost:4321. Run `npm start` again any time to open it, stop it, or switch modes. To stop the background copy for good: `npm run remove`. If you move or rename staged's folder, run `npm run setup` once in the new place.
+Git is powerful, but most days you only need a handful of commands, and the terminal makes every one of them feel like work. You end up with one giant commit called `fix stuff`, or you spend ten minutes picking files apart by hand.
 
-Use your browser's **Install app** (Chrome, Edge, Arc) or **File › Add to Dock** (Safari) to give it its own window and icon.
+staged does that part for you. It reads your uncommitted changes, splits them into commits that make sense, and writes each message in your own style. You check them, tweak anything you like, add them to the cart, and hold to push. A receipt prints. It's git, made fun to use.
 
-Settings and anything it learns from your corrections live in `~/.config/staged/` (on Windows, `%APPDATA%\staged`), never in your repos.
+> [!NOTE]
+> Everything runs on your computer. There's no account and no AI, and nothing leaves your machine. staged only answers on `localhost`.
 
-## Your repos
+---
 
-The first time it runs, staged looks for the folder your repos live in (`~/GitHub`, `~/Developer`, `~/Projects`, `~/code` and similar) and remembers it. Every git repo directly inside that folder shows up. New repos you clone there appear on their own.
+## Features
 
-To change what it shows, open **Settings › Repos**:
+### Commits that sort and name themselves
 
-- **Add** a folder of repos, or a single repo from anywhere. Type its path, like `~/work` or `~/code/my-app`.
-- **Remove** a folder or a single repo you added.
-- **Untick** a repo to hide it from the sidebar, Home and everything else. Nothing in the repo is touched, and you can tick it again any time.
-
-You can also pass folders when starting it: `npm start -- ~/work ~/side-projects`. Once you've changed folders in Settings, the Settings list wins.
-
-## Updates
-
-staged updates itself. When a new version is out, a card in the sidebar says so. Open it to see what's new, press **Update now**, and staged restarts in place in a few seconds. You stay on the page you were on. You can also look for updates any time from `⌘K`.
-
-This works when you installed with `git clone`. If you changed staged's own files, commit or undo those changes first.
-
-To ship a version (for maintainers): run `npm run release` (or `npm run release -- 1.1.0`). It bumps `package.json`, commits, tags and pushes. Then publish it as a GitHub Release, from staged's **Releases** screen (*New release*) or on GitHub under **Releases › Draft a new release**. The notes show up in staged's *What's new*. Only published releases reach people, a tag on its own doesn't.
-
-## What's inside
-
-| View | What it shows |
-| --- | --- |
-| **Home** | This week against last week, your streak, what's **waiting on you** (files to commit and commits to push) and six months of activity. Click the logo to get here. |
-| **Settings** | Repos, sound and updates. Each repo's commit message style is in its own **Project settings** (the gear next to the repo name). |
-| **Weeks** | Weekly drops with a type mix, lines changed and *Copy notes* for release notes in Markdown. |
-| **Features** | Changes grouped by the part of the site they touched. Each feature has a *story*: its timeline month by month, which you can copy as notes. |
-| **Releases** | Commits between git tags, with *New release* (publishes a GitHub Release) and *Changelog*. |
-| **Tree** | Every branch, merge and tag as lanes. Hover a commit to light up its history; click it for the files. Other branches and stashes show above it. |
-| **Commit** | Your uncommitted files, already split into commits with messages written for you. |
-| **Run** | The project's own commands on a cassette deck: serve the site, build, test. See [Run](#run). |
-| **About** | A note from the maker, links, and a way to [buy me a coffee](#support-staged). |
-
-Commit types come from gitmoji (✨ 🎉 Feature, 💄 💫 🎨 Design, 🐛 Fix, ⚡️ Perf, ♻️ 🔥 🔧 Chore) or conventional commits (`feat:`, `fix:`…). Commits with neither are guessed from their wording and shown with a hollow dot.
-
-## Committing
-
-The **Commit** tab groups every uncommitted file into suggested commits:
+This is the heart of staged. Open **Commit** and your changes are already split into suggested commits:
 
 - **Connected files travel together.** A new script, its styles, and the files that include it or use its `data-*` hooks.
 - **Content gets its own commit.** A collection like `_books/` plus its `Images/Books/`.
 - **Files that usually change together stay together.** staged learns this from your past commits.
 - **Unrelated small edits stay separate.** Small changes join only when another signal links them.
+- **Big files are split by chunk.** One file can feed two commits when its changes belong to different work.
 
-staged remembers each repo's commits as you work: the groups, the messages, your edits and the files you unticked. Leave the tab, switch repos or reload, and it picks up where you left off. Files you've committed drop out; new ones land in a *New changes* card.
+Every commit comes with a message that says what actually changed, like `Replaced Geist font with Akt` or `feat(books): add notes for …`, with a short list of details underneath. It matches your repo: **Gitmoji**, **Conventional** or **Both**, past tense or imperative, and the verbs you already use. Groups staged isn't sure about are marked *Check grouping*.
 
-Each commit has a ready message in **Gitmoji** (`✨ Added book notes for …`, in your own voice), **Conventional** (`feat(books): add notes for …`) or **Both**. Then:
+Then make it yours:
 
-- Untick files, or pick individual **chunks** of a file. The rest stays in your working copy.
-- **Move** a file to another commit with the move button on its row, or drag it onto another card. staged remembers the correction next time.
-- Pick an emoji from the **gitmoji picker**: suggestions for that change first, your recent picks, then everything by kind. Search by meaning or `:code:`, arrow keys and Enter work.
-- Click a message to edit it.
-- A **description** is optional, so it stays tucked away. Pick *Add description* from a commit's ⋯ menu to write one.
-- **Discard** throws away changes to a file, a single chunk or a whole suggested commit (hold the button for a whole commit). A copy goes to `.git/staged-trash/` first, and the note that pops up has **Undo**.
-- **Add to cart** commits one group, or **Add all to cart** to review, reorder and merge first.
-- The **Cart** on the right holds commits waiting to be pushed. **Hold to push**, and a receipt prints. **Undo** puts the last commit made here back into your changes.
-- **Rename** the last commit from its cart row, the Tree or `⌘K`. If it's already pushed, staged warns you and pushes the new name with `--force-with-lease`.
-- Every push prints a **receipt**, and every week gets a **statement**. Save either as an image.
+- Untick files, or pick single **chunks** of a file. The rest stays in your working copy.
+- **Move** a file to another commit, or drag it onto another card. staged remembers the correction next time.
+- Click a message to edit it, or pick an emoji from the **gitmoji picker**.
+- Add an optional **description** from a commit's ⋯ menu.
+- **Discard** a file, a chunk or a whole commit. A copy goes to `.git/staged-trash/` first, and **Undo** brings it back.
 
-Secrets files, API keys, huge files, conflict markers, `console.log` and `debugger` are flagged before you commit.
+staged remembers your groups, messages and edits as you work. Leave the tab or reload, and it picks up where you left off.
 
-## Run
+### Cart, push and receipt
 
-Press **Run** in the header and a side panel opens with a cassette deck for the project. staged finds the commands from files the project already has:
+- **Add to cart** commits one group. **Add all to cart** lets you review, reorder and merge first.
+- **Hold to push** sends the cart, and a receipt prints. Save it as an image.
+- **Undo** puts the last commit made here back into your changes.
+- **Rename** the last commit from the Tree or `⌘K`. If it's already pushed, staged warns you and uses `--force-with-lease`.
+- Every week gets a **statement** too, printed from Home.
+
+Before you commit, staged flags secrets files, API keys, huge files, conflict markers, `console.log` and `debugger`.
+
+### Run your project
+
+No more keeping a terminal tab open for your dev server. Press **Run** and a cassette deck slides in with your project's own commands. Press play, and staged opens the page the moment it's live. The output is one click away, and when something breaks, **Copy error** copies a ready-to-paste report.
+
+<p align="center">
+  <img src="docs/readme/run-deck.webp" width="560" alt="The Run deck playing npm run dev, live at localhost:5173" />
+</p>
+
+staged finds the commands from files your project already has:
 
 | Project has | Commands |
 | --- | --- |
@@ -104,27 +96,31 @@ Press **Run** in the header and a side panel opens with a cassette deck for the 
 | `manage.py` (Django) | Run server |
 | Just an `index.html` | Serve folder (`python3 -m http.server`) |
 
-The main command sits in the deck, the rest are under **More commands**. Keys: Run, Stop, Open, output and ⋯ (make main, hide, remove). When a dev server prints its address, staged opens the page for you. Add your own commands with **Add a command**. They're saved in `~/.config/staged/run.json`, not in the repo.
+The main command sits in the deck and the rest are under **More commands**. Add your own with **Add a command**. They're saved in `~/.config/staged/run.json`, not in the repo. Commands run in your login shell, so nvm, rbenv and your `PATH` work. Stopping a command, or quitting staged, stops everything it started.
 
-Commands run in your login shell on macOS and Linux, so rbenv, nvm and the rest of your `PATH` work, and in `cmd` on Windows. Stopping a command stops everything it started. So does quitting staged.
+### See your work
 
-## Commit plans for scripts
+| View | What it shows |
+| --- | --- |
+| **Home** | This week against last week, your streak, what's **waiting on you** and six months of activity. |
+| **Overview** | The codebase at a glance (languages, frameworks, package manager, license), then weekly drops with *Copy notes* for release notes. |
+| **Features** | Changes grouped by the part of the project they touched, each with a month-by-month *story*. |
+| **Releases** | Commits between tags, with *New release* (publishes a GitHub Release) and *Changelog*. |
+| **Tree** | Every branch, merge and tag as lanes. Hover a commit to light up its history. |
+| **Health** | Site weight per week, plus heavy images and videos with a **Shrink** button. See [Shrink images and videos](#shrink-images-and-videos). |
 
-Coding agents and scripts can inspect the same proposed groups shown in the Commit tab without starting the web app:
+### Shrink images and videos
 
-```sh
-staged plan --json
-staged plan /path/to/repo --json
-```
+**Health** lists images over 250 KB or not WebP, and videos over 2 MB or in `.mov`. Press **Shrink** on one, or **Shrink all**:
 
-The command prints JSON using the `staged.commit-plan.v1` schema, including each commit subject in Gitmoji and Conventional formats, recommended emoji, group confidence and evidence, and changed file or hunk assignments. It does not commit or edit the repository. Use `--include-diff` only when an agent also needs local diff context; diffs are omitted by default. The output can be passed to an agent to review, compare with its own grouping, and suggest changes to the grouping.
+- Images become WebP, at most 2400 px wide. Social cards and icons stay PNG or JPEG, just smaller.
+- Videos become MP4 (H.264, at most 1920 px wide, ready to stream).
+- Links to a renamed file are updated across your HTML, Markdown, CSS, JavaScript and data files.
+- A result is kept only when it saves at least 10%. A copy of every original goes to `.git/staged-trash/`, and the changes show up in **Commit** for you to check.
 
-Grouping and messages come from your files and your history: imports, `data-*` hooks, folders, past co-changes and the verbs you use after each emoji. Messages also read the diffs, so they say what changed (`Replaced Geist font with Akt`, `Added Haskoy Italic and Medium Italic fonts`, a new section or function), with a short list of the details underneath.
-staged always groups locally from rules and an incremental index of recent Git commit subjects and changed paths, plus an inverted term index for the current diff. The history index lives under `~/.config/staged/group-index/` and stores commit IDs, subjects and paths, never source contents or diffs. Groups staged isn't sure about are marked *Check grouping*. Moving files between groups teaches staged which paths belong together or apart.
-staged also learns your message grammar across the repos it knows about, while letting a repo's own history take priority. It adapts Gitmoji/plain/conventional style, tense, common verbs and category emojis, and learns repeated path pairs across projects as a weak grouping hint. General commit guidance supplies only a fallback: coherent, independently useful changes and subjects about behavior rather than filenames.
-It drafts messages from diffs, repo history, imports, paths and change types. Grouping and naming use deterministic local rules and repository history; no model service is required.
+Images use [sharp](https://sharp.pixelplumbing.com), which installs once into staged's folder the first time you press **Install** (about 20 MB). Videos use [ffmpeg](https://ffmpeg.org) if it's on your computer (`brew install ffmpeg` on a Mac).
 
-## Keys
+### Keyboard shortcuts
 
 | Key | Does |
 | --- | --- |
@@ -133,9 +129,44 @@ It drafts messages from diffs, repo history, imports, paths and change types. Gr
 | `R` | Re-read repos |
 | Alt-click a legend item | Show only that type |
 
-## Naming your own features
+---
 
-Areas are guessed from folder and file names. To name them yourself, add `.changes.json` to a repo:
+## Get started
+
+You need [Node 18+](https://nodejs.org) and git. Nothing else to install up front.
+
+```sh
+git clone --branch v1.0.0 https://github.com/Vyshnav2255/staged.git
+cd staged
+npm start
+```
+
+This clones the latest release. staged updates itself from there, so you never clone again. It asks how you want to run it:
+
+- **Keep it running** (recommended): in the background and at every login. On a Mac it shows up as **staged** in System Settings › General › Login Items. On Linux it's a systemd user service, and on Windows it's in your Startup folder.
+- **Just for now**: in that terminal window. Press `o` to open it, `r` to restart and `q` to quit.
+
+staged lives at http://localhost:4321. Run `npm start` again any time to open it, stop it or switch modes. To remove the background copy: `npm run remove`. If you move staged's folder, run `npm run setup` once in the new place.
+
+Use your browser's **Install app** (Chrome, Edge, Arc) or **File › Add to Dock** (Safari) to give it its own window and icon.
+
+---
+
+## Your repos
+
+The first time it runs, staged finds the folder your repos live in (`~/GitHub`, `~/Developer`, `~/Projects`, `~/code` and similar) and shows every git repo inside it. New repos you clone there appear on their own.
+
+To change that, open **Settings › Repos**:
+
+- **Add** a folder of repos, or a single repo from anywhere, like `~/work` or `~/code/my-app`.
+- **Remove** a folder or repo you added.
+- **Untick** a repo to hide it everywhere. Nothing in the repo is touched.
+
+You can also pass folders when starting it: `npm start -- ~/work ~/side-projects`.
+
+### Naming your own features
+
+Features are guessed from folder and file names. To name them yourself, add `.changes.json` to a repo:
 
 ```json
 {
@@ -147,20 +178,82 @@ Areas are guessed from folder and file names. To name them yourself, add `.chang
 }
 ```
 
-Rules are checked in order; files that match none fall back to the guess.
+Rules are checked in order. Files that match none fall back to the guess.
 
-## Good to know
+---
 
-- Runs on macOS, Windows and Linux. On Linux the folder picker uses `zenity`; without it, type the path.
-- Works with GitHub, GitLab (including self-hosted) and Bitbucket remotes. The repo button and commit links open the right site.
-- The server only answers on `localhost`, and only to this page.
+## Updating
+
+staged updates itself. When a new version is out, a card in the sidebar says so. Press **Update now**, and staged restarts in place in a few seconds, on the page you were on. You can also check from `⌘K`.
+
+This works when you installed with `git clone`. If you changed staged's own files, commit or undo those first.
+
+### Shipping a version (maintainers)
+
+Run `npm run release` (or `npm run release -- 1.1.0`). It bumps `package.json`, commits, tags and pushes. Then publish it as a GitHub Release, from staged's **Releases** screen (*New release*) or on GitHub. Only published releases reach people, a tag on its own doesn't.
+
+---
+
+## Commit plans for scripts and agents
+
+Scripts and coding agents can read the same suggested commits without opening the app:
+
+```sh
+staged plan --json
+staged plan /path/to/repo --json
+```
+
+It prints JSON in the `staged.commit-plan.v1` schema: each commit's subject in Gitmoji and Conventional style, the suggested emoji, how sure staged is and why, and which files or chunks go where. It never commits or edits the repo. Add `--include-diff` only when the agent also needs the diffs.
+
+---
+
+## How it stays local
+
+- Grouping and messages come from rules and your own history: imports, `data-*` hooks, folders, files that change together and the words you use. No model or online service is involved.
+- The history index in `~/.config/staged/group-index/` stores commit IDs, subjects and paths, never your code or diffs.
+- Settings and anything staged learns from your corrections live in `~/.config/staged/` (on Windows, `%APPDATA%\staged`), never in your repos.
 - Commits are built in a temporary index, so anything you staged yourself elsewhere is left alone. Git hooks don't run for these commits.
-- Commit messages follow your repo: past tense (`Added …`) or imperative (`Add …`), whichever your history mostly uses.
+- The server only answers on `localhost`, and only to this page.
 
-## Support staged
+---
 
-staged is free and stays free. If it saves you time, you can [buy me a coffee](https://buymeacoffee.com/vyshnav) ☕. There's a button for it in the app too, under **About**.
+## Requirements
+
+- macOS, Windows or Linux. On Linux the folder picker uses `zenity`; without it, type the path.
+- [Node 18+](https://nodejs.org) and git.
+- Works with GitHub, GitLab (including self-hosted) and Bitbucket remotes.
+
+---
+
+## Contributing
+
+Pull requests are welcome. Read [CONTRIBUTING](CONTRIBUTING.md) first.
+
+---
 
 ## License
 
-staged is source-available, not open source. You can use it for free anywhere, including at work. You can fork it only to send a pull request, and you can't publish, rebrand or sell your own version. The name and logo are not covered. See [LICENSE](https://github.com/Vyshnav2255/staged/blob/main/LICENSE) and [CONTRIBUTING](https://github.com/Vyshnav2255/staged/blob/main/CONTRIBUTING.md).
+staged is source-available, not open source. You can use it for free anywhere, including at work. You can fork it only to send a pull request, and you can't publish, rebrand or sell your own version. The name and logo are not covered. See [LICENSE](LICENSE).
+
+---
+
+## Support staged
+
+staged is free and stays free. If it saves you time, you can buy me a coffee ☕. There's a button for it in the app too, under **About**.
+
+<div align="center">
+
+<a href="https://buymeacoffee.com/vyshnav"><img src="https://img.shields.io/badge/support-Buy_me_a_coffee-b07a3e?style=flat&logo=buymeacoffee&logoColor=white" alt="Buy me a coffee" /></a>
+
+</div>
+
+---
+
+<div align="center">
+
+<b>Made by Vyshnav Gangadharan</b>
+
+<a href="https://vyshnav.xyz"><img src="https://img.shields.io/badge/vyshnav.xyz-111111?style=flat&logo=safari&logoColor=white" alt="Website" /></a>
+<a href="https://staged.vyshnav.xyz"><img src="https://img.shields.io/badge/staged.vyshnav.xyz-111111?style=flat" alt="staged website" /></a>
+
+</div>
