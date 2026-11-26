@@ -4,7 +4,7 @@
 import { MARK, qrMatrix } from './receipt.js';
 
 const W = 1080, PAPER = 640, PAD = 52, TOOTH = 14;
-const INK = '#1b1b19', MUTED = '#7a786f', RULE = '#cfccc2', GREEN = '#2f8f4e';
+const INK = '#1c1917', MUTED = '#78716c', RULE = '#d6d3d1', GREEN = '#059669';
 const mono = (s) => `500 ${s}px "Geist Mono", ui-monospace, monospace`;
 const sans = (w, s) => `${w} ${s}px Akt, ui-sans-serif, system-ui, sans-serif`;
 
@@ -104,7 +104,7 @@ async function specImage(s) {
   c.scale(scale, scale);
 
   const bg = c.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#efece4'); bg.addColorStop(1, '#dedad0');
+  bg.addColorStop(0, '#e7e5e4'); bg.addColorStop(1, '#d6d3d1');
   c.fillStyle = bg; c.fillRect(0, 0, W, H);
   const glow = c.createRadialGradient(W / 2, H * 0.18, 40, W / 2, H * 0.3, W * 0.8);
   glow.addColorStop(0, 'rgba(255,255,255,.75)'); glow.addColorStop(1, 'rgba(255,255,255,0)');
@@ -123,7 +123,7 @@ async function specImage(s) {
     c.closePath();
   };
   c.shadowColor = 'rgba(40,36,25,.22)'; c.shadowBlur = 48; c.shadowOffsetY = 22;
-  shape(); c.fillStyle = '#fbfaf6'; c.fill();
+  shape(); c.fillStyle = '#fafaf9'; c.fill();
   c.shadowColor = 'transparent';
   // paper texture: fine grain, faint fibres, a little shading at the edges
   c.save(); shape(); c.clip();
@@ -151,7 +151,7 @@ async function specImage(s) {
   c.restore();
   c.restore();
 
-  c.font = mono(19); c.fillStyle = '#8d897e'; c.textAlign = 'center'; c.letterSpacing = '2px';
+  c.font = mono(19); c.fillStyle = '#78716c'; c.textAlign = 'center'; c.letterSpacing = '2px';
   c.fillText(s.kind === 'statement' ? 'shipped with staged' : 'pushed with staged', W / 2, H - 70); c.letterSpacing = '0px';
 
   return new Promise((ok) => canvas.toBlob(ok, 'image/png'));
