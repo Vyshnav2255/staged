@@ -26,7 +26,102 @@ function ghRelease(cwd, tag, notes) {
   });
 }
 
-export function insightRoutes({ git, listRepos, repoDir }) {
+export function insightRoutes({ git, listRepos, repoDir, onIncoming }) {
+  const weightCache = new Map(); // sha -> totals (Health: site weight)
+
+  // ---------- incoming: notice commits on the remote, and pull them in safely ----------
+  // Fetch only downloads; it never touches your files. It runs with no prompts (an SSH key
+  // that needs a passphrase, or a password, just makes it skip quietly) and a time limit.
+  const fetchedAt = new Map(), lastBehind = new Map();
+  const FETCH_EVERY = 5 * 60 * 1000;
+  function fetchRemote(dir) {
+    return new Promise((resolve) => {
+      execFile('git', ['fetch', '--quiet', '--no-recurse-submodules', '--prune'], {
+        cwd: dir, timeout: 30000,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes -o ConnectTimeout=10' },
+      }, (err, _o, stderr) => resolve(err ? String(stderr || err.message).trim().split('\n').pop() : ''));
+    });
+  }
+  async function incoming(dir, limit = 50) {
+    const raw = await git(dir, ['log', `-${limit}`, '--format=%H%x1f%h%x1f%an%x1f%cI%x1f%s', 'HEAD..@{u}']).catch(() => '');
+    return raw.split('\n').filter(Boolean).map((l) => { const [sha, short, author, date, subject] = l.split('\x1f'); return { sha, short, author, date, subject }; });
+  }
+  async function refresh(name, dir, force = false) {
+    if (!force && Date.now() - (fetchedAt.get(dir) || 0) < FETCH_EVERY - 5000) return null;
+    const up0 = await upstreamCounts(dir);
+    if (!up0.upstream) return null;
+    const error = await fetchRemote(dir);
+    fetchedAt.set(dir, Date.now());
+    const up = await upstreamCounts(dir);
+    if (up.behind !== lastBehind.get(dir)) { lastBehind.set(dir, up.behind); onIncoming && onIncoming({ repo: name, behind: up.behind, ahead: up.ahead }); }
+    return { ...up, error, fetchedAt: fetchedAt.get(dir) };
+  }
+  // Look every few minutes, one repo at a time, so a slow remote never holds the others up.
+  let sweeping = false;
+  async function sweep() {
+    if (sweeping) return; sweeping = true;
+    try { for (const r of await listRepos()) await refresh(r.name, r.dir).catch(() => {}); } finally { sweeping = false; }
+  }
+  setTimeout(sweep, 8000).unref?.();
+  setInterval(sweep, FETCH_EVERY).unref?.();
+
+  const conflicted = async (dir) => (await git(dir, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')).split('\n').filter(Boolean);
+  async function busy(dir) {
+    const g = path.resolve(dir, (await git(dir, ['rev-parse', '--git-dir'])).trim());
+    return ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD'].some((f) => fs.existsSync(path.join(g, f)));
+  }
+  // Pull: set uncommitted work aside, bring the new commits in (fast-forward, or replay your
+  // unpushed commits on top), then put the work back. If anything clashes, undo all of it.
+  async function pull(dir) {
+    const up = await upstreamCounts(dir);
+    if (!up.upstream) throw Object.assign(new Error('This branch isn’t linked to a remote branch yet.'), { code: 'no-upstream' });
+    if (await busy(dir)) throw Object.assign(new Error('Git is in the middle of a merge or rebase here. Finish it in a terminal first.'), { code: 'busy' });
+    if (!up.behind) return { pulled: 0, commits: [] };
+    const commits = await incoming(dir);
+    const before = (await git(dir, ['rev-parse', 'HEAD'])).trim();
+    // Uncommitted files that the new commits also change: ask to commit them first, rather than risk a clash.
+    const statusZ = (await git(dir, ['status', '--porcelain=v1', '-z', '-uall'])).split('\0').filter(Boolean);
+    const dirtyFiles = new Set(statusZ.map((l) => l.slice(3)));
+    const theirs = (await git(dir, ['diff', '--name-only', 'HEAD...@{u}']).catch(() => '')).split('\n').filter(Boolean);
+    const overlap = theirs.filter((f) => dirtyFiles.has(f));
+    if (overlap.length) throw Object.assign(new Error('Some files you haven’t committed are also changed in the new commits. Commit them first, then pull.'), { code: 'overlap', files: overlap });
+    const dirty = statusZ.length > 0;
+    let stashed = false;
+    if (dirty) {
+      const n0 = (await git(dir, ['stash', 'list']).catch(() => '')).split('\n').filter(Boolean).length;
+      await git(dir, ['stash', 'push', '--include-untracked', '-m', 'staged: set aside while pulling']);
+      stashed = (await git(dir, ['stash', 'list']).catch(() => '')).split('\n').filter(Boolean).length > n0;
+    }
+    // Put the set-aside work back. apply, then drop only once it went in cleanly.
+    const apply = () => git(dir, ['stash', 'apply', '--index']).catch(() => git(dir, ['stash', 'apply']));
+    const putBack = async () => { if (!stashed) return; await apply(); await git(dir, ['stash', 'drop']); };
+    // If putting it back clashes: return to exactly where we started, then put it back there.
+    const restore = async () => {
+      await git(dir, ['reset', '--hard', before]).catch(() => {});
+      if (!stashed) return;
+      const extra = (await git(dir, ['ls-tree', '-r', '--name-only', 'stash@{0}^3']).catch(() => '')).split('\n').filter(Boolean);
+      for (const f of extra) { try { fs.rmSync(path.join(dir, f), { force: true }); } catch {} }
+      await putBack().catch(() => {});
+    };
+    try {
+      if (up.ahead) await git(dir, ['rebase', '--no-autosquash', '@{u}']);
+      else await git(dir, ['merge', '--ff-only', '@{u}']);
+    } catch (e) {
+      const files = await conflicted(dir);
+      await git(dir, ['rebase', '--abort']).catch(() => {});
+      await restore();
+      throw Object.assign(new Error(files.length ? 'Your commits and the new ones change the same lines, so nothing was pulled.' : 'Couldn’t pull: ' + String(e.stderr || e.message).trim().split('\n').pop()), { code: files.length ? 'conflict' : 'failed', files });
+    }
+    try { await putBack(); }
+    catch {
+      const files = await conflicted(dir);
+      await restore();
+      throw Object.assign(new Error('Your uncommitted changes clash with the new commits, so nothing was pulled. Commit them first, then pull.'), { code: 'conflict', files });
+    }
+    const files = (await git(dir, ['diff', '--name-only', before, 'HEAD']).catch(() => '')).split('\n').filter(Boolean).length;
+    lastBehind.set(dir, 0);
+    return { pulled: commits.length, commits, files, replayed: up.ahead, kept: stashed };
+  }
 
   async function upstreamCounts(dir) {
     try {

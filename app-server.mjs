@@ -12,6 +12,7 @@ import { c, link, card, row, spinner, log, key } from './tui.mjs';
 import { commitRoutes } from './commit.mjs';
 import { insightRoutes } from './insights.mjs';
 import { runRoutes } from './run.mjs';
+import { shrinkRoutes } from './shrink.mjs';
 import { updater } from './updater.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -415,12 +416,19 @@ const commits = commitRoutes({
 const insights = insightRoutes({
   git,
   listRepos,
+  onIncoming: (d) => { repoCache.delete(d.repo); broadcast('incoming', d); },
   repoDir: async (name) => (await listRepos()).find((r) => r.name === name)?.dir || null,
+});
+
+const shrinks = shrinkRoutes({
+  repoDir: async (name) => (await listRepos()).find((r) => r.name === name)?.dir || null,
+  here: HERE,
 });
 
 const runs = runRoutes({
   repoDir: async (name) => (await listRepos()).find((r) => r.name === name)?.dir || null,
   store: path.join(CONFIG_DIR, 'run.json'),
+  repos: async () => (await listRepos()).map((r) => ({ name: r.name, dir: r.dir })),
 });
 
 
@@ -482,6 +490,7 @@ const server = http.createServer(async (req, res) => {
     if (await commits(req, res, url, sendJson)) return;
     if (await insights(req, res, url, sendJson)) return;
     if (await runs(req, res, url, sendJson)) return;
+    if (await shrinks(req, res, url, sendJson)) return;
     if (url.pathname === '/api/repos/logo') {
       // A repo's own logo or icon, for its tile in Settings. Only for repos staged already lists.
       const want = expand(url.searchParams.get('path') || '');

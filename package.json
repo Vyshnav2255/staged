@@ -2,7 +2,7 @@
   "name": "staged",
   "version": "1.0.0",
   "private": true,
-  "description": "Every change across your git repos, sorted into features, commits and releases. Local, no AI needed.",
+  "description": "A fun, friendly app for git that takes the place of the terminal: it sorts your changes into commits, names them, and runs your dev servers. Local, no AI needed.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
@@ -19,6 +19,9 @@
   "bin": {
     "staged": "server.mjs"
   },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  },
   "files": [
     "server.mjs",
     "plan.mjs",
@@ -30,6 +33,7 @@
     "writer.mjs",
     "insights.mjs",
     "run.mjs",
+    "shrink.mjs",
     "public/",
     "README.md"
   ],

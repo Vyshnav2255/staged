@@ -199,11 +199,30 @@ function renderStats(list) {
     const cls = d === 0 ? '' : d > 0 ? 'up' : 'down';
     return `<div class="stat-delta mono ${cls}">${d === 0 ? 'same' : `${d > 0 ? '+' : '−'}${compact(Math.abs(d))}`}${first ? ` vs previous ${range()}` : ''}</div>`;
   };
-  $('#stats').innerHTML = [
+  // Repo weight: what the repo weighs now, and how much it grew or shrank across the range.
+  const ws = weightSeries(repo), wsum = weightSummary(repo);
+  let wd = '';
+  if (ws && ws.v.length) {
+    const from = n === Infinity ? -Infinity : rangeStart();
+    let before = 0;
+    ws.t.forEach((t, i) => { if (t < from) before = ws.v[i]; });
+    const d = ws.v[ws.v.length - 1] - (n === Infinity ? 0 : before);
+    wd = `<div class="stat-delta mono ${d > 0 ? 'heavier' : d < 0 ? 'up' : ''}">${Math.abs(d) < 1024 ? 'same' : `${d > 0 ? '+' : '−'}${fmtBytes(Math.abs(d))}`}${n === Infinity ? ' all time' : ` in ${range()}`}</div>`;
+  }
+  el.innerHTML = [
     ['Commits', fmt.format(a.commits), delta('commits', true)],
     ['Lines changed', `${compact(a.add + a.del)} <small><span style="color:var(--add)">+${compact(a.add)}</span> <span style="color:var(--del)">−${compact(a.del)}</span></small>`, delta('lines')],
     ['Features shipped', fmt.format(a.feat), delta('feat')],
+    ['Repo weight', wsum ? fmtBytes(wsum.total) : ws ? fmtBytes(0) : '…', wd],
   ].map(([l, v, d]) => `<div class="stat"><div class="stat-label">${l}</div><div class="stat-value">${v}</div>${d}</div>`).join('');
+}
+// the week under the pointer is banded through every lane and read out in words
+function statsHover(e) {
+  const host = $('#stats'), plot = e.type === 'mouseleave' ? null : e.target.closest?.('.tl-plot'), read = host.querySelector('.tl-read');
+  if (!plot || !read) { host.classList.remove('is-hover'); return; }
+  const cols = plot.querySelectorAll('.tl-col'), r = plot.querySelector('.tl-cols').getBoundingClientRect();
+  const i = Math.min(cols.length - 1, Math.max(0, Math.floor(((e.clientX - r.left) / r.width) * cols.length)));
+  plot.style.setProperty('--ci', i); read.textContent = cols[i].dataset.tip; host.classList.add('is-hover');
 }
 
 // ---------- render: chart ----------
