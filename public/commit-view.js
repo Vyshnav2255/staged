@@ -646,6 +646,15 @@ function paintPanel(animate = false) {
     panelEl.addEventListener('dragover', onPanelDrag);
     panelEl.addEventListener('drop', onPanelDrag);
     panelEl.addEventListener('dragend', onPanelDrag);
+    // The panel scrolls on its own: wheeling over the receipt (or the cart list) never moves the page behind it,
+    // even when the paper is shorter than the panel or still printing.
+    panelEl.addEventListener('wheel', (e) => {
+      const box = e.target.closest('.rcpt-wrap, .cmp-list');
+      if (!box) return e.preventDefault();
+      const up = e.deltaY < 0;
+      const can = !box.classList.contains('is-printing') && (up ? box.scrollTop > 0 : box.scrollTop + box.clientHeight < box.scrollHeight - 1);
+      if (!can) e.preventDefault();
+    }, { passive: false });
     panelEl.addEventListener('pointerdown', (e) => { const b = e.target.closest('[data-cmp-push]'); if (b && e.button === 0) { e.preventDefault(); b.focus(); startCharge(b); } });
     panelEl.addEventListener('keydown', (e) => { const b = e.target.closest('[data-cmp-push]'); if (b && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); if (!e.repeat) startCharge(b); } });
     // Reorder from the keyboard: Alt + up or down on a focused row.

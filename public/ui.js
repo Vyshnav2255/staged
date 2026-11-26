@@ -133,3 +133,22 @@ const HOSTS = {
 };
 export const hostOf = (r) => HOSTS[r?.provider] || HOSTS.git;
 export const commitUrl = (r, sha) => (r?.remote ? r.remote + hostOf(r).commit + sha : '');
+
+// Fixed panels (the sidebar, the cart, docked panels, menus) keep the wheel to themselves: once the
+// part under the pointer can't scroll any further, the scroll stops there instead of moving the page behind.
+const PANELS = '.side, .cmp, .modal-wrap.is-dock .modal, .cm-menu';
+const canScroll = (el, dx, dy) => {
+  const s = getComputedStyle(el);
+  if (Math.abs(dy) >= Math.abs(dx)) return /auto|scroll/.test(s.overflowY) && (dy < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+  return /auto|scroll/.test(s.overflowX) && (dx < 0 ? el.scrollLeft > 0 : el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+};
+document.addEventListener('wheel', (e) => {
+  if (e.ctrlKey) return; // pinch zoom
+  const panel = e.target.closest?.(PANELS);
+  if (!panel) return;
+  for (let el = e.target; el; el = el.parentElement) {
+    if (canScroll(el, e.deltaX, e.deltaY)) return;
+    if (el === panel) break;
+  }
+  e.preventDefault();
+}, { passive: false });
