@@ -3926,7 +3926,8 @@ async function pushCheck(git, dir, commits) {
     const add = (o) => { const k = o.kind + o.name; if (!seen.has(k)) { seen.add(k); issues.push(o); } };
     for (const [p, d] of files) {
       if (!CODE_FILE.test(p) && !/\.s?css$/i.test(p)) continue;
-      for (const l of d.plus) for (const spec of pushImportsIn(l)) {
+      // comment lines can quote an import as an example; only real code counts
+      for (const l of d.plus) for (const spec of /^\s*(\/\/|\/\*|\*|#)/.test(l) ? [] : pushImportsIn(l)) {
         const at = pushResolve(p, spec, (x) => working.has(x)) || pushResolve(p, spec, (x) => tree.has(x));
         if (!at) { if (!/^_includes\//.test(spec)) add({ kind: 'missing', name: spec, file: p, why: `imports ${spec}, which doesn't exist` }); continue; }
         if (!tree.has(at)) add({ kind: 'file', name: at, file: p, why: `imports ${at}, which isn't committed yet` });
