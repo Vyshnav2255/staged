@@ -14,9 +14,22 @@ export function onRunChange(fn) { onJobsChange = fn; }
 export const runCache = (repo) => cache.get(repo);
 export const running = (repo) => (cache.get(repo)?.jobs || []).filter(live);
 
+// Every running command in every repo, for the sidebar and Home. Cheap, so it's polled.
+let all = [], onAllChange = () => {};
+export const runningAll = () => all;
+export function onRunningChange(fn) { onAllChange = fn; }
+export async function loadRunning() {
+  try {
+    const { jobs } = await api('/api/run/running');
+    const key = (l) => l.map((j) => `${j.repo}\0${j.id}\0${j.url || ''}`).join('|');
+    if (key(jobs) !== key(all)) { all = jobs; onAllChange(all); }
+  } catch {}
+  return all;
+}
+
 export async function loadRun(repo) {
   if (!repo || repo === 'all') return null;
-  try { const d = await api(`/api/run/list?${q(repo)}`); cache.set(repo, d); onJobsChange(repo, d); return d; }
+  try { const d = await api(`/api/run/list?${q(repo)}`); cache.set(repo, d); onJobsChange(repo, d); loadRunning(); return d; }
   catch { return null; }
 }
 export async function runCommand(repo, id) {

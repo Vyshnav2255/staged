@@ -111,31 +111,77 @@ function visible() {
 function renderSidebar() {
   const repos = state.data.repos;
   const nameOf = (r) => `<span class="repo-name">${r.remote ? `<span class="repo-host" title="On ${esc(hostOf(r).name)}">${icon(hostOf(r).icon, 14)}</span>` : `<span class="repo-host is-local" title="Local only">${icon('Folder01', 14)}</span>`}<span class="repo-label">${esc(r.name)}</span>${r.dirty ? `<span class="repo-dirty" title="${r.dirty} uncommitted"></span>` : ''}</span>`;
-  let html = `<div class="side-top">
+  // Home is the first row of the same list as the repos, so one highlight and one hover serve them all.
+  let html = `<div class="repo-list scroll-fade"><i class="repo-hover" aria-hidden="true"></i>
     <button class="repo is-home" data-home aria-current="${state.repo === 'all' && !GLOBAL_VIEWS.includes(state.view)}">
       <span class="repo-name"><span class="repo-host">${icon('Home01', 14)}</span><span class="repo-label">Home</span></span>
     </button>
-  </div>
-  <div class="side-sec"><span class="side-sec-h mono">Repos</span>${repos.length > 6 ? `<label class="side-filter">${icon('Search01', 13)}<input id="repoFilter" type="search" placeholder="Filter" value="${esc(state.sideQ || '')}" autocomplete="off" spellcheck="false" aria-label="Filter repos"></label>` : ''}</div>
-  <div class="repo-list scroll-fade"><i class="repo-hover" aria-hidden="true"></i>`;
+    <div class="side-sec"><span class="side-sec-h">Repos</span>${repos.length > 6 ? `<label class="side-filter">${icon('Search01', 13)}<input id="repoFilter" type="search" placeholder="Filter" value="${esc(state.sideQ || '')}" autocomplete="off" spellcheck="false" aria-label="Filter repos"></label>` : ''}</div>`;
   for (const r of repos) {
     const meta = r.last ? ago(r.last) : 'no commits';
     const hide = state.sideQ && !r.name.toLowerCase().includes(state.sideQ.toLowerCase());
     html += `<button class="repo" data-repo="${esc(r.name)}" aria-current="${state.repo === r.name && !GLOBAL_VIEWS.includes(state.view)}" title="${esc(r.name)}"${hide ? ' hidden' : ''}>
       ${nameOf(r)}
-      <span class="repo-meta mono">${esc(meta)}</span>
+      ${runLine(r.name) || `<span class="repo-meta mono">${esc(meta)}</span>`}
+      ${sideEnd(r)}
     </button>`;
   }
   html += `<p class="side-empty muted" ${repos.some((r) => !state.sideQ || r.name.toLowerCase().includes(state.sideQ.toLowerCase())) ? 'hidden' : ''}>No repo matches</p></div>`;
   $('#repos').innerHTML = html;
+}
+// Compact sidebar (Settings › Sidebar): one line per repo, with what matters at the right edge:
+// the server's port while one runs, else how many files wait to commit, else how long since the last commit.
+function sideEnd(r) {
+  const j = runFor(r.name);
+  if (j?.url) return `<span class="repo-end is-live"><i class="rl-tri"></i>${esc(portOf(j.url))}</span>`;
+  if (r.dirty) return `<span class="repo-end is-dirty" title="${r.dirty} uncommitted"><i></i>${r.dirty}</span>`;
+  return `<span class="repo-end">${r.last ? esc(ago(r.last).replace(' ago', '')) : ''}</span>`;
+}
+// While one of a repo's commands runs, its date line becomes a status line:
+// "▶ serving :4000 · 12m" once a dev server says its address, "▶ starting… 00:04" before that.
+const runFor = (name) => { const l = runningAll().filter((j) => j.repo === name); return l.find((j) => j.url) || l[0] || null; };
+const portOf = (url) => { try { const u = new URL(url); return u.port ? ':' + u.port : u.host; } catch { return url; } };
+const clock = (t) => { const s = Math.max(0, Math.floor((Date.now() - t) / 1000)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+const upFor = (t) => { const m = Math.max(0, Math.floor((Date.now() - t) / 60000)); return m < 1 ? 'now' : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; };
+function runText(j) {
+  if (j.url) return `<i class="rl-tri"></i>serving ${esc(portOf(j.url))}<span class="rl-sep">·</span><span class="rl-up">${upFor(j.at)}</span>`;
+  return `<i class="rl-tri"></i>${j.kind === 'serve' ? 'starting…' : 'running'}&nbsp;<span class="rl-tk">${clock(j.at)}</span>`;
+}
+function runLine(name) {
+  const j = runFor(name);
+  if (!j) return '';
+  const all = runningAll().filter((x) => x.repo === name).map((x) => x.label).join(', ');
+  return `<span class="repo-meta mono repo-runline ${j.url ? 'is-live' : 'is-boot'}" data-run-at="${j.at}" title="Running: ${esc(all)}${j.url ? ' · ' + esc(j.url) : ''}">${runText(j)}</span>`;
+}
+let runTick = null;
+function paintRunDots() {
+  for (const b of document.querySelectorAll('#repos .repo[data-repo]')) {
+    const r = state.data?.repos.find((x) => x.name === b.dataset.repo);
+    const line = runLine(b.dataset.repo) || `<span class="repo-meta mono">${esc(r?.last ? ago(r.last) : 'no commits')}</span>`;
+    b.querySelector('.repo-meta')?.remove();
+    b.insertAdjacentHTML('beforeend', line);
+  }
+  // keep the counters moving: every second while one is starting, otherwise each minute is enough
+  clearInterval(runTick);
+  const jobs = runningAll();
+  if (jobs.length) runTick = setInterval(() => {
+    for (const el of document.querySelectorAll('#repos .repo-runline')) {
+      const j = runFor(el.closest('.repo')?.dataset.repo);
+      if (!j) continue;
+      if (j.url) { const up = el.querySelector('.rl-up'); if (up) up.textContent = upFor(j.at); }
+      else { const tk = el.querySelector('.rl-tk'); if (tk) tk.textContent = clock(j.at); }
+    }
+  }, jobs.some((j) => !j.url) ? 1000 : 15000);
 }
 
 function renderHeader() {
   const repos = currentRepos();
   const gh = $('#ghLink');
   if (state.repo === 'all') {
-    $('#title').textContent = greeting();
-    $('#meta').innerHTML = `<span>${icon('Calendar03', 13)}${new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</span>`;
+    // Home's title says what's waiting (today.js keeps it current); the date sits at the far right.
+    const hl = isHome() ? homeHeadline() : null;
+    $('#title').textContent = hl?.title || greeting();
+    $('#meta').innerHTML = `<span class="home-sub">${esc(hl?.sub || '')}</span><span class="home-date">${icon('Calendar03', 13)}${new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</span>`;
     gh.hidden = true;
   } else {
     const r = repos[0];
@@ -169,10 +215,10 @@ function renderHeader() {
     b.setAttribute('aria-selected', selected);
     b.tabIndex = selected || (!hasViewTab && b.dataset.v === 'week') ? 0 : -1;
   }
-  // A dot while there are changes; the commit view puts the number of commits here once it has sorted them.
+  // An orange dot on the Commit tab while there are changes to commit; hidden while you're on that tab.
   const dirty = repos.reduce((s, r) => s + (r.dirty || 0), 0), dc = $('#dirtyCount');
-  if (!dirty) { dc.textContent = ''; dc.classList.remove('is-dot'); }
-  else if (dc.dataset.repo !== state.repo || !dc.textContent) { dc.textContent = ''; dc.classList.add('is-dot'); }
+  dc.textContent = '';
+  dc.classList.toggle('is-dot', !!dirty && state.view !== 'commit');
   for (const b of document.querySelectorAll('#rangeSeg button')) b.setAttribute('aria-selected', b.dataset.r === state.range);
 }
 
@@ -686,9 +732,11 @@ async function refreshRepoState() {
 function ctxFor(view) {
   const r = state.data.repos.find((x) => x.name === state.repo);
   return {
-    repo: state.repo, view, q: state.q, repos: state.data.repos, remote: r?.remote || '', host: hostOf(r), commitUrl: (sha) => commitUrl(r, sha),
+    repo: state.repo, view, q: state.q, range: state.range, repos: state.data.repos, remote: r?.remote || '', host: hostOf(r), commitUrl: (sha) => commitUrl(r, sha),
     pickRepo: (name) => { state.repo = name; render(); },
     go: (name, v) => { state.repo = name; state.view = v; render(); scrollTo({ top: 0 }); },
+    openRun: (name) => { state.repo = name; state.view = 'week'; state.repoState = null; render(); refreshRepoState(); scrollTo({ top: 0 }); openRun(name); },
+    refreshRunning: () => loadRunning(),
     openCart: (name) => { state.repo = name; state.view = 'week'; state.repoState = null; render(); refreshRepoState(); scrollTo({ top: 0 }); openPanel(); },
     onChange: () => { load(false); refreshRepoState(); },
     openSettings,
@@ -796,17 +844,25 @@ function paintRunBtn() {
   b.title = n ? running(repo).map((j) => j.label).join(', ') : 'Run this project';
 }
 onRunChange((repo) => { if (repo === state.repo) paintRunBtn(); });
+onRunningChange(() => { paintRunDots(); if (isHome()) render(); });
+loadRunning();
+setInterval(() => { if (!document.hidden) loadRunning(); }, 5000);
 $('#runBtn').addEventListener('click', () => openRun(state.repo));
+$('#stats').addEventListener('mousemove', statsHover);
+$('#stats').addEventListener('mouseleave', statsHover);
 // Keep the dot honest when something stops on its own (a build finishing) while the panel is closed.
 setInterval(() => { if (state.repo !== 'all' && running(state.repo).length && !document.hidden) loadRun(state.repo); }, 5000);
 $('#projectBtn').innerHTML = icon('Settings02', 16);
 const projectSettings = () => openProjectSettings(state.repo, { learned: learnedStyle(state.repo), onChange: () => applyStyle(state.repo) });
 $('#projectBtn').addEventListener('click', projectSettings);
 addEventListener('staged:project-settings', projectSettings);
-$('#readmeLink').innerHTML = `${icon('BookOpen01', 15)}<span>README</span>`;
+$('#readmeLink').innerHTML = icon('BookOpen01', 15);
+$('#readmeLink').title = 'README'; $('#readmeLink').setAttribute('aria-label', 'README');
 $('#settingsLink').innerHTML = `${icon('Settings02', 15)}<span>Settings</span>`;
 $('#settingsLink').addEventListener('click', () => openSettings());
-$('#aboutLink').innerHTML = `${icon('InformationCircle', 15)}<span>About</span>`;
+$('#aboutLink').innerHTML = icon('InformationCircle', 15);
+$('#aboutLink').title = 'About'; $('#aboutLink').setAttribute('aria-label', 'About');
+try { if (localStorage.getItem('staged.sidebar') === 'compact') document.body.classList.add('side-compact'); } catch {}
 $('#aboutLink').addEventListener('click', openAbout);
 initUpdates(document.querySelector('.side'));
 initMotionSystem();

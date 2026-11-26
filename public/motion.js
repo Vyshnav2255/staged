@@ -147,7 +147,7 @@ export function initFluidHover(root) {
 
   let active = null;
   let focused = null;
-  const getItem = (node) => node instanceof Element ? node.closest('.repo-list .repo[data-repo]') : null;
+  const getItem = (node) => node instanceof Element ? node.closest('.repo-list .repo[data-repo], .repo-list .repo[data-home]') : null;
   const setActive = (item) => {
     const list = item?.closest('.repo-list') || root.querySelector('.repo-list');
     const highlight = list?.querySelector('.repo-hover');
@@ -171,7 +171,7 @@ export function initFluidHover(root) {
     highlight.style.width = `${box.width}px`;
     highlight.style.height = `${box.height}px`;
     highlight.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-    list.dataset.fluidHoverActiveIndex = String([...list.querySelectorAll('.repo[data-repo]:not([hidden])')].indexOf(item));
+    list.dataset.fluidHoverActiveIndex = String([...list.querySelectorAll('.repo[data-repo]:not([hidden]), .repo[data-home]')].indexOf(item));
     list.classList.add('has-fluid-hover');
   };
 
