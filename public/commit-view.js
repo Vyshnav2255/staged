@@ -769,8 +769,15 @@ let dragI = null;
 function onPanelDrag(e) {
   const P = cs.panel; if (P.mode !== 'review') return;
   const li = e.target.closest?.('.cmp-item');
-  if (e.type === 'dragstart') { dragI = +li.dataset.i; li.classList.add('is-drag'); e.dataTransfer.effectAllowed = 'move'; }
-  else if (e.type === 'dragover') { e.preventDefault(); for (const x of panelEl.querySelectorAll('.cmp-item')) x.classList.toggle('is-over', x === li); }
+  if (e.type === 'dragstart') {
+    dragI = +li.dataset.i; li.classList.add('is-drag'); e.dataTransfer.effectAllowed = 'move';
+    // A clear card follows the pointer instead of the browser's faint copy of the row.
+    const ghost = document.createElement('div');
+    ghost.className = 'cm-ghost'; ghost.style.cssText = 'left:-9999px;top:-9999px;transform:none';
+    ghost.innerHTML = `<span class="cm-ghost-grip"><i></i></span><span class="cm-ghost-name">${esc(li.querySelector('.cmp-subj')?.textContent || '')}</span>`;
+    document.body.appendChild(ghost); e.dataTransfer.setDragImage(ghost, 18, 18); setTimeout(() => ghost.remove(), 0);
+  }
+  else if (e.type === 'dragover') { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; for (const x of panelEl.querySelectorAll('.cmp-item')) x.classList.toggle('is-over', x === li && +x.dataset.i !== dragI); }
   else if (e.type === 'drop') { e.preventDefault(); if (!li || dragI == null) return; const [g] = P.order.splice(dragI, 1); P.order.splice(+li.dataset.i, 0, g); dragI = null; paintPanel(); }
   else { dragI = null; paintPanel(); }
 }

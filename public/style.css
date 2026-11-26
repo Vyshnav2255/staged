@@ -61,7 +61,7 @@ a { color: inherit; }
 .ic { display: block; flex: none; }
 
 /* ---------- layout ---------- */
-.shell { min-height: 100vh; padding-left: 264px; }
+.shell { min-height: 100vh; padding-left: 264px; transition: padding-right .48s cubic-bezier(.32, .72, 0, 1); }
 html { overscroll-behavior: none; }
 /* Fixed, not sticky: the sidebar never travels with the page, including the elastic bounce at either end. */
 /* Lockup: the mark's visible height equals the ascender, its bottom sits on the baseline, and the gap is half the x-height.
@@ -1153,8 +1153,10 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 .cmp-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 10px; border-radius: 10px; }
 .cmp-item[draggable="true"] { grid-template-columns: 14px 20px minmax(0, 1fr) auto; cursor: grab; }
 .cmp-item[draggable="true"]:hover { background: var(--hover); }
-.cmp-item.is-drag { opacity: .5; }
-.cmp-item.is-over { box-shadow: inset 0 2px 0 var(--ink); }
+.cmp-item[draggable="true"] { cursor: grab; }
+.cmp-item.is-drag { opacity: .4; background: repeating-linear-gradient(-45deg, transparent 0 6px, color-mix(in srgb, var(--line) 70%, transparent) 6px 7px); }
+.cmp-item.is-over { position: relative; }
+.cmp-item.is-over::before { content: ""; position: absolute; left: 8px; right: 8px; top: -2px; height: 3px; border-radius: 3px; background: var(--logo-2); box-shadow: 0 0 0 3px color-mix(in srgb, var(--logo-2) 20%, transparent); }
 .cmp-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .cmp-subj { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmp-main .mono { font-size: 11px; }
@@ -1256,6 +1258,7 @@ body.has-cmp .glance, body.has-cmp #pushBtn, body.has-cmp #meta .is-ahead { disp
 /* ---------- receipt printer: same surface as the panel, so it reads as part of it ---------- */
 .rcpt-wrap::-webkit-scrollbar { display: none; }
 .rcpt-wrap.is-printing { overflow: hidden; }
+.rcpt-wrap, .cmp-list { overscroll-behavior: contain; }
 .rcpt-feed { margin-top: auto; }
 .prn-mark { filter: grayscale(1); }
 .prn.is-on .prn-face { opacity: 1; }
@@ -1383,17 +1386,29 @@ body:has(.cm-list) { background: var(--cm-ground); }
 .cm-grip:active { cursor: grabbing; }
 .cm-file:hover .cm-discard, .cm-discard:focus-visible { opacity: 1; }
 
-/* dragging a file to another commit */
-.cm-ghost { position: fixed; z-index: 80; margin: 0; pointer-events: none; background: var(--surface); box-shadow: 0 0 0 1px rgb(20 18 12 / .08), 0 8px 16px -6px rgb(20 18 12 / .25); transform-origin: 20px 50%; }
-.cm-ghost .cm-grip { opacity: 1; }
-.cm-file.is-lifted { opacity: .35; }
-.cm-newdrop { display: none; align-items: center; justify-content: center; gap: 6px; height: 52px; border-radius: 12px; border: 1px dashed var(--line-strong); color: var(--muted); font-size: 13px; }
-.cm-list:has(.cm-card:only-of-type) .cm-newdrop { }
+/* dragging a file to another commit: the row lifts into a card that follows the pointer, every
+   commit it can land on shows a dashed outline, and the one underneath turns green with "Move here" */
+body.is-grabbing, body.is-grabbing * { cursor: grabbing !important; user-select: none; }
+.cm-path, .cm-status { cursor: grab; }
+.cm-ghost { position: fixed; z-index: 80; display: flex; align-items: center; gap: 10px; max-width: 360px; padding: 9px 12px 9px 10px; border-radius: 10px; pointer-events: none; background: var(--surface); color: var(--ink); font-size: 13px; box-shadow: 0 0 0 1px rgb(12 10 9 / .1), 0 12px 28px -8px rgb(12 10 9 / .35), 0 3px 6px -2px rgb(12 10 9 / .12); transform-origin: 24px 50%; transition: box-shadow .15s ease; }
+.cm-ghost.is-armed { box-shadow: 0 0 0 2px var(--logo-2), 0 12px 28px -8px rgb(12 10 9 / .35); }
+.cm-ghost-grip i { display: block; width: 6px; height: 10px; background: radial-gradient(circle, var(--muted) 1.1px, transparent 1.4px) 0 0 / 3px 3.33px; }
+.cm-ghost-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.cm-ghost-name .dir { color: var(--muted); font-weight: 400; }
+.cm-ghost .lines { margin-left: auto; font-size: 11.5px; white-space: nowrap; }
+.cm-file.is-lifted { opacity: 1; background: repeating-linear-gradient(-45deg, transparent 0 6px, color-mix(in srgb, var(--line) 70%, transparent) 6px 7px); }
+.cm-file.is-lifted > * { opacity: .3; }
+.cm-newdrop { display: none; align-items: center; justify-content: center; gap: 6px; height: 56px; border-radius: 12px; border: 1.5px dashed var(--line-strong); color: var(--muted); font-size: 13px; transition: border-color .15s ease, background .15s ease, color .15s ease; }
 .is-dragging .cm-newdrop { display: flex; animation: cm-drop-in .2s cubic-bezier(.23, 1, .32, 1); }
 @keyframes cm-drop-in { from { opacity: 0; transform: translateY(-4px); } }
-.is-dragging .cm-card:not(.is-over) { }
-.cm-card.is-over { box-shadow: 0 0 0 2px var(--logo-2), 0 6px 14px -6px rgb(20 18 12 / .2); transform: scale(1.005); }
-.cm-newdrop.is-over { border-color: var(--logo-2); color: var(--ink); background: color-mix(in srgb, var(--logo-2) 8%, transparent); }
+.cm-card { position: relative; transition: box-shadow .18s ease, transform .18s cubic-bezier(.23, 1, .32, 1), opacity .18s ease; }
+.is-dragging .cm-card:not(.is-source)::after { content: ""; position: absolute; inset: 0; border-radius: inherit; border: 1.5px dashed color-mix(in srgb, var(--logo-2) 55%, transparent); pointer-events: none; }
+.is-dragging .cm-card.is-source { opacity: .75; }
+.cm-card.is-over { box-shadow: 0 0 0 2px var(--logo-2), 0 10px 24px -10px rgb(12 10 9 / .3); transform: translateY(-1px); }
+.cm-card.is-over::after { border-color: transparent !important; }
+.cm-card.is-over::before { content: "Move here"; position: absolute; z-index: 2; top: 10px; right: 12px; padding: 2px 8px; border-radius: 999px; background: var(--logo-box); color: #fff; font-size: 11.5px; font-weight: 500; pointer-events: none; animation: cm-drop-in .16s cubic-bezier(.23, 1, .32, 1); }
+.cm-newdrop.is-over { border-color: var(--logo-2); border-style: solid; color: var(--ink); background: color-mix(in srgb, var(--logo-2) 10%, transparent); }
+@media (prefers-reduced-motion: reduce) { .cm-card, .cm-ghost, .cm-newdrop { transition: none; animation: none; } }
 
 /* the header button that opens the cart */
 .push-btn .ic { color: inherit; }
@@ -1652,7 +1667,7 @@ button.rn-lab-main { cursor: pointer; width: max-content; max-width: 100%; borde
 .rn-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.35; color: var(--ink-2); }
 .rn-check input { margin-top: 2px; accent-color: var(--logo-box); }
 .rn-add-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-@media (prefers-reduced-motion: reduce) { .run-dot, .rn-led, .rn-led::after, .rn-reel i, .rn-deck, .rn-label, .rn-ln, .rn-caret { animation: none !important; } .rn-k, .rn-reel { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .run-dot, .rn-led, .rn-led::after, .rn-reel i, .rn-deck, .rn-label, .rn-label::after, .rn-lab-main, .rn-ln, .rn-caret { animation: none !important; } .rn-k, .rn-reel { transition: none; } }
 
 /* ---------- docked side panels: part of the app, like the cart (never a popup) ---------- */
 .modal-wrap.is-dock { inset: 0 0 0 auto; width: auto; padding: 0; background: none !important; backdrop-filter: none; pointer-events: none; z-index: 35; display: block; }
@@ -1660,7 +1675,7 @@ button.rn-lab-main { cursor: pointer; width: max-content; max-width: 100%; borde
 .modal-wrap.is-dock.is-open .modal { transform: none; }
 .modal-wrap.is-dock.is-closing .modal { transition-duration: .32s; transition-timing-function: cubic-bezier(.32, .72, 0, 1); }
 .modal-wrap.is-dock.is-ps .modal { width: 360px; }
-@media (min-width: 1180px) { body.has-dock .main { padding-right: calc(40px + var(--dock-w, 360px)); max-width: calc(1120px + var(--dock-w, 360px)); } }
+@media (min-width: 1180px) { body.has-dock .shell { padding-right: var(--dock-w, 360px); } }
 @media (max-width: 1179px) { .modal-wrap.is-dock .modal { box-shadow: var(--raise-lg); } }
 @media (prefers-reduced-motion: reduce) { .modal-wrap.is-dock .modal { transition: none; } }
 
