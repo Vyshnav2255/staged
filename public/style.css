@@ -86,10 +86,15 @@ html { overscroll-behavior: none; }
 @media (prefers-reduced-motion: reduce) { .repo-hover { transition: none; } }
 .repo-name { display: flex; align-items: center; gap: 7px; min-width: 0; font-weight: 500; }
 .repo-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.repo-dirty { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--t-perf); margin-left: 2px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--t-perf) 18%, transparent); }
+.repo-run { position: relative; top: 1px; flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: var(--logo-2); margin-left: 4px; }
+.repo-run::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 1.5px solid var(--logo-2); opacity: 0; }
+@media (prefers-reduced-motion: no-preference) { .repo-run::after { animation: rn-ring 1.8s ease-out infinite; } }
+/* dots sit on the middle of the lowercase letters, which is a hair below the line's middle */
+.repo-dirty { position: relative; top: 1px; flex: none; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: var(--t-ui); margin-left: 2px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--t-ui) 20%, transparent); }
 .repo-meta { grid-column: 1; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 21px; margin-top: 1px; }
 
-.main { padding: 28px 40px 80px; max-width: 1120px; width: 100%; min-width: 0; transition: padding-right .48s cubic-bezier(.32, .72, 0, 1), max-width .48s cubic-bezier(.32, .72, 0, 1); }
+/* the page sits centred in the space beside the sidebar (and beside a docked panel when one is open) */
+.main { padding: 28px 40px 80px; max-width: 1120px; width: 100%; min-width: 0; margin-inline: auto; }
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .head h1 { font-size: 24px; font-weight: 500; letter-spacing: -0.015em; line-height: 1.2; margin: 0; }
 .head-meta { color: var(--muted); margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
@@ -1638,8 +1643,19 @@ button.rn-lab-main { cursor: pointer; width: max-content; max-width: 100%; borde
 .rn-h { margin: 22px 2px 8px; }
 .rn-list { padding: 0 8px 0 12px; border-radius: 14px; background: var(--surface); box-shadow: var(--raise); }
 .rn-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; column-gap: 10px; padding: 11px 0; }
-.rn-trk { width: 22px; margin-top: 2px; font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
-.rn-row.is-live .rn-trk, .rn-row.is-busy .rn-trk, .rn-row.is-done .rn-trk { color: var(--logo-box); } .rn-row.is-failed .rn-trk { color: var(--del); } .rn-row.is-boot .rn-trk { color: #a87300; }
+/* each extra command starts with its own play button; while it runs it becomes a stop button with a live ring */
+.rn-play { position: relative; display: grid; place-items: center; align-self: center; width: 28px; height: 28px; margin: 0; padding: 0; border: 0; border-radius: 50%; background: var(--control-raised); color: var(--ink); box-shadow: var(--btn); cursor: pointer; transition: transform .12s ease, background .15s ease, color .15s ease; }
+.rn-play .ic { display: block; margin-left: 1.5px; } /* the play triangle's weight sits left, so nudge it to look centred */
+.rn-play:hover { background: var(--ink); color: var(--surface); }
+.rn-play:active:not(:disabled) { transform: scale(.94); }
+.rn-play.is-on { color: var(--del); }
+.rn-play.is-on .ic { margin-left: 0; }
+.rn-play.is-on:hover { background: var(--del); color: #fff; }
+.rn-play.is-on::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 1.5px solid var(--logo-2); opacity: .9; }
+.rn-row.is-boot .rn-play.is-on::after { border-color: #f59e0b; }
+@media (prefers-reduced-motion: no-preference) { .rn-play.is-on::after { animation: rn-ring 1.6s ease-out infinite; } }
+@keyframes rn-ring { 0% { transform: scale(.92); opacity: .9; } 100% { transform: scale(1.25); opacity: 0; } }
+.rn-row.is-failed .rn-play { color: var(--del); }
 .rn-list .rn-row + .rn-row, .rn-list .rn-log + .rn-row { border-top: var(--dash); }
 .rn-list .rn-log { margin: 0 4px 12px 0; }
 .rn-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

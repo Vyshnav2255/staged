@@ -75,9 +75,9 @@ export function openRun(repo) {
       : ph === 'done' ? `<span class="rn-lab-main">Finished${j.ended ? ` in ${took(j.ended - j.at)}` : ''}${icon('Tick02', 13)}</span>`
       : ph === 'boot' ? `<span class="rn-lab-main is-quiet">Warming up…</span>`
       : `<span class="rn-lab-main">${esc(c.label)}</span>`;
-    const count = on ? `<span class="rn-count mono" data-rn-up="${j.at}"></span>` : `<span class="rn-count mono">${j?.ended ? clock(Date.now() - (j.ended - j.at)) : '00:00'}</span>`;
+    const count = on ? `<span class="rn-count mono" data-st="${PHASE[ph]}" data-rn-up="${j.at}"></span>` : `<span class="rn-count mono" data-st="${PHASE[ph]}">${j?.ended ? clock(Date.now() - (j.ended - j.at)) : '00:00'}</span>`;
     return `<section class="rn-deck is-${ph}" data-id="${esc(c.id)}">
-      <header class="rn-deck-top"><span class="rn-brand" aria-hidden="true">${icon('Queue02', 13)}<b>staged</b><i class="mono">stereo</i></span><span class="rn-state mono">${PHASE[ph]}</span><i class="rn-led"></i></header>
+      <header class="rn-deck-top"><span class="rn-brand" aria-hidden="true">${icon('Queue02', 12)}<b>staged</b><i class="mono">stereo</i></span><span class="rn-state rn-sr" role="status">${PHASE[ph]}</span></header>
       <div class="rn-tape">
         <div class="rn-label">${label}<code class="rn-lab-cmd mono" title="${esc(c.cmd)}">${esc(c.cmd)}</code></div>
         <div class="rn-window"><span class="rn-reel is-l"><i></i></span><span class="rn-band"></span><span class="rn-reel is-r"><i></i></span>${count}</div>
@@ -90,6 +90,7 @@ export function openRun(repo) {
         <button class="rn-k rn-k-out ${logOf === c.id ? 'is-on' : ''}" ${j ? `data-rn-log="${esc(c.id)}"` : 'disabled'} data-tip="${!j ? 'No output yet' : logOf === c.id ? 'Hide output' : 'Show output'}" aria-label="Output" aria-pressed="${logOf === c.id}">${icon('Terminal', 15)}</button>
         <button class="rn-k rn-k-out" data-rn-more="${esc(c.id)}" data-tip="More" aria-label="More for ${esc(c.label)}">${icon('MoreHorizontal', 15)}</button>
       </div>
+      <i class="rn-led" title="${PHASE[ph]}" aria-hidden="true"></i>
     </section>${log(c, j, on)}`;
   };
   const row = (c, i) => {
@@ -97,12 +98,10 @@ export function openRun(repo) {
     const st = !j ? '' : `<span class="rn-st">${ph === 'live' ? `<button class="rn-chip mono" data-rn-open="${esc(c.id)}" title="Open ${esc(j.url)}">${esc(host(j.url))}${icon('LinkSquare02', 11)}</button>` : `<span>${PHASE[ph]}${ph === 'failed' && j.code != null ? ` · exit ${esc(j.code)}` : ''}</span>`}
       ${on ? `<span class="mono" data-rn-up="${j.at}"></span>` : j.ended ? `<span class="rn-when">${since(j.ended)}</span>` : ''}</span>`;
     return `<div class="rn-row is-${ph}" data-id="${esc(c.id)}">
-      <span class="rn-trk mono">${String(i + 2).padStart(2, '0')}</span>
+      ${on ? `<button class="rn-play is-on" data-rn-stop="${esc(c.id)}" ${ph === 'stopping' ? 'disabled' : ''} title="${ph === 'stopping' ? 'Stopping…' : 'Stop'}" aria-label="Stop ${esc(c.label)}">${icon('Stop', 12)}</button>`
+           : `<button class="rn-play" data-rn-go="${esc(c.id)}" title="Run ${esc(c.cmd)}" aria-label="Run ${esc(c.label)}">${icon('Play', 13)}</button>`}
       <div class="rn-main"><b>${esc(c.label)}</b><code class="mono" title="${esc(c.cmd)}">${esc(c.cmd)}</code>${st}</div>
-      <div class="rn-tools">${logBtn(c, j)}
-        ${on ? `<button class="icon-btn sm rn-stop" data-rn-stop="${esc(c.id)}" title="Stop" aria-label="Stop ${esc(c.label)}">${icon('Stop', 13)}</button>`
-             : `<button class="icon-btn sm rn-go" data-rn-go="${esc(c.id)}" title="Run ${esc(c.cmd)}" aria-label="Run ${esc(c.label)}">${icon('Play', 13)}</button>`}
-        ${moreBtn(c)}</div>
+      <div class="rn-tools">${logBtn(c, j)}${moreBtn(c)}</div>
     </div>${log(c, j, on)}`;
   };
   const body = () => {
