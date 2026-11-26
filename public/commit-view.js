@@ -365,6 +365,14 @@ function diffView(f) {
   return `<div class="cm-diff cm-dv mono">${diffRows(f.diff.replace(/\n$/, '').split('\n'))}</div>`;
 }
 
+// Safe to push: a suggestion that uses something only another suggestion brings in can't go out alone.
+function safePill(g) {
+  if (g.safe == null || cs.groups.length < 2) return '';
+  if (g.safe) return `<span class="sp-pill is-safe" title="Nothing here needs your other changes">${icon('Tick02', 12)}Safe to push</span>`;
+  const n = g.needs || [], why = n.map((x) => `${x.title}: ${x.why.join(', ')}`).join('\n');
+  const label = n.length === 1 ? `Needs “${esc(n[0].title)}”` : `Needs ${n.length} other commits`;
+  return `<span class="sp-pill is-risk" title="Commit and push it together with:\n${esc(why)}">${icon('Link01', 12)}<span class="sp-txt">${label}</span></span>`;
+}
 function card(g, i) {
   const files = g.files.filter((p) => cs.files.has(p));
   const picked = files.filter((p) => isOn(g, p));
@@ -384,6 +392,7 @@ function card(g, i) {
         <span class="cm-subj-tools"><span class="cm-count mono" title="Keep the first line under 72 characters">${subj.length >= 60 ? subj.length : ''}</span></span>
       </div>
       <span class="cm-head-tools">
+        ${safePill(g)}
         ${g.review ? `<span class="cm-badge is-review" title="staged isn't sure these files belong together">Check grouping</span>` : ''}
         ${g.edited != null ? `<button class="text-btn" data-reset="${esc(g.id)}" title="Go back to the suggested message">Reset</button>` : ''}
         <button class="icon-btn sm cm-more" data-more="${esc(g.id)}" aria-haspopup="menu" title="More" aria-label="More for this commit">${icon('MoreHorizontal', 15)}</button>
