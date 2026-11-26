@@ -700,8 +700,6 @@ html { overscroll-behavior: none; }
 
 .home-clear { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border: 1px dashed var(--line-strong); border-radius: var(--radius); color: var(--ink-2); }
 .home-clear .ic { color: var(--logo-2); }
-.home-loose { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; font-size: 12px; }
-.home-loose > .mono { font-size: 11px; margin-right: 4px; }
 .chip.is-btn { font-family: "Geist Mono", monospace; font-weight: 500; cursor: pointer; }
 .text-btn.sm { height: 26px; font-size: 12px; padding: 0 8px; }
 @keyframes skel { from { background-position: 100% 0; } to { background-position: 0 0; } }
@@ -884,11 +882,6 @@ a.brand:focus-visible { outline: 2px solid var(--logo-2); outline-offset: 2px; }
 
 /* ---------- v0.4: home ---------- */
 .main.is-home .stats { display: none; }
-.home-panel { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border: 1px solid transparent; border-radius: var(--radius); background: var(--surface); box-shadow: var(--raise, none); min-width: 0; }
-.home-panel-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.home-panel-h b { font-weight: 500; font-size: 13px; }
-.home-panel-h .mono, .home-panel-f { font-size: 11px; }
-.home-panel-f { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: auto; }
 
 
 .hm { display: grid; grid-template-rows: repeat(7, 1fr); grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; }
@@ -955,27 +948,17 @@ a.brand:focus-visible { outline: 2px solid var(--logo-2); outline-offset: 2px; }
 .hv-sub { font-size: 11px; color: var(--muted); }
 .hv-sub.up { color: var(--add); } .hv-sub.down { color: var(--t-ui); }
 .hv-sub .a { color: var(--add); } .hv-sub .d { color: var(--del); }
-.hv-bars { align-self: end; width: 100%; height: 30px; margin-top: 10px; }
-.hv-bars rect { fill: color-mix(in srgb, var(--logo-2) 35%, var(--hover)); }
-.hv-bars rect.is-now { fill: var(--logo-box); }
+.hv-bars { align-self: end; display: flex; align-items: flex-end; gap: 2px; width: 100%; height: 30px; margin-top: 10px; }
+.hv-bars i { flex: 1; min-width: 0; border-radius: 2px 2px 1px 1px; background-color: color-mix(in srgb, var(--logo-2) 35%, var(--hover)); background-image: var(--stripe); }
+.hv-bars i.is-now { background-color: var(--logo-box); }
 .hv-bars.is-small { height: 18px; margin: 0; }
 .hv-days { align-self: end; display: grid; grid-template-columns: repeat(14, 1fr); gap: 4px; margin-top: 10px; }
 .hv-days i { height: 10px; border-radius: 3px; background: var(--hover); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent); }
 .hv-days i.is-on { background: var(--logo-2); box-shadow: none; }
 .hv-days i.is-today { outline: 1.5px solid var(--ink-2); outline-offset: 1px; }
-.hv-wait { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--raise, none); margin-bottom: 26px; overflow: hidden; }
-.hv-wait.is-skel { height: 56px; background: linear-gradient(100deg, var(--surface) 30%, var(--hover) 50%, var(--surface) 70%) 0 0 / 300% 100%; animation: skel 1.4s ease-in-out infinite; }
-.hv-wrow { position: relative; display: grid; grid-template-columns: minmax(120px, 1.1fr) minmax(0, 2fr) auto auto; gap: 14px; align-items: center; padding: 10px 12px 10px 16px; min-height: 52px; box-sizing: border-box; }
-.hv-wrow + .hv-wrow { border-top: var(--dash); }
-.hv-wrow.is-old::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px; border-radius: 1px; background: var(--t-ui); }
 .hv-wname { justify-self: start; border: 0; background: none; padding: 0; font: inherit; font-weight: 500; font-size: 14px; color: var(--ink); cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .hv-wname:hover { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
-.hv-wfacts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--ink-2); }
-.hv-wfacts span { display: inline-flex; align-items: center; gap: 6px; }
 .hv-wage { font-size: 11px; color: var(--muted); white-space: nowrap; }
-.hv-wrow.is-old .hv-wage { color: var(--t-ui); }
-.hv-wact { display: flex; gap: 6px; justify-content: flex-end; min-width: 150px; }
-.home-row { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 10px; margin-bottom: 16px; }
 
 /* Description toggle: quiet, so the optional description never competes with the message */
 

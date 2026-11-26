@@ -778,7 +778,6 @@ function onPanelClick(e) {
   const P = cs.panel, t = (q) => e.target.closest(q);
   let b;
   if (t('[data-cmp-close]') && curSheet()) return tearReceipt();
-  if (t('[data-stmt]')) return openStatement();
   if (t('[data-cmp-close]')) { if (P.mode === 'review') { P.mode = null; P.order = []; } P.pushed = null; if (demo) demo = null; else closedRepos.add(route.repo); paintPanel(); return onCommitView() ? draw() : undefined; }
   if ((b = t('[data-rcpt-save]')) && curSheet()) {
     b.disabled = true;
