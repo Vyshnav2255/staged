@@ -52,7 +52,7 @@ export function detect(dir) {
   return out;
 }
 
-export function runRoutes({ repoDir, store }) {
+export function runRoutes({ repoDir, store, repos = async () => [] }) {
   const jobs = new Map(); // `${repo}\0${id}` -> job
   const loadSaved = () => { try { return JSON.parse(fs.readFileSync(store, 'utf8')); } catch { return {}; } };
   const saveSaved = (v) => { fs.mkdirSync(path.dirname(store), { recursive: true }); fs.writeFileSync(store, JSON.stringify(v, null, 2)); };
@@ -115,12 +115,74 @@ export function runRoutes({ repoDir, store }) {
     return j;
   }
 
+  // Servers staged didn't start (one from a Terminal, or one left over from before staged
+  // restarted): anything listening on a local port whose working folder is inside one of your
+  // repos. Found with lsof, so macOS and Linux only. Cached for a few seconds, since it's polled.
+  const sh = (cmd, args) => new Promise((r) => execFile(cmd, args, { timeout: 3000, maxBuffer: 4e6 }, (_, out) => r(String(out || ''))));
+  const etime = (t) => { const m = String(t).trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/); return m ? (((+m[1] || 0) * 24 + (+m[2] || 0)) * 60 + +m[3]) * 60 + +m[4] : 0; };
+  const nice = (cmd) => {
+    const c = cmd.replace(/^\S*\//, '').replace(/\s+/g, ' ').trim();
+    const m = c.match(/\b(jekyll serve|next dev|next start|vite(?: dev| preview)?|astro dev|nuxt dev|remix dev|webpack serve|storybook dev|http\.server|manage\.py runserver|rails server|hugo server|eleventy --serve)\b/);
+    return m ? m[1].replace('manage.py ', '').replace('http.server', 'python http.server') : c.split(' ').slice(0, 3).join(' ').slice(0, 40);
+  };
+  let ext = { at: 0, list: [], busy: null };
+  const external = async () => {
+    if (WIN) return [];
+    if (Date.now() - ext.at < 4000) return ext.list;
+    if (ext.busy) return ext.busy;
+    ext.busy = (async () => {
+      const ports = new Map(); // pid -> Set(port)
+      let pid = 0;
+      for (const l of (await sh('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'])).split('\n')) {
+        if (l[0] === 'p') pid = +l.slice(1);
+        else if (l[0] === 'n' && pid) { const m = l.match(/(?:^n|\])(?:\*|127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1?\]|::1?|[\d.]+)?:(\d+)$/) || l.match(/:(\d+)$/); if (m) (ports.get(pid) || ports.set(pid, new Set()).get(pid)).add(+m[1]); }
+      }
+      ports.delete(process.pid); ports.delete(process.ppid);
+      if (!ports.size) return [];
+      const ids = [...ports.keys()].join(',');
+      const cwd = new Map(); pid = 0;
+      for (const l of (await sh('lsof', ['-a', '-p', ids, '-d', 'cwd', '-Fpn'])).split('\n')) { if (l[0] === 'p') pid = +l.slice(1); else if (l[0] === 'n' && pid) cwd.set(pid, l.slice(1)); }
+      const info = new Map();
+      for (const l of (await sh('ps', ['-o', 'pid=,pgid=,etime=,command=', '-p', ids])).split('\n')) { const m = l.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/); if (m) info.set(+m[1], { pgid: +m[2], up: etime(m[3]), cmd: m[4] }); }
+      const ours = new Set([...jobs.values()].filter((j) => j.child?.pid && (j.state === 'running' || j.state === 'stopping')).map((j) => j.child.pid));
+      const list = (await repos()).filter((r) => r.dir).sort((a, b) => b.dir.length - a.dir.length);
+      const out = [];
+      for (const [p, set] of ports) {
+        const d = cwd.get(p), i = info.get(p);
+        if (!d || !i || ours.has(i.pgid) || ours.has(p) || /(^|\/)(node_modules|\.git)(\/|$)/.test(d)) continue;
+        const r = list.find((x) => d === x.dir || d.startsWith(x.dir + path.sep));
+        if (!r) continue;
+        const port = Math.min(...[...set].filter((n) => n !== 35729)); // not LiveReload's side channel
+        if (!Number.isFinite(port)) continue;
+        out.push({ repo: r.name, id: 'ext:' + p, pid: p, label: nice(i.cmd), cmd: i.cmd, kind: 'serve', state: 'running', url: `http://localhost:${port}`, at: Date.now() - i.up * 1000, external: true });
+      }
+      return out;
+    })().catch(() => []);
+    const list = await ext.busy;
+    ext = { at: Date.now(), list, busy: null };
+    return list;
+  };
+  const stopExternal = async (repo, id) => {
+    const e = (await external()).find((x) => x.repo === repo && x.id === id);
+    if (!e) return false;
+    try { process.kill(e.pid, 'SIGTERM'); } catch { return false; }
+    setTimeout(() => { try { process.kill(e.pid, 0); process.kill(e.pid, 'SIGKILL'); } catch {} }, 4000).unref();
+    ext.at = 0;
+    return true;
+  };
+
   return async function handle(req, res, url, sendJson) {
     if (!url.pathname.startsWith('/api/run/')) return false;
     const sub = url.pathname.slice('/api/run'.length);
     const ok = (b) => sendJson(res, 200, JSON.stringify(b));
     const fail = (m, code = 400) => sendJson(res, code, JSON.stringify({ error: m }));
     if (req.method !== 'GET' && req.headers['x-changes'] !== '1') return fail('Forbidden', 403), true;
+    // Everything running right now, across every repo: the sidebar dots and Home's "Running" card.
+    if (sub === '/running' && req.method === 'GET') {
+      const mine = [...jobs.values()].filter((j) => j.state === 'running' || j.state === 'stopping').map((j) => ({ repo: j.repo, id: j.id, label: j.label, cmd: j.cmd, kind: j.kind, state: j.state, url: j.url, at: j.at }));
+      const theirs = (await external()).filter((e) => !mine.some((j) => j.repo === e.repo && j.url && j.url.includes(':' + e.url.split(':').pop())));
+      return ok({ jobs: [...mine, ...theirs.map(({ pid, ...e }) => e)] }), true;
+    }
     const repo = url.searchParams.get('repo') || '';
     const dir = await repoDir(repo);
     if (!dir) return fail('No such repo', 404), true;
@@ -135,10 +197,12 @@ export function runRoutes({ repoDir, store }) {
         return ok({ job: view(j) }), true;
       }
       if (sub === '/stop' && req.method === 'POST') {
+        if (String(body.id).startsWith('ext:')) return ok({ stopped: await stopExternal(repo, body.id) }), true;
         const j = jobs.get(repo + '\0' + body.id); if (j) stop(j);
         return ok({ stopped: !!j }), true;
       }
       if (sub === '/open' && req.method === 'POST') {
+        if (String(body.id).startsWith('ext:')) { const e = (await external()).find((x) => x.repo === repo && x.id === body.id); if (e) open(e.url); return ok({ opened: !!e }), true; }
         const j = jobs.get(repo + '\0' + body.id); if (j?.url) open(j.url);
         return ok({ opened: !!j?.url }), true;
       }
