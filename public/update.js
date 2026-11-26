@@ -2,6 +2,7 @@
 // sheet, and a one-click update that restarts staged in place and lands you back where you were.
 import { esc, modal, toast } from './ui.js';
 import { icon } from './icons.js';
+import { fillBar } from './bar.js';
 import { mdView } from './md.js';
 
 const KEY_DONE = 'staged-updated', KEY_LATER = 'staged-later';
@@ -68,7 +69,7 @@ function notes(l) {
     ${l.groups.map((g) => `<section class="upd-group"><h4 class="mono">${esc(g.label)}</h4><ul>${g.items.slice(0, 12).map((x) => `<li>${esc(x)}</li>`).join('')}${g.items.length > 12 ? `<li class="muted">and ${g.items.length - 12} more</li>` : ''}</ul></section>`).join('')}
     ${!l.note && !l.groups.length ? '<p class="muted">Small fixes and polish.</p>' : ''}
     ${info.blocked ? `<div class="cm-alert upd-block">${icon('Alert02', 14)}<span>${esc(info.blocked)}</span></div>` : ''}
-    <div class="upd-progress" hidden><div class="upd-bar"><span></span></div><span class="upd-step mono">Getting ${esc(l.version)}…</span></div>`;
+    <div class="upd-progress" hidden>${fillBar({ cls: 'upd-bar' })}<span class="upd-step mono">Getting ${esc(l.version)}…</span></div>`;
 }
 
 function openSheet() {

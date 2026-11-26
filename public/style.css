@@ -638,10 +638,8 @@ html { overscroll-behavior: none; }
 .upd-block { margin: 6px 0 0; }
 .upd-foot { margin-right: auto; font-size: 12px; }
 .upd-progress { display: grid; gap: 8px; margin-top: 8px; }
-.upd-bar { height: 4px; border-radius: 4px; background: var(--hover); overflow: hidden; }
-.upd-bar span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--logo-2); transition: width 2.2s cubic-bezier(.1,.7,.3,1); }
-.upd-progress.is-on .upd-bar span { width: 62%; }
-.upd-progress.is-late .upd-bar span { width: 94%; transition-duration: 6s; }
+.upd-progress.is-on .upd-bar > i { width: 62%; }
+.upd-progress.is-late .upd-bar > i { width: 94%; transition-duration: 6s; }
 .upd-step { color: var(--muted); font-size: 12px; }
 
 .upd-done { position: fixed; left: 50%; bottom: 22px; z-index: 60; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px 10px 10px; border-radius: 12px; background: var(--ink); color: var(--bg); font-size: 13px; box-shadow: 0 12px 32px rgba(0,0,0,.18), 0 2px 6px rgba(0,0,0,.12);
