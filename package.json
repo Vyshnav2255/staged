@@ -1,6 +1,6 @@
 {
   "name": "staged",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
   "description": "A fun, friendly app for git that takes the place of the terminal: it sorts your changes into commits, names them, and runs your dev servers. Local, no AI needed.",
   "license": "SEE LICENSE IN LICENSE",

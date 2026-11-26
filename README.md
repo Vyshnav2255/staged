@@ -136,7 +136,7 @@ Images use [sharp](https://sharp.pixelplumbing.com), which installs once into st
 You need [Node 18+](https://nodejs.org) and git. Nothing else to install up front.
 
 ```sh
-git clone --branch v1.0.0 https://github.com/Vyshnav2255/staged.git
+git clone --branch v1.2.0 https://github.com/Vyshnav2255/staged.git
 cd staged
 npm start
 ```
