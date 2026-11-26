@@ -260,8 +260,11 @@ function signalsOf(f) {
 // or long) and defined in at most two places. Each using chunk joins the one definer it leans on most,
 // so a chunk that touches three features can't chain them all together.
 const NAME_TOKEN = /--[a-z][\w-]+|[A-Za-z_$][\w$]*(?:-[A-Za-z0-9_]+)*/g;
+// Names the language or its ecosystem owns: two changes that both say RegExp, or both list
+// pnpm-lock.yaml, share nothing of their own.
+const LANG_GLOBAL = /^(RegExp|WeakMap|WeakSet|WeakRef|ArrayBuffer|SharedArrayBuffer|DataView|BigInt|(Ui|I)nt(8|16|32)(Clamped)?Array|Float(32|64)Array|TypeError|RangeError|SyntaxError|ReferenceError|AggregateError|isFinite|isInteger|isSafeInteger|MAX_SAFE_INTEGER|MIN_SAFE_INTEGER|globalThis|setImmediate|queueMicrotask|allSettled|getOwnPropertyNames|defineProperty|toString|valueOf|charCodeAt|codePointAt|fromCharCode|toSorted|toReversed|trimStart|trimEnd|NodeList|HTMLElement|CustomEvent|EventTarget|AbortSignal|FormData|ReadableStream|WebSocket|pnpm-lock|pnpm-workspace|npm-shrinkwrap|yarn\.lock|bun\.lockb?|Cargo\.lock|Gemfile\.lock|composer\.lock|poetry\.lock|go\.sum|go\.mod)$/;
 function specificName(raw) {
-  if (raw.length < 5 || BUILTIN.test(raw) || DOM_API.test(raw) || /^[A-Za-z0-9]{1,2}(?:-[A-Za-z0-9]{1,2})+$/.test(raw)) return false;
+  if (raw.length < 5 || BUILTIN.test(raw) || LANG_GLOBAL.test(raw) || DOM_API.test(raw) || /^[A-Za-z0-9]{1,2}(?:-[A-Za-z0-9]{1,2})+$/.test(raw)) return false;
   const low = raw.toLowerCase();
   if (STOPWORDS.has(low) || COMMON_NAMES.has(low)) return false;
   const parts = raw.replace(/^--/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/).filter(Boolean);
@@ -278,9 +281,13 @@ function definitionsIn(line, css) {
     if (sel && leads.size < 4) for (const m of own.matchAll(/\.([a-z][\w-]*)/gi)) out.push(m[1]);
     for (const m of line.matchAll(/(--[a-z][\w-]+)\s*:/gi)) out.push(m[1]);
     for (const m of line.matchAll(/@keyframes\s+([\w-]+)/g)) out.push(m[1]);
+    // A Sass variable set at the start of a line ($heading-color: … !default;) is declared there.
+    { const v = line.match(/^\s*(\$[a-z][\w-]*)\s*:(?!:)/i); if (v) out.push(v[1]); }
   } else {
     for (const m of line.matchAll(/(?:function\*?\s+|\b(?:const|let|var|class)\s+)([A-Za-z_$][\w$]*)/g)) out.push(m[1]);
     for (const m of line.matchAll(/\b(?:const|let|var)\s*\{([^}=]+)\}\s*=/g)) for (const x of m[1].split(',')) { const k = x.split(':').pop().trim(); if (k) out.push(k); }
+    // Go, Rust and Python: func Name / func (m *Model) Name, fn name, def name, struct/enum/trait Name, type Name struct.
+    for (const m of line.matchAll(/\b(?:fn|def|func(?:\s*\([^)]*\))?|struct|enum|trait)\s+([A-Za-z_]\w*)\s*[(<{:]|\btype\s+([A-Za-z_]\w*)\s+(?:struct|interface|func)\b/g)) out.push(m[1] || m[2]);
     const key = line.match(/^\s*(?:async\s+)?([a-z][a-z0-9]*[A-Z][\w$]*)\s*(?::|\([^)]*\)\s*\{)/);
     if (key) out.push(key[1]);
     for (const m of line.matchAll(/[{,]\s*([a-z][a-z0-9]*[A-Z][\w$]*)\s*:(?!:)/g)) out.push(m[1]);
@@ -372,7 +379,8 @@ function defineUseLinks(files, kinds, coll, isNew, union, hint = () => {}) {
   for (let i = 0; i < n; i++) {
     const f = files[i], p = new Set(), m = new Set(), d = new Set(), k = new Set(), pr = { add: new Set(), del: new Set() };
     plus.push(p); minus.push(m); defs.push(d); keptIn.push(k); props.push(pr); styleNames.push(new Set()); styleGone.push(new Set());
-    if (isAsset(kinds[i]) || (coll[i] && isNew[i]) ) { size.push(0); continue; }
+    // A changelog lists names from every change it records: it defines and uses none of them.
+    if (isAsset(kinds[i]) || (coll[i] && isNew[i]) || /(^|\/)CHANGELOG\.md$/i.test(f.path) || LOCK_FILE.test(f.path)) { size.push(0); continue; }
     const css = /\.(s?css|less|sass)$/i.test(f.path), html = /\.(html?|svelte|vue)$/i.test(f.path);
     const lines = f.status === 'A' && f.content ? f.content.slice(0, 60000).split('\n').map((l) => '+' + l) : (f.diff || '').split('\n');
     let changed = 0, inStyle = false, inComment = false;
@@ -415,6 +423,15 @@ function defineUseLinks(files, kinds, coll, isNew, union, hint = () => {}) {
     definers.get(x).push(i);
   }
   for (const [x, ds] of definers) for (const [re, i] of families) if (re.test(x) && !ds.includes(i)) ds.push(i);
+  // One new method written out in several files of a Go, Rust or Python program (an interface gains
+  // resetLinesRendered and each renderer implements it) is one change: the implementations go together.
+  const typedLang = (i) => /\.(go|rs|py)$/i.test(files[i].path);
+  for (const [x, ds] of definers) if (ds.length > 2 && ds.length <= 6 && ds.every(typedLang) && new Set(ds.map((d) => files[d].path)).size >= 2) { for (const d of ds.slice(1)) union(ds[0], d, `both add ${x}`); definers.set(x, [ds[0]]); }
+  // A Sass variable is declared once per theme file (and again inside each of its mode blocks): the
+  // skins that all gain $heading-color are one change, so those count by file, not by chunk.
+  const sassVars = new Map();
+  for (const [x, ds] of definers) if (x[0] === '$' && ds.length >= 2 && new Set(ds.map((i) => files[i].path)).size <= 3 && ds.length <= 8) sassVars.set(x, ds);
+  for (const [x, ds] of sassVars) { for (const d of ds.slice(1)) union(ds[0], d, `defines ${x}`); if (ds.length > 2) definers.set(x, [ds[0]]); }
   for (const [x, ds] of definers) if (ds.length > 2) definers.delete(x);
   // The same custom property declared in two places (CSS and the code that sets it) is one system.
   // Only when a stylesheet is one of the two: `--name-only` in two chunks of a script is a command-line flag.
@@ -468,12 +485,17 @@ function defineUseLinks(files, kinds, coll, isNew, union, hint = () => {}) {
       (freshIn.get(x) || freshIn.set(x, []).get(x)).push(i);
     }
     const pairs = new Map();
-    for (const [x, is] of freshIn) {
+    for (let [x, is] of freshIn) {
+      // The README that documents a new setting is a third place, not a reason to doubt the two
+      // that make it work (the config file that sets hide_feed_link, the template that reads it).
+      const docs = x.length >= 10 && x.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/).filter(Boolean).length >= 3 ? is.filter((i) => kinds[i] === 'doc') : [];
+      if (docs.length && new Set(docs.map((i) => files[i].path)).size === 1) is = is.filter((i) => !docs.includes(i));
       const paths = new Set(is.map((i) => files[i].path));
       if (paths.size !== 2 || is.length > 3 || minus.some((m) => m.has(x)) || props.some((pr) => pr.add.has(x) || pr.del.has(x)) || (x.startsWith('--') && !is.some(sheet))) continue;
       for (const a of is) for (const b of is) if (a < b && files[a].path !== files[b].path) { const k = a + ':' + b; if (!pairs.has(k)) pairs.set(k, { a, b, xs: [] }); pairs.get(k).xs.push(x); }
     }
-    for (const { a, b, xs } of pairs.values()) if (Math.min(size[a], size[b]) < 20 || xs.length >= 2) union(a, b, `both add ${xs.sort((p, q) => q.length - p.length)[0]}`);
+    // Two names or more that only these two files bring in is no chance: that tie holds firmer than one name does.
+    for (const { a, b, xs } of pairs.values()) if (Math.min(size[a], size[b]) < 20 || xs.length >= 2) union(a, b, `both add ${xs.sort((p, q) => q.length - p.length)[0]}`, xs.length >= 2 ? 0.9 : 0.86);
   }
   // Names that leave the code together: a panel's markup goes from one file and its styles from
   // another, and nothing anywhere still mentions them. Taking a feature out is one change.
@@ -535,7 +557,7 @@ function defineUseLinks(files, kinds, coll, isNew, union, hint = () => {}) {
     // Two long chunks that each bring in a feature and share one helper name are two features.
     // So are two chunks of one stylesheet, each styling a feature of its own, where one mentions a single
     // class of the other (search hiding the new card while you type).
-    const lone = best >= 0 && count.get(best) === 1 && totalUsers[u] >= 2 && ((size[u] >= 60 && size[best] >= 60) || (isCss(u) && files[u].path === files[best].path));
+    const lone = best >= 0 && count.get(best) === 1 && totalUsers[u] >= 1 && ((size[u] >= 60 && size[best] >= 60) || (isCss(u) && files[u].path === files[best].path));
     if (best >= 0 && !lone) union(u, best, `uses ${named.get(best)}`);
     // A one-line chunk is small enough to wire two parts together (a template line that renders the
     // new list with the new class), when each name it uses is shared by at most one other chunk.
@@ -967,6 +989,23 @@ function shapeSubject(fs_, { label, reasons, unused }) {
   return null;
 }
 
+// A changelog (CHANGELOG.md, CHANGES.rst, HISTORY, NEWS): one entry per change, each belonging with the code it describes.
+const CHANGELOG_FILE = /(^|\/)(change(s|log)|history|news|release[-_]?notes)(\.(md|rst|txt))?$/i;
+// The source file a test file is for, by the naming each language uses: x_test.go beside x.go,
+// test_x.py or x_test.py for x.py, x.test.ts / x.spec.js for x.ts, and a Rust integration test
+// tests/x_case.rs for src/x.rs. Returns a predicate over paths, or null when the file is no test.
+function testedBy(p) {
+  const dir = path.posix.dirname(p), base = path.posix.basename(p);
+  let m;
+  if ((m = base.match(/^(.+)_test\.go$/))) return (q) => q === path.posix.join(dir, m[1] + '.go');
+  if ((m = base.match(/^test_(.+)\.py$/) || base.match(/^(.+)_test\.py$/))) return (q) => new RegExp('(^|/)_?' + m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.py$').test(q) && !/(^|\/)tests?\//.test(q);
+  if ((m = base.match(/^(.+)[._-](?:test|spec)\.([cm]?[jt]sx?)$/))) return (q) => !/[._-](test|spec)\.[cm]?[jt]sx?$/.test(q) && new RegExp('^' + m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.[cm]?[jt]sx?$').test(path.posix.basename(q));
+  if ((m = p.match(/^(.*?)tests\/([a-z0-9_]+)\.rs$/))) return (q) => { const s = q.startsWith(m[1]) && q.match(/(?:^|\/)src\/(?:.*\/)?([a-z0-9_]+)\.rs$/)?.[1]; return !!s && s.length >= 4 && !/^(lib|main|mod)$/.test(s) && (m[2] === s || m[2].startsWith(s + '_')); };
+  return null;
+}
+// Lock files and Go's module files are written by the tool: their chunks and checksums say nothing
+// about a feature, so they are never split and never matched on wording.
+const LOCK_FILE = /(^|\/)(go\.(sum|mod|work\.sum)|[^/]+\.lock|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|bun\.lockb?)$/i;
 function suggestGroups(input, learn = {}) {
   // Chunks, not just files: a modified file with a few separate chunks is split into one unit per chunk,
   // so app.js's glance chunk can go with the glance feature and its settings chunk with settings. Rules
@@ -976,7 +1015,7 @@ function suggestGroups(input, learn = {}) {
   const files = [];
   for (const f of input) {
     const hs = f.hunks;
-    const splittable = hs && hs.length >= 2 && hs.length <= 120 && !collectionOf(f.path) && !/\.(md|mdx|txt|json|ya?ml|toml|lock)$/i.test(f.path);
+    const splittable = hs && hs.length >= 2 && hs.length <= 120 && !collectionOf(f.path) && (!/\.(md|mdx|txt|json|ya?ml|toml|lock)$/i.test(f.path) || CHANGELOG_FILE.test(f.path)) && !LOCK_FILE.test(f.path);
     if (!splittable) { files.push(f); continue; }
     const big = hs.reduce((b, h) => (h.add + h.del > b.add + b.del ? h : b), hs[0]);
     for (const [at, h] of hs.entries()) files.push({ ...f, unitOf: f.path, hunk: h.id, at, home: h === big, units: hs.length, diff: h.head + '\n' + (h.all || h.lines).join('\n'), add: h.add, del: h.del, hunks: undefined });
@@ -1154,6 +1193,113 @@ function suggestGroups(input, learn = {}) {
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
     if (whole(i) && whole(j) && (files[i].status === 'A' || files[j].status === 'A' || (files[i].status === 'D' && files[j].status === 'D')) && stems[i].length >= 3 && stems[i] === stems[j] && !WEAK_STEMS.has(stems[i])) union(i, j, 'same name');
   }
+  // A JS/TS test file goes with the file it tests, by name: compose.test.ts with compose.ts beside it,
+  // tests/vanilla/shallow.test.tsx with src/vanilla/shallow.ts, packages/x/test/index.test.tsx with
+  // packages/x/src/index.ts. With no file of its own name changed, a test beside one changed file
+  // whose name extends its own (hono.test.ts, hono-base.ts) goes with that.
+  {
+    const JS = /\.(?:[cm]?[jt]sx?)$/i, TEST_DIR = /(^|\/)(tests?|specs?|__tests__)\//i;
+    const isTest = (q) => JS.test(q) && !/\.d\.[cm]?ts$/i.test(q) && (TEST_DIR.test(q) || /[._-](test|spec)\.[cm]?[jt]sx?$/i.test(q));
+    const bare = (q) => path.basename(q).replace(JS, '').replace(/[._-](test|spec)$/i, '').toLowerCase();
+    const idxs = files.map((_, i) => i).filter((i) => whole(i) && JS.test(files[i].path) && files[i].status !== 'D');
+    const srcs = idxs.filter((i) => !isTest(files[i].path));
+    for (const t of idxs) {
+      const tp = files[t].path; if (!isTest(tp)) continue;
+      const st = bare(tp), m = tp.match(TEST_DIR);
+      const root = m ? tp.slice(0, m.index + m[1].length) : null;
+      const sub = m ? dirOf(tp.slice(m.index + m[0].length)) : '';
+      const beside = srcs.filter((i) => dirOf(files[i].path) === dirOf(tp));
+      const same = srcs.filter((i) => bare(files[i].path) === st);
+      let hit = same.filter((i) => beside.includes(i));
+      if (!hit.length && root != null) {
+        const under = same.filter((i) => files[i].path.startsWith(root));
+        const exact = under.filter((i) => sub && dirOf(files[i].path).endsWith('/' + sub));
+        hit = exact.length === 1 ? exact : under.length === 1 && (!sub || !/^(index|main|mod|lib)$/.test(st)) ? under : [];
+      }
+      if (!hit.length && !same.length && st.length >= 3) { const ext = beside.filter((i) => bare(files[i].path).startsWith(st + '-') || bare(files[i].path).startsWith(st + '_') || bare(files[i].path).startsWith(st + '.')); if (ext.length === 1) hit = ext; }
+      if (!hit.length && !same.length && root) { const only = [...new Set(srcs.filter((i) => files[i].path.startsWith(root) && !/(^|\/)[\w.-]*\.config\.[cm]?[jt]s$/.test(files[i].path)).map((i) => files[i].path))]; if (only.length === 1) hit = srcs.filter((i) => files[i].path === only[0]); }
+      if (hit.length === 1) union(hit[0], t, 'tests it', 0.9);
+    }
+  }
+  // A docs page named for a changed source file (docs/apis/shallow.md, src/vanilla/shallow.ts) and
+  // changed with it documents that change, when its new lines use a name the source's changed lines use.
+  {
+    const CODE = /\.(?:[cm]?[jt]sx?|vue|svelte|py|rb|go|rs)$/i;
+    const idsIn = (i, signs) => new Set((files[i].status === 'A' && files[i].content ? files[i].content : (files[i].diff || '').split('\n').filter((l) => signs.includes(l[0]) && !/^(\+\+\+|---)/.test(l)).join('\n')).match(/[A-Za-z_$][\w$]{4,}/g) || []);
+    for (let d = 0; d < n; d++) {
+      if (!whole(d) || files[d].status === 'D' || !/(^|\/)docs?\/.*\.mdx?$/i.test(files[d].path) || stems[d].length < 4 || WEAK_STEMS.has(stems[d]) || /^(index|readme|changelog)$/.test(stems[d])) continue;
+      const srcs = files.map((_, i) => i).filter((i) => CODE.test(files[i].path) && files[i].status !== 'D' && !isTestPath(files[i].path) && stems[i] === stems[d]);
+      if (new Set(srcs.map((i) => files[i].path)).size !== 1) continue;
+      const said = idsIn(d, '+');
+      const hit = srcs.find((i) => [...idsIn(i, '+-')].some((x) => said.has(x) && (/[a-z0-9][A-Z]|_/.test(x) || x.length >= 7)));
+      if (hit != null) union(hit, d, 'documents it', 0.88);
+    }
+  }
+  // A new package is one commit: a new manifest in a folder of its own (packages/x/package.json,
+  // crates/x/Cargo.toml) and every other new file under that folder.
+  for (let i = 0; i < n; i++) {
+    if (files[i].status !== 'A' || !/^(package\.json|Cargo\.toml|pyproject\.toml|go\.mod)$/.test(path.basename(files[i].path)) || !files[i].path.includes('/')) continue;
+    const root = dirOf(files[i].path) + '/';
+    for (let j = 0; j < n; j++) if (j !== i && files[j].status === 'A' && files[j].path.startsWith(root)) union(i, j, 'new package', 0.9);
+  }
+  // A file taken out and a new one beside it with nearly the same lines is a rename (cr.yml gone,
+  // preview-release.yml new): one change, not a removal and an addition.
+  {
+    const linesOf = (text, sign) => new Set(text.split('\n').filter((l) => !sign || (l[0] === sign && !l.startsWith(sign.repeat(3)))).map((l) => (sign ? l.slice(1) : l).trim()).filter((l) => l.length >= 4));
+    const gone = files.map((_, i) => i).filter((i) => files[i].status === 'D' && !files[i].binary && files[i].diff);
+    const fresh = files.map((_, i) => i).filter((i) => files[i].status === 'A' && !files[i].binary && (files[i].content || files[i].diff));
+    if (gone.length && fresh.length && gone.length * fresh.length <= 400) for (const d of gone) {
+      const was = linesOf(files[d].diff, '-'); if (was.size < 4) continue;
+      const alike = fresh.filter((a) => dirOf(files[a].path) === dirOf(files[d].path) && path.extname(files[a].path) === path.extname(files[d].path)).map((a) => {
+        const now = files[a].content ? linesOf(files[a].content, '') : linesOf(files[a].diff, '+');
+        let both = 0; for (const l of was) if (now.has(l)) both++;
+        return [a, both / Math.max(was.size, now.size)];
+      }).filter(([, r]) => r >= 0.7).sort((x, y) => y[1] - x[1]);
+      if (alike.length === 1 || (alike.length > 1 && alike[0][1] > alike[1][1])) union(d, alike[0][0], 'renamed', 0.92);
+    }
+  }
+  // A changesets release is one commit: the changeset notes it consumes (deleted .changeset/*.md),
+  // the changelogs it writes and the manifests whose version it bumps. Without changesets, a
+  // changelog still goes with the version bump of the manifest beside it.
+  {
+    const eaten = files.map((_, i) => i).filter((i) => files[i].status === 'D' && /(^|\/)\.changeset\/[^/]+\.md$/i.test(files[i].path) && !/readme\.md$/i.test(files[i].path));
+    const logs = files.map((_, i) => i).filter((i) => files[i].status !== 'D' && /(^|\/)CHANGELOG\.md$/i.test(files[i].path));
+    const bumped = (i) => /^\+\s*"version"\s*:/m.test(files[i].diff || '') && /^-\s*"version"\s*:/m.test(files[i].diff || '');
+    const bumps = files.map((_, i) => i).filter((i) => /(^|\/)package\.json$/.test(files[i].path) && files[i].status === 'M' && bumped(i));
+    const release = [];
+    for (const l of logs) { const b = bumps.find((i) => dirOf(files[i].path) === dirOf(files[l].path)); if (b != null) { union(l, b, 'one release', 0.9); release.push(l); } else if (eaten.length) release.push(l); }
+    if (eaten.length && release.length) for (const i of [...eaten, ...release]) union(release[0], i, 'one release', 0.9);
+    // A new changeset note names the package it is for ("@scope/name-core": minor): it goes with the
+    // one changed source file of that package, when there is just one.
+    const CODE = /\.(?:[cm]?[jt]sx?|vue|svelte)$/i;
+    for (let c = 0; c < n; c++) {
+      if (files[c].status !== 'A' || !/(^|\/)\.changeset\/[^/]+\.md$/i.test(files[c].path)) continue;
+      const head = ((files[c].content || addedText(files[c]) || '').match(/^\+?---\n([\s\S]*?)\n\+?---/) || [])[1] || '';
+      const pkgs = [...head.matchAll(/^\+?\s*["']?(@?[\w./-]+)["']?\s*:\s*(patch|minor|major)\s*$/gm)].map((x) => x[1]);
+      if (pkgs.length !== 1) continue;
+      const base = pkgs[0].split('/').pop().toLowerCase(), scope = pkgs[0].startsWith('@') ? pkgs[0].slice(1).split('/')[0].toLowerCase() : '';
+      let best = null;
+      for (let i = 0; i < n; i++) {
+        if (!whole(i) || !CODE.test(files[i].path) || files[i].status === 'D' || isTestPath(files[i].path)) continue;
+        const segs = files[i].path.split('/').slice(0, -1);
+        segs.forEach((seg, k) => { const s2 = seg.toLowerCase(); const score = s2 === base ? 1000 : base.endsWith('-' + s2) && s2.length >= 3 ? s2.length : scope && s2 === scope ? 1 : 0; if (score && (!best || score > best.score)) best = { score, dir: segs.slice(0, k + 1).join('/') + '/' }; });
+      }
+      if (!best) continue;
+      const mine = [...new Set(files.map((_, i) => i).filter((i) => whole(i) && CODE.test(files[i].path) && files[i].status !== 'D' && !isTestPath(files[i].path) && files[i].path.startsWith(best.dir)))];
+      if (mine.length === 1) union(mine[0], c, 'changeset for it', 0.9);
+    }
+  }
+  // A test goes with the code it tests when both changed: duplicate.test.tsx with duplicate.ts,
+  // test_parser.py with parser.py. Only when the name points at one file.
+  {
+    const testBase = (p) => { const b = path.basename(p).toLowerCase(); const m = b.match(/^(.+?)[._-](?:test|spec)\.[a-z0-9]+$/) || b.match(/^test[_-](.+?)\.[a-z0-9]+$/) || b.match(/^(.+?)_test\.[a-z0-9]+$/); return m ? m[1] : ''; };
+    for (let i = 0; i < n; i++) {
+      const base = whole(i) && files[i].status !== 'D' ? testBase(files[i].path) : '';
+      if (base.length < 3 || WEAK_STEMS.has(base)) continue;
+      const src = files.map((_, j) => j).filter((j) => j !== i && whole(j) && files[j].status !== 'D' && !testBase(files[j].path) && !isAsset(kinds[j]) && !/\.(md|mdx|txt|json|ya?ml|toml|snap)$/i.test(files[j].path) && path.basename(files[j].path, path.extname(files[j].path)).toLowerCase() === base);
+      if (src.length === 1) union(i, src[0], 'same name');
+    }
+  }
   // New sibling files named on one pattern are one set: raycast/busy-lamp-focus.sh with
   // raycast/busy-lamp-free.sh, .githooks/pre-commit with .githooks/pre-push.
   const nameParts = (p) => path.basename(p, path.extname(p)).toLowerCase().split(/(?<=[-_.])/);
@@ -1281,17 +1427,62 @@ function suggestGroups(input, learn = {}) {
   // A new file using another new file is one feature (fx.js playing sfx.js), unless the second is shared wider.
   // A chunk is small enough to follow what it wires in, even when a few files share it (the import, the
   // call and the style for one new part).
+  const busyImporter = (i) => files[i].add + files[i].del > 10;
   for (const [i, j, reason] of links) {
     // A hub should not drag every shared module into one commit, but a uniquely used helper
     // still belongs with the importing change even when that hunk also wires in other features.
     // The line that registers a new file (an import, an include) is part of adding it, however many
     // other places then use what it brings.
     const registers = (reason === 'imports new file' || reason === 'includes new file') && !hub[i];
+    // A small new helper three files or more start importing is shared ground (one progress bar for
+    // the update sheet and two panels). It goes with the short edits that switch to it; a long
+    // chunk that imports it on the way to building something of its own keeps to its own feature.
+    if (reason === 'imports new file' && usedBy[j] >= 3 && busyImporter(i) && links.some(([a, b, r]) => b === j && r === reason && !busyImporter(a))) continue;
     if (usedBy[j] === 1 || registers || (!hub[i] && ((isNew[i] && usedBy[j] <= 2) || (files[i].unitOf && usedBy[j] <= 3)))) union(i, j, reason);
   }
   // Uses of a hub chunk's names don't join anything, but they still say what a group is about.
   const nameHints = [];
   defineUseLinks(files, kinds, coll, isNew, union, (a, b, x) => nameHints.push({ a, b, reason: `uses ${x}` }));
+  const adopted = new Map();
+  // A helper taken up in small edits: a file starts importing a name another changed file now
+  // exports (import { MS, leave } from './motion.js'), and a line here and there swaps to it
+  // (duration: 520 -> MS.smooth, menu.remove() -> leave(menu)). Those edits are the helper's own
+  // roll-out. This is for names too short or plain to count as a tie anywhere else; a telling name
+  // (loadRunning) is weighed by the rules above. A long chunk that builds something new with the
+  // helper is its own work and is left to the other rules.
+  {
+    const SMALL = 10, JS = /\.(?:[cm]?[jt]sx?|vue|svelte)$/i;
+    const at = new Map(); files.forEach((f, i) => (at.get(f.path) || at.set(f.path, []).get(f.path)).push(i));
+    const changedOf = (i) => (files[i].diff || '').split('\n').filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l));
+    const IMPORT = /^\s*import\s+(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/;
+    const esc = (x) => x.replace(/[$]/g, '\\$');
+    for (let i = 0; i < n; i++) {
+      if (!JS.test(files[i].path) || files[i].status !== 'M' || files[i].binary) continue;
+      const ls = changedOf(i), had = new Map();
+      for (const l of ls) { const m = l[0] === '-' && l.slice(1).match(IMPORT); if (m) for (const part of m[1].split(',')) (had.get(m[2]) || had.set(m[2], new Set()).get(m[2])).add(part.trim().split(/\s+as\s+/)[0]); }
+      for (const l of ls) {
+        const m = l[0] === '+' && l.slice(1).match(IMPORT);
+        if (!m) continue;
+        const q = pushResolve(files[i].path, m[2], (c) => at.has(c));
+        if (!q || q === files[i].path || files[at.get(q)[0]].status !== 'M') continue;
+        for (const part of m[1].split(',')) {
+          const [name, local = name] = part.trim().split(/\s+as\s+/);
+          if (!/^[A-Za-z_$][\w$]*$/.test(name) || had.get(m[2])?.has(name) || specificName(name)) continue;
+          const def = new RegExp('^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function\\*?|const|let|var|class)\\s+' + esc(name) + '(?![\\w$])');
+          const ds = at.get(q).filter((d) => { const c = changedOf(d); return c.some((x) => x[0] === '+' && def.test(x.slice(1))) && !c.some((x) => x[0] === '-' && def.test(x.slice(1))); });
+          if (ds.length !== 1) continue;
+          const use = new RegExp('(^|[^.\\w$])' + esc(local) + '(?![\\w$])', 'g');
+          const count = (c, sign) => c.filter((x) => x[0] === sign && !IMPORT.test(x.slice(1))).reduce((t, x) => t + (x.slice(1).match(use) || []).length, 0);
+          const takers = at.get(files[i].path).filter((u) => { const c = changedOf(u); return files[u].add + files[u].del <= SMALL && count(c, '+') > count(c, '-'); });
+          if (!takers.length) continue;
+          const rec = adopted.get(ds[0]) || adopted.set(ds[0], { names: new Set(), takers: new Set() }).get(ds[0]);
+          rec.names.add(name); for (const u of takers) rec.takers.add(u);
+          if (files[i].add + files[i].del <= SMALL) union(i, ds[0], `uses ${name}`);
+          for (const u of takers) union(u, ds[0], `uses ${name}`);
+        }
+      }
+    }
+  }
   // A hub whose names mostly (60%+) go to one feature is that feature's own big chunk (the cart's 370
   // lines of styles: 50 of its names used by the cart's view, a few by the cards). Joining it to
   // that one feature fuses nothing else. Run again once the softer evidence below has gathered a
@@ -1304,6 +1495,46 @@ function suggestGroups(input, learn = {}) {
       if (rs.length >= 3 && rs.length >= 0.6 * total && find(d) !== r) union(r, d, rs[0]);
     }
   };
+  // A long address or path in quotes that leaves one file and turns up in one other (the icon
+  // font's stylesheet link taken out of the head and put in the footer) was moved there.
+  {
+    const strs = (i, sign) => { const out = new Set(); for (const l of (files[i].diff || '').split('\n')) if (l[0] === sign && !/^(\+\+\+|---)/.test(l)) for (const m of l.matchAll(/["']([^"'\s<>{}]{24,})["']/g)) if (/[/]/.test(m[1]) && /[a-z]{4}/i.test(m[1])) out.add(m[1]); return out; };
+    const code = (i) => !isAsset(kinds[i]) && !coll[i] && !prose(files[i].path);
+    const out = new Map(), into = new Map();
+    for (let i = 0; i < n; i++) { if (!code(i)) continue; const gone = strs(i, '-'), came = strs(i, '+'); for (const x of gone) if (!came.has(x)) (out.get(x) || out.set(x, []).get(x)).push(i); for (const x of came) if (!gone.has(x)) (into.get(x) || into.set(x, []).get(x)).push(i); }
+    for (const [x, from] of out) {
+      const to = into.get(x) || [];
+      if (from.length !== 1 || to.length !== 1 || files[from[0]].path === files[to[0]].path) continue;
+      if (files.some((f, k) => k !== from[0] && k !== to[0] && (f.diff || '').includes(x))) continue;
+      union(from[0], to[0], 'moved line', 0.88);
+    }
+  }
+  // A helper taken up across the code: four files or more each start importing and calling the same
+  // name (isDevEnv() in place of a build flag), in small edits. That sweep is one change, however
+  // the line it replaces was spelled in each place.
+  {
+    const perFile = new Map();
+    for (let i = 0; i < n; i++) {
+      const f = files[i];
+      if (f.status !== 'M' || isAsset(kinds[i]) || coll[i] || prose(f.path) || !/\.(m?[jt]sx?|cjs|py|rb|go|rs|php|java|kt|swift|vue|svelte)$/i.test(f.path)) continue;
+      const e = perFile.get(f.path) || perFile.set(f.path, { plus: new Map(), old: new Set() }).get(f.path);
+      for (const l of (f.diff || '').split('\n')) {
+        if (/^(@@|\+\+\+|---)/.test(l)) continue;
+        for (const m of l.slice(1).matchAll(/[A-Za-z_$][\w$]*/g)) {
+          if (l[0] !== '+') { e.old.add(m[0]); continue; }
+          const at = e.plus.get(m[0]) || e.plus.set(m[0], { c: 0, units: new Set() }).get(m[0]); at.c++; at.units.add(i);
+        }
+      }
+    }
+    const takers = new Map();
+    for (const [p_, e] of perFile) for (const [x, at] of e.plus) if (at.c >= 2 && !e.old.has(x) && /[a-z0-9][A-Z]|[A-Za-z0-9]_[A-Za-z0-9]/.test(x) && specificName(x)) (takers.get(x) || takers.set(x, []).get(x)).push(at.units);
+    for (const [x, sets] of takers) {
+      if (sets.length < 4) continue;
+      const small = sets.flatMap((u) => [...u]).filter((i) => files[i].add + files[i].del <= 8);
+      if (new Set(small.map((i) => files[i].path)).size < 4) continue;
+      for (const i of small.slice(1)) union(small[0], i, `uses ${x}`, 0.9);
+    }
+  }
   joinHubs();
   const editSigs = new Map();
   let mainEditOf = () => '';
@@ -1345,6 +1576,19 @@ function suggestGroups(input, learn = {}) {
       if (sig) { if (!bySig.has(sig)) bySig.set(sig, []); bySig.get(sig).push(i); }
     }
     for (const [sig, is] of bySig) if (is.length >= 2) for (const j of is.slice(1)) union(is[0], j, 'same edit');
+    // The very same lines put in or taken out of several files (one option added to each
+    // package's tsconfig) are one edit as well, whatever shape it has.
+    {
+      const exact = new Map();
+      for (let i = 0; i < n; i++) {
+        if (!files[i].unitOf && files[i].status !== 'M' || !lone(i) || isAsset(kinds[i]) || coll[i]) continue;
+        const ls = (files[i].diff || '').split('\n').filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l) && l.slice(1).trim()).map((l) => l[0] + l.slice(1).trim());
+        const text = ls.join('\n');
+        if (!ls.length || ls.length > 12 || text.length < 24 || !/[a-z]{4}/i.test(text) || mainEdit(files[i])) continue;
+        (exact.get(text) || exact.set(text, []).get(text)).push(i);
+      }
+      for (const is of exact.values()) if (new Set(is.map((i) => files[i].path)).size >= 2) for (const j of is.slice(1)) union(is[0], j, 'same edit');
+    }
     // A new rule that sets the value the edit moves everything to (border: 1px -> .5px in three
     // places, and a new `.icon { border-width: .5px; }` in one of those files) is the same pass.
     for (const [sig, is] of bySig) {
@@ -1362,6 +1606,32 @@ function suggestGroups(input, learn = {}) {
     }
   }
 
+  const sweep = new Set(), recoloured = new Set();
+  // A new palette: chunks that change nothing but colour values (#151514 -> #1c1917, the tint inside
+  // an rgb()) are one recolouring, wherever they sit: the tokens at the top of the stylesheet, a
+  // hard-coded border further down, the same hexes in the script that draws an image.
+  {
+    const COLOUR = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch|oklab|lab|lch)\([^()]*\)/g;
+    const recolours = (i) => {
+      const f = files[i];
+      if (f.status !== 'M' || f.binary || (!f.unitOf && f.hunks?.length > 1)) return false;
+      const ls = (f.diff || '').split('\n').filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l));
+      const out = ls.filter((l) => l[0] === '-').map((l) => l.slice(1).trim()), into = ls.filter((l) => l[0] === '+').map((l) => l.slice(1).trim());
+      if (!out.length || out.length !== into.length || out.length > 60) return false;
+      const mask = (l) => l.replace(COLOUR, '\u0001');
+      const a = out.map(mask), b = into.map(mask);
+      if (![...a, ...b].every((l) => l.includes('\u0001'))) return false;
+      // One rule in four may be redrawn along the way (a gradient with new stops in the new colours).
+      const left = [...b]; let same = 0;
+      for (const l of a) { const k = left.indexOf(l); if (k >= 0) { left.splice(k, 1); same++; } }
+      return same === a.length || (a.length >= 4 && same >= 0.75 * a.length);
+    };
+    const is = files.map((_, i) => i).filter(recolours);
+    if (is.length >= 3) { for (const i of is.slice(1)) union(is[0], i, 'same edit'); for (const i of is) recoloured.add(i); }
+    // A sweep that wide passes through every feature's rules. The names it shares with them (the
+    // selector it recoloured, a token it kept) say where it went, not what else belongs in it.
+    if (is.length >= 8) for (const i of is) sweep.add(i);
+  }
   // A toolchain move: the manifest swaps the tool that builds one of the pile's languages (the Gemfile
   // gains sass-embedded, package.json a new typescript), and the code is brought in line with it in
   // the same sitting. Those edits change no value: a module line appears (@use "sass:list"), or a
@@ -1377,9 +1647,11 @@ function suggestGroups(input, learn = {}) {
     for (let i = 0; i < n && !toolchain; i++) {
       if (!LOCKS[path.basename(files[i].path)] || !whole(i) || files[i].status === 'D') continue;
       const gone = new Map(), came = new Map();
-      for (const l of (files[i].diff || '').split('\n')) { const d = /^[-+](?![-+])/.test(l) && depOf(l.slice(1)); if (d) (l[0] === '-' ? gone : came).set(d[0], d[1]); }
+      for (const l of (files[i].diff || '').split('\n')) { const d = /^[-+](?![-+])/.test(l) && depOf(l.slice(1)); if (d && !/^(version|name|rust-version|edition)$/.test(d[0])) (l[0] === '-' ? gone : came).set(d[0], d[1]); }
       // New, dropped, or on another version; a line that only moved within the file is none of these.
-      const fresh = [...came].filter(([d, v]) => gone.get(d) !== v);
+      // Nor is a step within one major version (typescript 5.5 -> 5.9): that is routine upkeep, not a move.
+      const major = (v) => (v || '').split('.')[0];
+      const fresh = [...came].filter(([d, v]) => gone.get(d) !== v && !(gone.has(d) && gone.get(d) && v && major(gone.get(d)) === major(v) && major(v) !== '0'));
       const moved = fresh.map(([d]) => d).concat([...gone.keys()].filter((d) => !came.has(d)));
       const words = new Set(moved.flatMap((d) => d.toLowerCase().split(/[^a-z0-9]+/)).filter((w) => w.length >= 4));
       if (words.size) toolchain = { at: i, words, lead: fresh[0] ? { name: fresh[0][0], version: fresh[0][1], bumped: gone.has(fresh[0][0]) } : null };
@@ -1401,7 +1673,10 @@ function suggestGroups(input, learn = {}) {
         const minus = changed(i, '-'), plus = changed(i, '+');
         const rest = plus.filter((l) => !moduleLine(l));
         const hit = minus.filter((l) => [...calls([l]).keys()].some((fn) => leaving.has(fn))).length;
-        if (!(plus.length > rest.length && !minus.length && !rest.length) && !(hit && hit * 2 >= minus.length)) continue;
+        // A chunk that only adds module lines follows the tool when a line names it (@use "sass:list");
+        // a plain new import is ordinary wiring.
+        const namesTool = plus.some((l) => moduleLine(l) && [...words].some((w) => l.toLowerCase().includes(w)));
+        if (!(plus.length > rest.length && !minus.length && !rest.length && namesTool) && !(hit && hit * 2 >= minus.length)) continue;
         union(at, i, `follows the ${said} upgrade`, 0.9); joined++;
       }
       // The tool's own section of a config file: every changed key sits under a heading named for it.
@@ -1440,7 +1715,7 @@ function suggestGroups(input, learn = {}) {
   let sig = [], oldNames = new Set();
   {
     const T = learn.tune || {};
-    sig = files.map((f, i) => (isAsset(kinds[i]) || (coll[i] && isNew[i]) ? null : signalsOf(f)));
+    sig = files.map((f, i) => (isAsset(kinds[i]) || (coll[i] && isNew[i]) || LOCK_FILE.test(f.path) ? null : signalsOf(f)));
     // A name seen in unchanged or removed lines already existed; one only ever added is new.
     const old = new Set(), added = new Set(), gone = new Set();
     oldNames = old;
@@ -1463,13 +1738,14 @@ function suggestGroups(input, learn = {}) {
     let cents = live.map(centroid);
     const blocked = new Set();
     const co = (A, B) => { if (!learn.cochange) return 0; let best = 0; for (const i of A) for (const j of B) if (files[i].path !== files[j].path) { const sc = learn.cochange.get(keyOf(i, j)) || 0; if (sc > best) best = sc; } return best; };
-    const near = (A, B) => A.some((i) => files[i].unitOf && B.some((j) => files[j].unitOf === files[i].unitOf && Math.abs(files[i].at - files[j].at) === 1));
+    const near = (A, B) => A.some((i) => files[i].unitOf && !(files[i].units >= (T.cssNear ?? 10) && /\.(s?css|less|sass)$/i.test(files[i].unitOf)) && B.some((j) => files[j].unitOf === files[i].unitOf && Math.abs(files[i].at - files[j].at) === 1));
     const MIN = T.min ?? 0.1, GROW = T.grow ?? 0.15;
     const bigNew = (m) => m.some((i) => isNew[i] && !isAsset(kinds[i]) && files[i].add >= 10);
     for (;;) {
       let best = 0, a = -1, b = -1, bestSemantic = 0, bestRatio = 1;
       for (let x = 0; x < live.length; x++) for (let y = x + 1; y < live.length; y++) {
         if (live[x].length + live[y].length > cap || blocked.has(live[x][0] + ':' + live[y][0])) continue;
+        if (sweep.size && live[x].some((i) => sweep.has(i)) !== live[y].some((i) => sweep.has(i))) continue;
         // A small change that mostly talks about what a big one brings in (the two lines that import and
         // call a new module) scores low on likeness alone, so how much of the smaller one the bigger one
         // covers counts too.
@@ -1501,7 +1777,11 @@ function suggestGroups(input, learn = {}) {
       const reason = shared ? `both touch ${nameOfTie(shared)}` : historyReason || (bestSemantic >= (T.semanticMin ?? 0.42) ? 'share rare changed terms' : 'related code');
       const ratio = bestRatio;
       const softConfidence = Math.max(0.62, Math.min(0.94, 0.62 + Math.max(0, ratio - 1) * 0.16));
-      const evidence = reason === 'usually change together' ? Math.max(softConfidence, 0.68 + historyScore * 0.28)
+      // Two files that usually change together say little about which chunk of one goes with which
+      // chunk of the other, once both are cut into many: there the likeness has to carry the tie.
+      const many = (i) => files[i].unitOf && files[i].units >= 4;
+      const thinHistory = !live[a].some((i) => live[b].some((j) => files[i].path !== files[j].path && (learn.cochange?.get(keyOf(i, j)) || 0) >= 0.5 && !(many(i) && many(j))));
+      const evidence = thinHistory && historyReason && reason === historyReason ? softConfidence : reason === 'usually change together' ? Math.max(softConfidence, 0.68 + historyScore * 0.28)
         : reason === 'recurring co-change pattern' ? Math.max(softConfidence, 0.60 + historyScore * 0.24)
           : reason.startsWith('both touch ') ? Math.max(softConfidence, shared ? 0.82 : 0.62)
             : reason === 'share rare changed terms' ? 0.58 + Math.min(0.36, bestSemantic * 0.42)
@@ -1517,10 +1797,49 @@ function suggestGroups(input, learn = {}) {
     }
   }
   joinHubs();
+  // A JS/TS test with no source file of its own name (test/main.ts, runtime-tests/lambda/index.test.ts)
+  // still says what it tests: the names its changed lines share with exactly one changed source file.
+  // Each test chunk goes with the chunk of that file it shares most names with.
+  {
+    const JS = /\.(?:[cm]?[jt]sx?)$/i;
+    const isTest = (q) => JS.test(q) && !/\.d\.[cm]?ts$/i.test(q) && isTestPath(q);
+    const namesOf = (i) => (sig[i] ? new Set([...sig[i].plus.keys(), ...sig[i].minus.keys()].filter((t) => t[0] === 'I')) : new Set());
+    const src = files.map((_, i) => i).filter((i) => JS.test(files[i].path) && !isTest(files[i].path) && files[i].status !== 'D' && !/(^|\/)[\w.-]*\.config\.[cm]?[jt]s$/.test(files[i].path));
+    const srcNames = new Map(src.map((i) => [i, namesOf(i)]));
+    const pathsWith = new Map();
+    for (const [i, ns] of srcNames) for (const t of ns) (pathsWith.get(t) || pathsWith.set(t, new Set()).get(t)).add(files[i].path);
+    if (src.length) for (let u = 0; u < n; u++) {
+      if (!isTest(files[u].path) || files[u].status === 'D') continue;
+      const mine = [...namesOf(u)].filter((t) => pathsWith.get(t)?.size === 1);
+      if (!mine.length) continue;
+      const votes = new Map();
+      for (const t of mine) { const q = [...pathsWith.get(t)][0]; votes.set(q, (votes.get(q) || 0) + 1); }
+      const ranked = [...votes].sort((a, b) => b[1] - a[1]);
+      if (ranked.length > 1 && ranked[1][1] === ranked[0][1]) continue;
+      const best = src.filter((i) => files[i].path === ranked[0][0]).map((i) => [i, mine.filter((t) => srcNames.get(i).has(t))]).sort((a, b) => b[1].length - a[1].length)[0];
+      if (members(find(u)).some((k) => src.includes(k) && files[k].path !== ranked[0][0])) continue;
+      if (best && best[1].length) union(best[0], u, `both touch ${sig[u].shown.get(best[1][0]) || best[1][0].slice(2)}`, 0.86);
+    }
+  }
   // Chunks that had no feature signal stay with their file's home chunk.
   const alone = (i) => members(find(i)).length === 1;
   const homeOf = new Map(files.map((f, i) => [f, i]).filter(([f]) => f.unitOf && f.home).map(([f, i]) => [f.unitOf, i]));
-  for (let i = 0; i < n; i++) if (files[i].unitOf && !files[i].home && alone(i)) union(homeOf.get(files[i].unitOf), i, 'same file');
+  // Unless the file is plainly several jobs at once: its chunks already went three ways or more,
+  // and the home chunk to a feature that spans other files (the stylesheet's biggest chunk is the
+  // new panel's styles). Then the leftovers are that file's other small edits, not part of the
+  // panel, and they stay together as the rest of the file.
+  const restOf = new Set();
+  {
+    const left = new Map();
+    for (let i = 0; i < n; i++) if (files[i].unitOf && !files[i].home && alone(i)) (left.get(files[i].unitOf) || left.set(files[i].unitOf, []).get(files[i].unitOf)).push(i);
+    for (const [p, is] of left) {
+      const home = homeOf.get(p), mates = members(find(home));
+      const spread = new Set(files.map((f, k) => (f.unitOf === p && !is.includes(k) ? find(k) : -1)).filter((r) => r >= 0)).size;
+      const busy = is.length >= 2 && spread >= 3 && mates.some((k) => files[k].path !== p);
+      if (busy) { for (const i of is.slice(1)) union(is[0], i, 'same file'); for (const i of is) restOf.add(i); }
+      else for (const i of is) union(home, i, 'same file');
+    }
+  }
   // Do not collect unrelated prose files into a catch-all docs commit. Collections,
   // includes, imports, history and content overlap above can still connect related docs.
 
@@ -1546,7 +1865,7 @@ function suggestGroups(input, learn = {}) {
     for (const i of idx) { const root = localFind(i); if (!pieces.has(root)) pieces.set(root, []); pieces.get(root).push(i); }
     for (const piece of pieces.values()) {
       const p = files[piece[0]].path;
-      if (!piece.every((i) => files[i].path === p) || piece.some((i) => files[i].home)) continue;
+      if (!piece.every((i) => files[i].path === p) || piece.some((i) => files[i].home) || piece.every((i) => restOf.has(i))) continue;
       const inside = new Set(piece);
       if ([...linkEvidence, ...heldEvidence].some((e) => inside.has(e.a) && inside.has(e.b) && e.confidence >= MIN_GROUP_LINK_EVIDENCE && /^(uses|both add|both drop|both touch|defines|changes|moves|replaced by) |^same edit$/.test(e.reason))) continue;
       const mate = [...pieces.values()].filter((q) => q !== piece && q.some((i) => files[i].path === p))
@@ -1583,7 +1902,7 @@ function suggestGroups(input, learn = {}) {
       const changed = (files[u].diff || '').split('\n').filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l));
       const linesOf = new Map();
       for (const e of mine) {
-        const r = root(e.a === u ? e.b : e.a), x = e.reason.match(/^(?:uses|both add|both drop|both touch|defines|changes|moves) (.+)$/)?.[1];
+        const o = e.a === u ? e.b : e.a, r = root(o), x = e.reason === 'imports new file' ? path.basename(files[o].path) : e.reason.match(/^(?:uses|both add|both drop|both touch|defines|changes|moves) (.+)$/)?.[1];
         const at = linesOf.get(r) || linesOf.set(r, new Set()).get(r);
         changed.forEach((l, k) => { if (!x || l.includes(x)) at.add(k); });
       }
@@ -1605,8 +1924,61 @@ function suggestGroups(input, learn = {}) {
     }
     return [idx];
   };
+  // A commit of dozens of pieces that hangs together through one chunk is two commits. Only where
+  // the pile plainly holds several jobs: a group of sixty pieces or more, or one of twenty or more
+  // that is still under a third of the pile. There, a chunk whose removal leaves two or more
+  // features standing on their own, each tied to different lines of it, is shared ground (a long
+  // block of styles for several panels, a list of imports, a file of helpers): it stays with the
+  // side most of its lines serve and the others go their own way. The widest split is made first,
+  // so the result does not hang on the order chunks come in, and the pieces are cut again the same
+  // way until none is left to cut. A small pile, or one group that is most of its pile, is more
+  // likely one piece of work and is left whole.
+  const cutSharedChunks = (idx, depth = 0, on = false) => {
+    if ((!on && idx.length < 60 && !(idx.length >= 20 && idx.length <= 0.3 * n)) || idx.length < 5 || depth > 12) return [idx];
+    // One file reworked from top to bottom, with a few callers brought along, is one job however
+    // many chunks it comes in: the group has to be spread over files, with no one file making up
+    // two fifths of it or more.
+    if (!on) { const per = new Map(); for (const i of idx) per.set(files[i].path, (per.get(files[i].path) || 0) + 1); if (Math.max(...per.values()) >= idx.length * 0.4) return [idx]; }
+    const inside = new Set(idx);
+    const edges = [...linkEvidence, ...heldEvidence].filter((e) => e.confidence >= MIN_GROUP_LINK_EVIDENCE && inside.has(e.a) && inside.has(e.b) && e.a !== e.b);
+    let bestCut = null;
+    for (const u of idx) {
+      if (!files[u].unitOf || files[u].add + files[u].del < 2) continue;
+      const mine = edges.filter((e) => e.a === u || e.b === u);
+      if (mine.length < 2) continue;
+      const par = new Map(idx.filter((i) => i !== u).map((i) => [i, i]));
+      const root = (i) => { while (par.get(i) !== i) { par.set(i, par.get(par.get(i))); i = par.get(i); } return i; };
+      for (const e of edges) if (e.a !== u && e.b !== u) { const a = root(e.a), b = root(e.b); if (a !== b) par.set(b, a); }
+      const comps = new Map();
+      for (const i of par.keys()) { const r = root(i); if (!comps.has(r)) comps.set(r, []); comps.get(r).push(i); }
+      if (comps.size < 2) continue;
+      const changed = (files[u].diff || '').split('\n').filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l));
+      const linesOf = new Map(), pull = new Map();
+      for (const e of mine) {
+        const o = e.a === u ? e.b : e.a, r = root(o), x = e.reason === 'imports new file' ? path.basename(files[o].path) : e.reason.match(/^(?:uses|both add|both drop|both touch|defines|changes|moves) (.+)$/)?.[1];
+        pull.set(r, (pull.get(r) || 0) + e.confidence);
+        const at = linesOf.get(r) || linesOf.set(r, new Set()).get(r);
+        changed.forEach((l, k) => { if (!x || l.includes(x)) at.add(k); });
+      }
+      const sides = [...pull.keys()].filter((r) => comps.get(r).length >= 2);
+      if (sides.length < 2) continue;
+      const apartFrom = (a, b) => linesOf.get(a).size && linesOf.get(b).size && ![...linesOf.get(a)].some((k) => linesOf.get(b).has(k));
+      const keep = sides.sort((a, b) => linesOf.get(b).size - linesOf.get(a).size || comps.get(b).length - comps.get(a).length || pull.get(b) - pull.get(a))[0];
+      // A side the chunk is bound to by a hard fact (it imports that side's new file, the two bring in
+      // a set of names nothing else has) is the same work, whatever else the chunk also touches.
+      const firm = new Set(mine.filter((e) => /^(imports|includes) new file$/.test(e.reason) || (e.reason.startsWith('both add ') && e.confidence >= 0.9)).map((e) => root(e.a === u ? e.b : e.a)));
+      const rest = sides.filter((r) => r !== keep && apartFrom(r, keep) && !firm.has(r));
+      if (!rest.length) continue;
+      const gain = rest.reduce((t, r) => t + comps.get(r).length, 0);
+      const score = Math.min(gain, idx.length - gain);
+      if (!bestCut || score > bestCut.score) bestCut = { score, parts: rest.map((r) => comps.get(r)) };
+    }
+    if (!bestCut) return [idx];
+    const off = new Set(bestCut.parts.flat());
+    return [...cutSharedChunks(idx.filter((i) => !off.has(i)), depth + 1, true), ...bestCut.parts.flatMap((m) => cutSharedChunks(m, depth + 1, true))];
+  };
   if (typeof learn.debug === 'function') learn.debug({ files, edges: [...linkEvidence, ...heldEvidence.map((e) => ({ ...e, held: true }))] });
-  let groups = [...buckets.values()].flatMap((idx) => splitWeakBridges(idx).flatMap((part) => cutThinBridges(part)).map((part) => ({ idx: part })));
+  let groups = [...buckets.values()].flatMap((idx) => splitWeakBridges(idx).flatMap((part) => cutThinBridges(part)).flatMap((part) => cutSharedChunks(part)).map((part) => ({ idx: part })));
   // A file whose chunks tie to nothing outside it stays whole. Splitting one file into several commits
   // needs a witness: another file that one of the pieces belongs with (the script's new call and the
   // style it uses). With none, the pieces are one person's pass over one file, and one commit.
@@ -1615,7 +1987,587 @@ function suggestGroups(input, learn = {}) {
     const solo = new Map();
     for (const g of groups) { const ps = pathsOf(g); for (const p of ps) { const s = solo.get(p) || solo.set(p, { own: [], mixed: false }).get(p); if (ps.size === 1 && g.idx.every((i) => files[i].unitOf)) s.own.push(g); else s.mixed = true; } }
     for (const [, s] of solo) if (!s.mixed && s.own.length >= 2) { const [first, ...rest] = s.own; for (const g of rest) { first.idx.push(...g.idx); g.idx = []; } first.broad = first.idx.length >= 8; }
+    // One file in just two pieces, one of them tied to other files and one to nothing: the lone
+    // piece has no witness of its own, so the file goes whole with the feature it is part of.
+    for (const [p, s] of solo) {
+      if (!s.mixed || s.own.length !== 1 || !s.own[0].idx.length) continue;
+      const others = groups.filter((g) => g !== s.own[0] && g.idx.some((i) => files[i].path === p));
+      if (others.length !== 1) continue;
+      const mine = others[0].idx.filter((i) => files[i].path === p);
+      if (!mine.some((i) => files[i].home) && s.own[0].idx.length > 2) continue;
+      others[0].idx.push(...s.own[0].idx); s.own[0].idx = [];
+    }
     groups = groups.filter((g) => g.idx.length);
+  }
+  if (!Array.isArray(learn.fixed)) {
+    const pathsOf = (g) => new Set(g.idx.map((i) => files[i].path));
+    const namesOf = (idx) => { const out = new Set(); for (const i of idx) if (sig[i]) for (const m of [sig[i].plus, sig[i].minus]) for (const t of m.keys()) if (t[0] === 'I') out.add(t); return out; };
+    const moveInto = (g, to, reason) => { for (const i of g.idx) why[i].add(reason); to.idx.push(...g.idx); g.idx = []; };
+    // Left-over pieces of a Go, Rust or Python file. When part of a file went into one commit with
+    // other files and the rest tied to nothing outside the file, the rest is the same piece of work:
+    // it joins that commit, as long as there is only one such commit to join.
+    for (const g of groups) {
+      const ps = [...pathsOf(g)];
+      if (!g.idx.length || ps.length !== 1 || !/\.(go|rs|py)$/i.test(ps[0]) || !g.idx.every((i) => files[i].unitOf)) continue;
+      const mineOf = (h) => h.idx.filter((i) => files[i].path === ps[0]).length;
+      const hosts = groups.filter((h) => h !== g && mineOf(h) && pathsOf(h).size >= 2).sort((x, y) => mineOf(y) - mineOf(x));
+      if (!hosts.length || (hosts.length > 1 && mineOf(hosts[0]) === mineOf(hosts[1]))) continue;
+      if (apart.size && g.idx.some((x) => hosts[0].idx.some((y) => apart.has(keyOf(x, y))))) continue;
+      moveInto(g, hosts[0], 'same file');
+    }
+    groups = groups.filter((g) => g.idx.length);
+    // Tests go with the code they test. A commit holding nothing but one test file's changes joins
+    // the commit that changes the file it tests (commands_test.go with commands.go, test_types.py
+    // with types.py); when that file is split over a few commits, the one sharing the most names.
+    for (const g of groups) {
+      const ps = [...pathsOf(g)].filter((p) => !CHANGELOG_FILE.test(p));
+      if (!g.idx.length || ps.length !== 1) continue;
+      const tested = testedBy(ps[0]);
+      if (!tested) continue;
+      const mine = namesOf(g.idx);
+      const cands = groups.filter((h) => h !== g && h.idx.some((i) => tested(files[i].path)))
+        .map((h) => ({ h, shared: [...namesOf(h.idx.filter((i) => tested(files[i].path)))].filter((t) => mine.has(t)).length, home: h.idx.some((i) => tested(files[i].path) && whole(i)) }))
+        .sort((x, y) => y.shared - x.shared || Number(y.home) - Number(x.home));
+      if (!cands.length || (cands.length > 1 && !cands[0].shared)) continue;
+      if (apart.size && g.idx.some((x) => cands[0].h.idx.some((y) => apart.has(keyOf(x, y))))) continue;
+      moveInto(g, cands[0].h, 'tests for this code');
+    }
+    groups = groups.filter((g) => g.idx.length);
+    // A new test file that landed in a commit without the file it tests pulls that file in, when the
+    // tested file is otherwise a commit of its own (tests/gitignore_skip_bom.rs with src/gitignore.rs).
+    for (const g of groups) {
+      for (const t of [...pathsOf(g)]) {
+        const tested = testedBy(t);
+        if (!tested || !g.idx.some((i) => files[i].path === t && isNew[i]) || g.idx.some((i) => tested(files[i].path))) continue;
+        const src = groups.filter((h) => h !== g && h.idx.length && h.idx.every((i) => tested(files[i].path)));
+        if (src.length !== 1 || (apart.size && g.idx.some((x) => src[0].idx.some((y) => apart.has(keyOf(x, y)))))) continue;
+        moveInto(src[0], g, 'tests for this code');
+      }
+    }
+    groups = groups.filter((g) => g.idx.length);
+    // Go builds a file named x_windows.go only for Windows. Two such files for one platform, side by
+    // side and each otherwise on its own, are one platform fix (key_windows.go with tty_windows.go).
+    {
+      const osOf = (p) => { const m = p.match(/^(.*?)[^/]*_(windows|linux|darwin|unix|freebsd|openbsd|netbsd|solaris|plan9|js|wasm|android|ios)(?:_[a-z0-9]+)?(?:_test)?\.go$/); return m ? m[1] + '\0' + m[2] : null; };
+      const first = new Map();
+      for (const g of groups) {
+        const ps = [...pathsOf(g)], k = ps.length === 1 ? osOf(ps[0]) : null;
+        if (!k) continue;
+        const to = first.get(k);
+        if (!to) { first.set(k, g); continue; }
+        if (apart.size && g.idx.some((x) => to.idx.some((y) => apart.has(keyOf(x, y))))) continue;
+        moveInto(g, to, 'same platform');
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // A changelog entry goes with the change it describes: the entry cites an issue the code or its
+    // test cites too, names something in backticks that the code adds, or talks about the file by name.
+    const changedText = (i) => (files[i].status === 'A' && files[i].content ? files[i].content.slice(0, 30000) : (files[i].diff || '').split('\n').filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l)).join('\n'));
+    const logOnly = (g) => g.idx.length && g.idx.every((i) => CHANGELOG_FILE.test(files[i].path));
+    const GENERIC_DIR = /^(src|lib|libs|crates?|tests?|core|main|mod|init|index|utils?|common|internal|pkg|cmd|docs?|examples?)$/;
+    const isCodeUnit = (i) => !/\.(md|mdx|txt|rst|adoc)$/i.test(files[i].path) && !/(^|\/)(readme|licen[cs]e)/i.test(files[i].path) && !LOCK_FILE.test(files[i].path) && !isAsset(kinds[i]);
+    const moves = [];
+    for (const g of groups) {
+      if (!logOnly(g)) continue;
+      for (const u of g.idx) {
+        const entry = (files[u].diff || '').split('\n').filter((l) => l[0] === '+' && !l.startsWith('+++')).join('\n');
+        const issues = new Set([...entry.matchAll(/(?:#|issues\/|pull\/|:(?:issue|pr):`)(\d{2,6})\b/g)].map((m) => m[1]));
+        const ticks = new Set([...entry.matchAll(/`+([^`\n]{3,60})`+/g)].flatMap((m) => m[1].match(/[A-Za-z_][\w]*(?:-[A-Za-z0-9_]+)*/g) || []).filter((w) => w.length >= 5 || /[_A-Z-]/.test(w.slice(1)) && w.length >= 4));
+        const words = new Set((entry.replace(/https?:\S+/g, ' ').toLowerCase().match(/[a-z][a-z0-9_]{4,}/g) || []).filter((w) => !STOPWORDS.has(w)));
+        let best = null, bestScore = 0, tie = false;
+        for (const h of groups) {
+          if (h === g || !h.idx.length || logOnly(h)) continue;
+          const code = h.idx.filter(isCodeUnit);
+          if (!code.length) continue;
+          const text = code.map(changedText).join('\n');
+          let score = 0;
+          for (const n of issues) if (new RegExp('(?:#|/|\\b[a-z]{1,2}|[-_])' + n + '\\b', 'i').test(text)) score += 3;
+          for (const t of ticks) if (new RegExp('(?<![\\w-])' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])').test(text)) score += 1;
+          const stemsHere = new Set(code.flatMap((i) => { const segs = files[i].path.toLowerCase().replace(/\.[a-z0-9]+$/, '').split('/'); return segs.slice(-2).flatMap((x) => [x.replace(/^_+/, '')]); }).filter((x) => x.length >= 5 && !GENERIC_DIR.test(x)));
+          for (const st of stemsHere) if (words.has(st) || words.has(st + 's') || (st.endsWith('s') && words.has(st.slice(0, -1)))) score += 1;
+          if (score > bestScore) { bestScore = score; best = h; tie = false; } else if (score && score === bestScore) tie = true;
+        }
+        // Nothing named, and only one commit in the pile changes source code: the entry is about that one.
+        if (!best) { const only = groups.filter((h) => h !== g && h.idx.length && !logOnly(h) && h.idx.some((i) => isCodeUnit(i) && CODE_FILE.test(files[i].path))); if (only.length === 1) best = only[0]; }
+        if (best && !tie) moves.push([g, u, best]);
+      }
+    }
+    for (const [g, u, to] of moves) { g.idx = g.idx.filter((i) => i !== u); to.idx.push(u); why[u].add('changelog entry for this change'); }
+    groups = groups.filter((g) => g.idx.length);
+  }
+  // ---- Library habits (round 11): how a published package's history is usually cut. ----
+  if (!Array.isArray(learn.fixed)) {
+    const pathsOf = (g) => new Set(g.idx.map((i) => files[i].path));
+    const blockedPair = (g, h) => apart.size && g.idx.some((x) => h.idx.some((y) => apart.has(keyOf(x, y))));
+    const moveInto = (g, to, reason) => { if (g.idx.length && to.idx.length) linkEvidence.push({ a: g.idx[0], b: to.idx[0], confidence: 0.86, reason }); for (const i of g.idx) why[i].add(reason); to.idx.push(...g.idx); g.idx = []; };
+    // A file that went through grouping whole can still be cut here: it becomes one unit per chunk,
+    // the first in its old place and the rest at the end of the list. Returns the units' places, in
+    // chunk order.
+    const lateUnits = (i) => {
+      const f = files[i], hs = f.hunks;
+      const big = hs.reduce((b, h) => (h.add + h.del > b.add + b.del ? h : b), hs[0]);
+      return hs.map((h, k) => {
+        const u = { ...f, unitOf: f.path, hunk: h.id, at: k, home: h === big, units: hs.length, diff: h.head + '\n' + (h.all || h.lines).join('\n'), add: h.add, del: h.del, hunks: undefined };
+        if (k === 0) { files[i] = u; return i; }
+        files.push(u); why.push(new Set(why[i])); return files.length - 1;
+      });
+    };
+    // Go modules: one dependency bump is one commit. go.mod and go.sum name the module on every line
+    // they change, so their chunks sort themselves: chunks naming the same module are one bump,
+    // and chunks with no module in common are separate bumps (x/sys and x/sync, each with its sums).
+    // Modules bumped on neighbouring lines share a chunk and stay one commit.
+    for (const g of [...groups]) {
+      const mods = g.idx.filter((i) => !files[i].unitOf && files[i].status === 'M' && /(^|\/)go\.mod$/.test(files[i].path) && files[i].hunks?.length);
+      for (const m of mods) {
+        const sum = g.idx.find((i) => !files[i].unitOf && files[i].status === 'M' && files[i].path === files[m].path.replace(/go\.mod$/, 'go.sum') && files[i].hunks?.length);
+        const nodes = [...files[m].hunks.map((h, k) => ({ of: m, k, h })), ...(sum != null ? files[sum].hunks.map((h, k) => ({ of: sum, k, h })) : [])];
+        if (files[m].hunks.length < 2 || nodes.length > 40) continue;
+        const modsOf = (h) => new Set((h.all || h.lines || []).filter((l) => /^[-+]/.test(l)).map((l) => l.slice(1).trim().match(/^(?:require\s+)?([\w.-]+\.[a-z]{2,}\/[^\s]+)\s+v\d/)?.[1]).filter(Boolean));
+        const named = nodes.map((x) => modsOf(x.h));
+        const par = nodes.map((_, k) => k), root = (k) => (par[k] === k ? k : (par[k] = root(par[k])));
+        for (let a = 0; a < nodes.length; a++) for (let b = a + 1; b < nodes.length; b++) if ([...named[a]].some((x) => named[b].has(x))) par[root(b)] = root(a);
+        const comps = new Map();
+        nodes.forEach((x, k) => { const r = root(k); (comps.get(r) || comps.set(r, []).get(r)).push(x); });
+        // A bump is a module the project asks for itself. Lines marked "// indirect" only follow one
+        // (glamour moves, and termenv and goldmark move with it), so chunks holding nothing but those,
+        // and sums with no go.mod line of their own, stay with the biggest bump.
+        const direct = (x) => x.of === m && (x.h.all || x.h.lines || []).some((l) => /^[-+]\s*(?:require\s+)?[\w.-]+\.[a-z]{2,}\/\S+\s+v\d/.test(l) && !/\/\/\s*indirect/.test(l));
+        const parts = [...comps.values()].filter((c) => c.some(direct)).sort((a, b) => b.length - a.length);
+        const loose = [...comps.values()].filter((c) => !c.some(direct)).flat();
+        if (parts.length < 2 || parts.length > 6) continue;
+        const at = new Map([[m, lateUnits(m)]]); if (sum != null) at.set(sum, lateUnits(sum));
+        const idxOf = (x) => at.get(x.of)[x.k];
+        const mine = new Set([...at.values()].flat());
+        g.idx = [...g.idx.filter((i) => !mine.has(i)), ...[...parts[0], ...loose].map(idxOf)];
+        for (const c of parts.slice(1)) groups.push({ idx: c.map(idxOf) });
+      }
+    }
+    // A release is its own commit. A manifest whose version line changed in one chunk and something
+    // else in another (a dependency added, a script renamed) is two changes: the version line goes
+    // out on its own, or stays with the changelog it was released with while the rest leaves.
+    {
+      const VERSION_LINE = /^\s*"version"\s*:\s*"[^"]+",?\s*$|^\s*version\s*=\s*"[^"]+"\s*$/;
+      const versionOnly = (h) => { const ch = (h.all || h.lines || []).filter((l) => /^[-+]/.test(l)); return ch.length === 2 && ch.every((l) => VERSION_LINE.test(l.slice(1))) && ch[0][0] !== ch[1][0]; };
+      const newVersions = new Set(files.flatMap((f) => (f.diff || '').split('\n').filter((l) => l[0] === '+' && VERSION_LINE.test(l.slice(1))).map((l) => l.match(/"([^"]+)"[,\s]*$/)?.[1])).filter(Boolean));
+      for (const g of [...groups]) for (const i of [...g.idx]) {
+        const f = files[i];
+        if (f.unitOf || f.status !== 'M' || !/^(package\.json|Cargo\.toml|pyproject\.toml)$/.test(path.basename(f.path)) || !f.hunks || f.hunks.length < 2 || f.hunks.length > 40) continue;
+        const ver = f.hunks.filter(versionOnly);
+        if (ver.length !== 1 || !/^@@ -[1-9]\d?,/.test(ver[0].head)) continue;
+        const released = [...why[i]].includes('one release');
+        // Not a second change: a chunk that only re-saved whitespace, or (in a release) one that
+        // moves a sibling package's range along to the version that package was just given.
+        const changedIn = (h) => (h.all || h.lines || []).filter((l) => /^[-+]/.test(l));
+        const blank = (h) => { const ch = changedIn(h); return ch.filter((l) => l[0] === '-').map((l) => l.slice(1).trim()).join('\n') === ch.filter((l) => l[0] === '+').map((l) => l.slice(1).trim()).join('\n'); };
+        const follows = (h) => { const ch = changedIn(h), key = (l) => l.slice(1).match(/^\s*"([^"]+)"\s*:/)?.[1]; const minus = ch.filter((l) => l[0] === '-'), plus = ch.filter((l) => l[0] === '+'); return released && minus.length === plus.length && plus.every((l, k) => key(l) && key(l) === key(minus[k]) && (/"workspace:/.test(l) || newVersions.has(l.match(/(\d+\.\d+\.\d+[\w.-]*)"/)?.[1]))); };
+        if (f.hunks.every((h) => h === ver[0] || blank(h) || follows(h))) continue;
+        const unit = (h, at, home) => ({ ...f, unitOf: f.path, hunk: h.id, at, home, units: f.hunks.length, diff: h.head + '\n' + (h.all || h.lines).join('\n'), add: h.add, del: h.del, hunks: undefined });
+        const stays = released ? f.hunks.filter((h) => h !== ver[0] && (blank(h) || follows(h))) : [];
+        const rest = f.hunks.filter((h) => h !== ver[0] && !stays.includes(h));
+        const big = rest.reduce((b, h) => (h.add + h.del > b.add + b.del ? h : b), rest[0]);
+        const restIdx = [];
+        rest.forEach((h, k) => { const u = unit(h, f.hunks.indexOf(h), h === big); if (k === 0) { files[i] = u; restIdx.push(i); } else { files.push(u); why.push(new Set(why[i])); restIdx.push(files.length - 1); } });
+        files.push(unit(ver[0], f.hunks.indexOf(ver[0]), false)); why.push(new Set(released ? why[i] : []));
+        const verIdx = files.length - 1;
+        for (const h of stays) { files.push(unit(h, f.hunks.indexOf(h), false)); why.push(new Set(why[verIdx])); g.idx.push(files.length - 1); }
+        if (released) { g.idx = g.idx.filter((k) => k !== i); g.idx.push(verIdx); for (const k of restIdx) why[k] = new Set(); groups.push({ idx: restIdx }); }
+        else { g.idx.push(...restIdx.slice(1)); groups.push({ idx: [verIdx] }); }
+      }
+    }
+    // A new package is wired into the workspace in the same commit: the root manifest gains a build
+    // script for it, tsconfig a path, the parent package an export. A commit of nothing but config
+    // files whose new lines spell out the new package's folder (or its name) joins the package.
+    {
+      const CONFIG = /\.(json|ya?ml|toml)$|(^|\/)[\w.-]*\.(config|conf)\.[cm]?[jt]s$/i;
+      const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      for (const h of groups) {
+        const man = h.idx.find((i) => files[i].status === 'A' && /^(package\.json|Cargo\.toml|pyproject\.toml)$/.test(path.basename(files[i].path)) && files[i].path.split('/').length >= 3);
+        if (man == null) continue;
+        const dir = path.posix.dirname(files[man].path);
+        const name = ((files[man].content || '').match(/^\s*"?name"?\s*[:=]\s*"([^"]{6,})"/m) || [])[1];
+        // The folder said as one word, the way scripts name it: packages/preact/utils -> preact-utils.
+        const segs = dir.split('/');
+        const slugs = [...new Set([segs.at(-1), segs.slice(-2).join('-')])].filter((x) => x.includes('-') && x.length >= 8);
+        for (const g of groups) {
+          if (g === h || !g.idx.length || !g.idx.every((i) => files[i].status === 'M' && (CONFIG.test(files[i].path) || LOCK_FILE.test(files[i].path)) && !coll[i])) continue;
+          if (blockedPair(g, h)) continue;
+          // Chunk by chunk: the root manifest may bump a dependency for another commit in the same pile.
+          for (const i of [...g.idx]) {
+            if (LOCK_FILE.test(files[i].path)) continue;
+            const at = path.posix.dirname(files[i].path), base = at === '.' ? '' : at + '/';
+            if (!dir.startsWith(base)) continue;
+            const rel = dir.slice(base.length);
+            const saysIt = (ls) => { const added = ls.filter((l) => l[0] === '+' && !l.startsWith('+++')).join('\n'); return (rel.length >= 5 && new RegExp(`(^|[^\\w-])${esc(rel)}(/|["'\\s]|$)`, 'm').test(added)) || (!!name && added.includes(`"${name}"`)) || slugs.some((x) => new RegExp(`(^|[^\\w-])${esc(x)}([^\\w-]|$)`, 'm').test(added)); };
+            const hs = files[i].hunks && !files[i].unitOf ? files[i].hunks : null;
+            const votes = hs ? hs.map((x) => saysIt(x.all || x.lines)) : [saysIt((files[i].diff || '').split('\n'))];
+            if (!votes.some(Boolean)) continue;
+            const move = (k) => { g.idx = g.idx.filter((x) => x !== k); if (h.idx.length) linkEvidence.push({ a: k, b: h.idx[0], confidence: 0.86, reason: 'new package' }); h.idx.push(k); why[k].add('new package'); };
+            if (votes.every(Boolean)) move(i);
+            else { const at2 = lateUnits(i); g.idx.push(...at2.slice(1)); at2.forEach((k, n2) => { if (votes[n2]) move(k); }); }
+          }
+        }
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // A Cargo feature and the code behind it are one change: Cargo.toml gains `arbitrary = [...]`,
+    // and the Rust that is compiled only under feature = "arbitrary" arrives with it.
+    {
+      const addedOf = (i) => (files[i].status === 'A' && files[i].content ? files[i].content.split('\n') : (files[i].hunks && !files[i].unitOf ? files[i].hunks.flatMap((x) => x.all || x.lines) : (files[i].diff || '').split('\n')).filter((l) => l[0] === '+' && !l.startsWith('+++')).map((l) => l.slice(1)));
+      const declared = new Map();
+      for (const g of groups) for (const i of g.idx) if (/(^|\/)Cargo\.toml$/.test(files[i].path) && files[i].status === 'M') for (const l of addedOf(i)) { const m = l.match(/^([a-z][\w-]{3,})\s*=\s*[[{"]/); if (m) declared.set(m[1], g); }
+      if (declared.size) for (const g of groups) {
+        if (!g.idx.length || !g.idx.every((i) => /\.rs$/.test(files[i].path))) continue;
+        const used = new Set(g.idx.flatMap((i) => addedOf(i).flatMap((l) => [...l.matchAll(/feature\s*=\s*"([\w-]+)"/g)].map((m) => m[1]))));
+        const hosts = [...new Set([...used].map((x) => declared.get(x)).filter((h) => h && h !== g && h.idx.length))];
+        if (hosts.length === 1 && !blockedPair(g, hosts[0])) moveInto(g, hosts[0], `uses ${[...used].find((x) => declared.get(x) === hosts[0])}`);
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // A workspace lock file left on its own (pnpm-lock.yaml at the root, the manifest beside it
+    // untouched) was rewritten because manifests under it changed: it joins the one commit that
+    // changes those manifests.
+    for (const g of groups) {
+      const ps = [...pathsOf(g)];
+      if (ps.length !== 1 || !/(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|uv\.lock|poetry\.lock)$/.test(ps[0])) continue;
+      const root = ps[0].includes('/') ? ps[0].slice(0, ps[0].lastIndexOf('/') + 1) : '';
+      const manifest = (q) => q.startsWith(root) && /^(package\.json|Cargo\.toml|pyproject\.toml)$/.test(path.basename(q));
+      const count = (h) => new Set(h.idx.filter((i) => files[i].status !== 'D' && manifest(files[i].path)).map((i) => files[i].path)).size;
+      const hosts = groups.filter((h) => h !== g && count(h)).sort((x, y) => count(y) - count(x));
+      if (!hosts.length || (hosts.length > 1 && count(hosts[0]) < 2 * count(hosts[1])) || blockedPair(g, hosts[0])) continue;
+      moveInto(g, hosts[0], 'manifest and lock');
+    }
+    groups = groups.filter((g) => g.idx.length);
+    // Pieces of one Go, Rust or Python file that each ended up a commit of their own, tied to no
+    // other file, are one pass over that module: they go out together.
+    {
+      const lone = new Map();
+      for (const g of groups) { const ps = [...pathsOf(g)]; if (ps.length === 1 && /\.(go|rs|py)$/i.test(ps[0]) && g.idx.every((i) => files[i].unitOf)) (lone.get(ps[0]) || lone.set(ps[0], []).get(ps[0])).push(g); }
+      for (const gs of lone.values()) { if (gs.length < 2) continue; gs.sort((a, b) => b.idx.length - a.idx.length); for (const g of gs.slice(1)) if (!blockedPair(g, gs[0])) moveInto(g, gs[0], 'same file'); }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // A tested module is committed whole more often than not. Pieces of one source file left in a
+    // commit of their own (alone, or with nothing but that file's tests) join the commit that holds
+    // most of the file, when that commit also changes the file's tests: the tests vouch that the
+    // file is one unit of work there, which a page script touched by three features never has.
+    {
+      const testsOf = (q, p_) => { const t = testedBy(q); if (t) return t(p_); if (!isTestPath(q) || !/\.[cm]?[jt]sx?$/.test(q)) return false; const m = q.match(/^(.*?)(?:tests?|__tests__|spec)\//); const b = path.basename(p_).replace(/\.[cm]?[jt]sx?$/, ''); return !!m && p_.startsWith(m[1]) && path.basename(q).replace(/[._-](test|spec)\.[cm]?[jt]sx?$/, '').replace(/\.[cm]?[jt]sx?$/, '') === b; };
+      for (const g of groups) {
+        if (!g.idx.length) continue;
+        const ps = [...pathsOf(g)];
+        const srcs = ps.filter((q) => CODE_FILE.test(q) && !isTestPath(q) && !testedBy(q));
+        if (srcs.length !== 1 || !g.idx.every((i) => files[i].unitOf || files[i].path !== srcs[0])) continue;
+        const p_ = srcs[0];
+        if (!ps.every((q) => q === p_ || testsOf(q, p_))) continue;
+        const mineOf = (h) => h.idx.filter((i) => files[i].path === p_).length;
+        const hosts = groups.filter((h) => h !== g && mineOf(h) && h.idx.some((i) => files[i].path !== p_ && testsOf(files[i].path, p_))).sort((x, y) => mineOf(y) - mineOf(x));
+        if (!hosts.length || (hosts.length > 1 && mineOf(hosts[0]) === mineOf(hosts[1])) || blockedPair(g, hosts[0])) continue;
+        // Only when the host is about this file too: its other code would make this a different job.
+        if (hosts[0].idx.some((i) => files[i].path !== p_ && CODE_FILE.test(files[i].path) && !testsOf(files[i].path, p_) && !isTestPath(files[i].path))) continue;
+        moveInto(g, hosts[0], 'same file');
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // Spelling fixes are one sweep. A commit whose every changed line swaps one misspelt word for
+    // its correction (inteded -> intended, in a comment, a string or prose) or drops a doubled word
+    // ("to to") is a typo fix, and the typo fixes of a pile go out together.
+    {
+      const lev = (a, b) => { const d = Array.from({ length: a.length + 1 }, (_, x) => [x]); for (let y = 1; y <= b.length; y++) d[0][y] = y; for (let x = 1; x <= a.length; x++) for (let y = 1; y <= b.length; y++) d[x][y] = Math.min(d[x - 1][y] + 1, d[x][y - 1] + 1, d[x - 1][y - 1] + (a[x - 1] === b[y - 1] ? 0 : 1), x > 1 && y > 1 && a[x - 1] === b[y - 2] && a[x - 2] === b[y - 1] ? d[x - 2][y - 2] + 1 : 99); return d[a.length][b.length]; };
+      const typoPair = (minus, plus, proseFile) => {
+        const a = minus.trim().split(/\s+/), b = plus.trim().split(/\s+/);
+        if (a.length === b.length + 1) { const k = a.findIndex((w, x) => w !== b[x]); return k > 0 && a[k] === a[k - 1] && a.slice(k + 1).join(' ') === b.slice(k).join(' '); } // a doubled word
+        if (a.length !== b.length) return false;
+        const diff = a.map((w, x) => x).filter((x) => a[x] !== b[x]);
+        if (diff.length !== 1) return false;
+        const core = (w) => w.replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, '');
+        const x = core(a[diff[0]]), y = core(b[diff[0]]);
+        if (!/^[A-Za-z]{5,}$/.test(x) || !/^[A-Za-z]{5,}$/.test(y) || x.toLowerCase() === y.toLowerCase() || a[diff[0]].replace(x, '') !== b[diff[0]].replace(y, '')) return false;
+        // Not a plural or a tense changing, and not a name: a word in running text.
+        if (x + 's' === y || y + 's' === x || /[a-z][A-Z]|_/.test(x) || lev(x.toLowerCase(), y.toLowerCase()) > 2 || x[0].toLowerCase() !== y[0].toLowerCase()) return false;
+        const inComment = /^\s*(\/\/|\/\*|\*|#|<!--|--\s|;;|"""|''')/.test(minus);
+        const before = a.slice(0, diff[0]).join(' ');
+        const inString = ((before.match(/['"`]/g) || []).length % 2) === 1;
+        return proseFile || inComment || inString ? [x, y] : false;
+      };
+      const fixed = [];
+      const typoUnit = (i) => {
+        const f = files[i];
+        if (f.status !== 'M' || f.binary || coll[i] || LOCK_FILE.test(f.path) || isAsset(kinds[i] ?? kindOf(f.path))) return false;
+        const proseFile = /\.(md|mdx|markdown|rst|adoc|txt)$/i.test(f.path);
+        const blocks = f.hunks && !f.unitOf ? f.hunks.map((h) => h.all || h.lines) : [(f.diff || '').split('\n')];
+        let pairs = 0;
+        for (const ls of blocks) {
+          const minus = ls.filter((l) => l[0] === '-' && !l.startsWith('---')).map((l) => l.slice(1)), plus = ls.filter((l) => l[0] === '+' && !l.startsWith('+++')).map((l) => l.slice(1));
+          if (!minus.length || minus.length !== plus.length || minus.length > 4) return false;
+          for (let k = 0; k < minus.length; k++) { const t = typoPair(minus[k], plus[k], proseFile); if (!t) return false; if (Array.isArray(t)) fixed.push(t); pairs++; }
+        }
+        return pairs > 0;
+      };
+      const typos = groups.filter((g) => g.idx.length && g.idx.every(typoUnit));
+      if (typos.length >= 2) {
+        const [first, ...rest] = typos;
+        for (const g of rest) if (!blockedPair(g, first)) moveInto(g, first, 'spelling fixes');
+        for (const i of first.idx) why[i].add('spelling fixes');
+        first.typos = [...new Map(fixed.map(([x, y]) => [x.toLowerCase() + '>' + y.toLowerCase(), [x, y]])).values()];
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // One word swapped for another across the code is one change, however it is spelt in each place:
+    // 'Hono is cool' -> 'Hono is hot', HONOISCOOL -> HONOISHOT, hono-is-cool -> hono-is-hot. Each
+    // changed line is cut down to the letters that differ; the same swap in three files or more is
+    // a sweep, and the commits made mostly of it go out as one.
+    {
+      const swapsIn = (i) => {
+        const f = files[i], out = new Map();
+        if (f.status !== 'M' || f.binary || coll[i] || LOCK_FILE.test(f.path)) return { out, lines: 0 };
+        const blocks = f.hunks && !f.unitOf ? f.hunks.map((h) => h.all || h.lines) : [(f.diff || '').split('\n')];
+        let lines = 0;
+        for (const ls of blocks) {
+          const minus = ls.filter((l) => l[0] === '-' && !l.startsWith('---')).map((l) => l.slice(1)), plus = ls.filter((l) => l[0] === '+' && !l.startsWith('+++')).map((l) => l.slice(1));
+          lines += Math.max(minus.length, plus.length);
+          if (minus.length !== plus.length) continue;
+          for (let k = 0; k < minus.length; k++) {
+            const a = minus[k], b = plus[k];
+            let p_ = 0; while (p_ < a.length && p_ < b.length && a[p_] === b[p_]) p_++;
+            let q = 0; while (q < a.length - p_ && q < b.length - p_ && a[a.length - 1 - q] === b[b.length - 1 - q]) q++;
+            const x = a.slice(p_, a.length - q).toLowerCase(), y = b.slice(p_, b.length - q).toLowerCase();
+            if (/^[a-z]{2,24}$/.test(x) && /^[a-z]{2,24}$/.test(y) && x.length + y.length >= 6) out.set(x + '>' + y, (out.get(x + '>' + y) || 0) + 1);
+          }
+        }
+        return { out, lines };
+      };
+      const per = new Map(), seenIn = new Map();
+      for (const g of groups) for (const i of g.idx) { const s = swapsIn(i); per.set(i, s); for (const [k, c] of s.out) { const e = seenIn.get(k) || seenIn.set(k, { paths: new Set(), n: 0 }).get(k); e.paths.add(files[i].path); e.n += c; } }
+      for (const [k, e] of seenIn) {
+        if (e.paths.size < 3 || e.n < 4) continue;
+        const swept = (i) => { const s = per.get(i), c = s ? s.out.get(k) || 0 : 0; return c > 0 && c * 3 >= s.lines; };
+        const hit = groups.filter((g) => g.idx.length && g.idx.filter(swept).length * 2 >= g.idx.length);
+        if (hit.length < 2) continue;
+        const [first, ...rest] = hit.sort((a, b) => b.idx.length - a.idx.length);
+        for (const g of rest) if (!blockedPair(g, first)) moveInto(g, first, 'same edit');
+        first.swap = first.swap || k.split('>');
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // A lint pass is one change. Lines that gain, lose or reword a linter's own marker (//nolint:gosec,
+    // eslint-disable-next-line, # noqa, @ts-expect-error, #[allow(..)]) were written for the linter;
+    // when three files or more carry such lines, the commits built around them are one clean-up.
+    {
+      const LINT = /\/\/\s?nolint\b|\beslint-(?:disable|enable)\b|\bbiome-ignore\b|#\s*noqa\b|#\s*type:\s*ignore\b|@ts-(?:ignore|expect-error|nocheck)\b|#!?\[(?:allow|expect)\(|\brubocop:(?:disable|enable)\b|\bpylint:\s*disable\b|\bNOLINT\b|\bprettier-ignore\b|\bstylelint-disable\b/;
+      const marked = (i) => {
+        const f = files[i];
+        if (f.status !== 'M' || f.binary || coll[i] || LOCK_FILE.test(f.path) || !CODE_FILE.test(f.path)) return false;
+        const ls = (f.hunks && !f.unitOf ? f.hunks.flatMap((h) => h.all || h.lines) : (f.diff || '').split('\n')).filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l));
+        const hits = ls.filter((l) => LINT.test(l));
+        if (!hits.length) return false;
+        // The marker itself must be what changed: a line that only moved with its marker says nothing.
+        const minus = new Set(ls.filter((l) => l[0] === '-').map((l) => l.slice(1).trim())), plus = new Set(ls.filter((l) => l[0] === '+').map((l) => l.slice(1).trim()));
+        return hits.some((l) => !(l[0] === '-' ? plus : minus).has(l.slice(1).trim()));
+      };
+      const flagged = new Set(groups.flatMap((g) => g.idx.filter(marked)));
+      if (new Set([...flagged].map((i) => files[i].path)).size >= 3) {
+        const hit = groups.filter((g) => g.idx.length && g.idx.filter((i) => flagged.has(i)).length * 4 >= g.idx.length).sort((a, b) => b.idx.length - a.idx.length);
+        if (hit.length >= 2) {
+          for (const g of hit.slice(1)) if (!blockedPair(g, hit[0])) moveInto(g, hit[0], 'lint pass');
+          hit[0].lint = true;
+          // The other pieces of the files it went through are the same pass.
+          const mine = pathsOf(hit[0]);
+          for (const g of groups) if (g !== hit[0] && g.idx.length && g.idx.every((i) => files[i].unitOf && mine.has(files[i].path)) && !blockedPair(g, hit[0])) moveInto(g, hit[0], 'lint pass');
+        }
+        groups = groups.filter((g) => g.idx.length);
+      }
+    }
+    // One call taken up everywhere is one change: every bare `return err` becoming
+    // fmt.Errorf("...: %w", err), every message wrapped in _( ). A call that edits in five files or
+    // more each gain, and that sits on at least half of the lines those edits add, is the point of
+    // them; the commits made mostly of such edits go out as one.
+    {
+      const KEYWORD = /^(if|for|while|switch|catch|return|function|typeof|await|new|def|class|elif|with|print|super|func|fn|match|assert|range|len|require|import)$/;
+      const callsOn = (ls) => { const c = new Map(); for (const l of ls) for (const m of new Set([...l.matchAll(/(?<![\w$])((?:[A-Za-z_$][\w$]*\.)?[A-Za-z_$][\w$]*)\(/g)].map((x) => x[1]))) if (!KEYWORD.test(m)) c.set(m, (c.get(m) || 0) + 1); return c; };
+      const gains = new Map(), per = new Map();
+      for (const g of groups) for (const i of g.idx) {
+        const f = files[i];
+        if (f.status !== 'M' || f.binary || coll[i] || !CODE_FILE.test(f.path) || /\.(html?|liquid)$/i.test(f.path)) continue;
+        const ls = (f.hunks && !f.unitOf ? f.hunks.flatMap((h) => h.all || h.lines) : (f.diff || '').split('\n')).filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l));
+        const plus = ls.filter((l) => l[0] === '+').map((l) => l.slice(1)).filter((l) => l.trim()), minus = ls.filter((l) => l[0] === '-').map((l) => l.slice(1));
+        if (!plus.length || !minus.length) continue;
+        const pc = callsOn(plus), mc = callsOn(minus), mine = new Set();
+        for (const [c, k] of pc) if (k > (mc.get(c) || 0) && k * 2 >= plus.length) { mine.add(c); (gains.get(c) || gains.set(c, new Set()).get(c)).add(f.path); }
+        per.set(i, mine);
+      }
+      for (const [c, paths] of [...gains].sort((a, b) => b[1].size - a[1].size)) {
+        if (paths.size < 5) continue;
+        const hit = groups.filter((g) => g.idx.length && g.idx.filter((i) => per.get(i)?.has(c)).length * 2 >= g.idx.length).sort((a, b) => b.idx.length - a.idx.length);
+        if (hit.length < 2) continue;
+        for (const g of hit.slice(1)) if (!blockedPair(g, hit[0])) moveInto(g, hit[0], `uses ${c}`);
+        const mine = pathsOf(hit[0]);
+        for (const g of groups) if (g !== hit[0] && g.idx.length && g.idx.every((i) => files[i].unitOf && mine.has(files[i].path)) && !blockedPair(g, hit[0])) moveInto(g, hit[0], 'same file');
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // The same setting changed in each sibling is one change: every package's package.json gets a
+    // new "types" path, both skins a new $table-header-border. Config and variable files of one
+    // name (or side by side with one extension), each still a commit of its own, that give a new
+    // value to the same key go out together.
+    {
+      const KEYED = /\.(json|ya?ml|toml|ini|properties|s[ac]ss|less|css)$/i;
+      const keysOf = (i) => {
+        const f = files[i], minus = new Set(), plus = new Set();
+        const styles = /\.(s[ac]ss|less|css)$/i.test(f.path);
+        const ls = f.hunks && !f.unitOf ? f.hunks.flatMap((h) => h.all || h.lines) : (f.diff || '').split('\n');
+        for (const l of ls) {
+          if (!/^[-+]/.test(l) || /^(\+\+\+|---)/.test(l)) continue;
+          const k = styles ? l.slice(1).match(/^\s*(\$[\w-]{6,}|--[\w-]{6,})\s*:/)?.[1] : l.slice(1).match(/^\s*"?([A-Za-z_@][\w.@/-]{3,})"?\s*[:=]\s*\S/)?.[1];
+          if (k && !/^(version|name|description|integrity|resolved|checksum)$/.test(k)) (l[0] === '-' ? minus : plus).add(k.replace(/^\$|^--/, ''));
+        }
+        return new Set([...minus].filter((k) => plus.has(k)));
+      };
+      const solo = groups.filter((g) => g.idx.length && g.idx.every((i) => KEYED.test(files[i].path) && !LOCK_FILE.test(files[i].path) && files[i].status === 'M' && !coll[i]) && new Set(g.idx.map((i) => path.extname(files[i].path))).size === 1);
+      const keys = new Map(solo.map((g) => [g, new Set(g.idx.flatMap((i) => [...keysOf(i)]))]));
+      const pathOf = new Map(solo.map((g) => [g, [...pathsOf(g)]]));
+      // A setting that leaves one config file and lands, letter for letter, in another of its kind
+      // (a dependency moved from one package to the one that uses it) was moved, not dropped and added.
+      const linesOf = (g, sign) => new Set(g.idx.flatMap((i) => (files[i].hunks && !files[i].unitOf ? files[i].hunks.flatMap((h) => h.all || h.lines) : (files[i].diff || '').split('\n')).filter((l) => l[0] === sign && !/^(\+\+\+|---)/.test(l)).map((l) => l.slice(1).trim().replace(/,$/, '')).filter((l) => l.length >= 16 && /^"?[\w.@/$-]{3,}"?\s*[:=]\s*\S/.test(l))));
+      const gone = new Map(solo.map((g) => [g, linesOf(g, '-')])), came = new Map(solo.map((g) => [g, linesOf(g, '+')]));
+      const movedBetween = (a, b) => [...gone.get(a)].some((l) => came.get(b).has(l) && !came.get(a).has(l) && !gone.get(b).has(l));
+      const alike = (a, b) => [...a].some((x) => b.has(x) || [...b].some((y) => (x.length >= 10 && y.endsWith('-' + x)) || (y.length >= 10 && x.endsWith('-' + y))));
+      for (let a = 0; a < solo.length; a++) for (let b = a + 1; b < solo.length; b++) {
+        let ga = solo[a], gb = solo[b];
+        const pa = pathOf.get(ga)[0], pb = pathOf.get(gb)[0];
+        const siblings = pathOf.get(ga).some((x) => pathOf.get(gb).some((y) => x !== y && (path.basename(x) === path.basename(y) || (path.dirname(x) === path.dirname(y) && path.extname(x) === path.extname(y)))));
+        const moved = path.extname(pa) === path.extname(pb) && !/\.(s[ac]ss|less|css)$/i.test(pa) && (movedBetween(ga, gb) || movedBetween(gb, ga));
+        if (!(siblings && alike(keys.get(ga), keys.get(gb))) && !moved) continue;
+        while (ga.into) ga = ga.into; while (gb.into) gb = gb.into;
+        if (ga === gb || blockedPair(ga, gb)) continue;
+        moveInto(gb, ga, 'same edit'); gb.into = ga;
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // The same sentence written twice is one change: an option explained in the README and again,
+    // word for word, in the doc comment above its type. A long line of prose (not code) added in
+    // two commits, and in no third, joins them.
+    {
+      const sentences = (i) => {
+        const out = new Set();
+        const text = files[i].status === 'A' && files[i].content ? files[i].content.slice(0, 30000).split('\n') : (files[i].diff || '').split('\n').filter((l) => l[0] === '+' && !l.startsWith('+++')).map((l) => l.slice(1));
+        for (const l of text) {
+          const t = l.replace(/^\s*(?:\/\/+|\/\*+|\*+|#+|<!--|>|-)\s?/, '').replace(/\s*(?:\*\/|-->|\\)\s*$/, '').trim();
+          if (t.length < 48 || t.split(/\s+/).length < 8) continue;
+          const letters = t.replace(/[^A-Za-z ]/g, '').length;
+          if (letters < t.length * 0.8 || /[;{}=]|^\s*(import|export|const|let|var|return|if|for)\b/.test(t)) continue;
+          out.add(t);
+        }
+        return out;
+      };
+      const where = new Map();
+      groups.forEach((g, k) => { if (g.idx.some((i) => coll[i] || LOCK_FILE.test(files[i].path) || CHANGELOG_FILE.test(files[i].path))) return; for (const i of g.idx) for (const t of sentences(i)) (where.get(t) || where.set(t, new Set()).get(t)).add(k); });
+      const pairs = new Map();
+      for (const ks of where.values()) if (ks.size === 2) { const [a, b] = [...ks].sort((x, y) => x - y); pairs.set(a + ':' + b, [a, b]); }
+      for (const [a, b] of pairs.values()) {
+        let ga = groups[a], gb = groups[b];
+        while (ga.into) ga = ga.into; while (gb.into) gb = gb.into;
+        if (ga === gb || blockedPair(ga, gb)) continue;
+        const [to, from] = ga.idx.length >= gb.idx.length ? [ga, gb] : [gb, ga];
+        moveInto(from, to, 'same sentence'); from.into = to;
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
+    // Tests and docs go with the code they are about. A commit holding only tests, or only one
+    // docs page, that found no code of its own is read once more for the names its changed lines
+    // use: a name that the changed code of exactly one other commit uses too (and no third) says
+    // which change it tests or documents. Test files vote one by one, a docs page chunk by chunk
+    // (the README gains a section for one feature and an option for another).
+    {
+      const DOC = /\.(md|mdx|markdown|rst|adoc|txt)$/i;
+      const isDoc = (q) => DOC.test(q) && !CHANGELOG_FILE.test(q) && !collectionOf(q) && !/(^|\/)\.changeset\//.test(q);
+      const isTestFile = (q) => isTestPath(q) || /_test\.go$|(^|\/)tests?\/[^/]+\.(rs|py|go|rb)$|(^|\/)test_[\w]+\.py$|(^|\/)__snapshots__\/|\.snap$/i.test(q);
+      const idNames = (text) => { const s = signalsOf({ status: 'M', path: 'x', diff: text }); return new Set(s ? [...s.plus.keys(), ...s.minus.keys()].filter((t) => t[0] === 'I') : []); };
+      const unitText = (i) => (files[i].status === 'A' && files[i].content ? files[i].content.slice(0, 30000).split('\n').map((l) => '+' + l).join('\n') : files[i].diff || '');
+      const isCode = (i) => CODE_FILE.test(files[i].path) && !isTestFile(files[i].path) && !/\.(html?|liquid)$/i.test(files[i].path) && files[i].status !== 'D';
+      const codeNames = new Map();
+      const namesOfGroup = (h) => { if (!codeNames.has(h)) { const s = new Set(); for (const i of h.idx) if (isCode(i)) for (const t of idNames(unitText(i))) s.add(t); codeNames.set(h, s); } return codeNames.get(h); };
+      // A docs page only counts names the code brings in new: prose mentions old names all the time.
+      const plusNames = (text) => { const s = signalsOf({ status: 'M', path: 'x', diff: text }); return new Set(s ? [...s.plus.keys()].filter((t) => t[0] === 'I' && !oldNames.has(t)) : []); };
+      const hostFor = (names, self) => {
+        const hosts = groups.filter((h) => h !== self && h.idx.length && h.idx.some(isCode));
+        const score = new Map();
+        for (const t of names) { const hs = hosts.filter((h) => namesOfGroup(h).has(t)); if (hs.length === 1) score.set(hs[0], (score.get(hs[0]) || 0) + 1); }
+        const ranked = [...score].sort((a, b) => b[1] - a[1]);
+        return ranked.length && (ranked.length === 1 || ranked[0][1] > ranked[1][1]) ? ranked[0][0] : null;
+      };
+      // With no name pointing at one commit alone, a name the pile brings in new still points
+      // somewhere: at the commit where most of the chunks using it sit (a field added to the app's
+      // state shows up in every snapshot, and in the dozen chunks of the feature that reads it).
+      // Names are read raw here (fromSelection, lock_id), as written, whatever words they are made of.
+      const RAW = /[A-Za-z_$][\w$]*/g, shaped_ = (x) => x.length >= 6 && /[a-z0-9][A-Z]|[A-Za-z0-9]_[A-Za-z0-9]/.test(x);
+      let seenBefore = null;
+      const wasThere = (x) => {
+        if (!seenBefore) { seenBefore = new Set(); for (const f of input) { if (f.status === 'A') continue; const ls = f.hunks ? f.hunks.flatMap((h) => h.all || h.lines) : (f.diff || '').split('\n'); for (const l of ls) if (l[0] !== '+' && !l.startsWith('@@')) for (const m of l.matchAll(RAW)) seenBefore.add(m[0]); } }
+        return seenBefore.has(x);
+      };
+      const rawNames = (text) => { const out = new Set(); for (const l of text.split('\n')) if (l[0] === '+' && !l.startsWith('+++')) for (const m of l.matchAll(RAW)) if (shaped_(m[0])) out.add(m[0]); return out; };
+      const unitNames = new Map();
+      const namesOfUnit = (i) => { if (!unitNames.has(i)) unitNames.set(i, rawNames(unitText(i))); return unitNames.get(i); };
+      const leanFor = (mine, self) => {
+        const fresh = [...new Set(mine.flatMap((i) => [...namesOfUnit(i)]))].filter((x) => !wasThere(x));
+        if (!fresh.length) return null;
+        const hosts = groups.filter((h) => h !== self && h.idx.length && h.idx.some(isCode));
+        const ranked = hosts.map((h) => [h, h.idx.filter((i) => isCode(i) && fresh.some((t) => namesOfUnit(i).has(t))).length]).filter(([, c]) => c).sort((a, b) => b[1] - a[1]);
+        return ranked.length && (ranked.length === 1 || ranked[0][1] >= 2 * ranked[1][1]) ? ranked[0][0] : null;
+      };
+      const partNames = new Map();
+      const partsOfUnit = (i) => { if (!partNames.has(i)) partNames.set(i, idNames(unitText(i))); return partNames.get(i); };
+      const leanParts = (names, self) => {
+        const fresh = [...names].filter((t) => !oldNames.has(t));
+        if (!fresh.length) return null;
+        const hosts = groups.filter((h) => h !== self && h.idx.length && h.idx.some(isCode));
+        const ranked = hosts.map((h) => [h, h.idx.filter((i) => isCode(i) && fresh.some((t) => partsOfUnit(i).has(t))).length]).filter(([, c]) => c).sort((a, b) => b[1] - a[1]);
+        return ranked.length && (ranked.length === 1 || ranked[0][1] >= 2 * ranked[1][1]) ? ranked[0][0] : null;
+      };
+      const plans = [];
+      for (const g of groups) {
+        const ps = [...pathsOf(g)];
+        if (!g.idx.length || g.idx.some((i) => files[i].status === 'D')) continue;
+        if (ps.every(isTestFile)) {
+          for (const p_ of ps) {
+            const mine = g.idx.filter((i) => files[i].path === p_);
+            const names = new Set(mine.flatMap((i) => [...idNames(unitText(i))]));
+            const to = hostFor(names, g) || leanFor(mine, g) || leanParts(names, g);
+            if (to && !blockedPair(g, to)) plans.push({ g, mine, to, reason: 'tests for this code' });
+          }
+        } else if (ps.length === 1 && isDoc(ps[0]) && g.idx.length === 1 && !files[g.idx[0]].unitOf && files[g.idx[0]].status === 'M') {
+          const i = g.idx[0], f = files[i], hs = f.hunks && f.hunks.length >= 2 && f.hunks.length <= 40 ? f.hunks : null;
+          if (!hs) { const to = hostFor(plusNames(unitText(i)), g); if (to && !blockedPair(g, to)) plans.push({ g, mine: [i], to, reason: 'documents it' }); continue; }
+          const votes = hs.map((h) => hostFor(plusNames(h.head + '\n' + (h.all || h.lines).join('\n')), g));
+          if (!votes.some(Boolean)) continue;
+          if (votes.every((v) => v === votes[0])) { if (!blockedPair(g, votes[0])) plans.push({ g, mine: [i], to: votes[0], reason: 'documents it' }); continue; }
+          plans.push({ g, split: i, votes });
+        }
+      }
+      // A package's own README (packages/core/README.md), changed with code of that package in just
+      // one other commit, documents that change.
+      for (const g of groups) {
+        const ps = [...pathsOf(g)];
+        if (ps.length !== 1 || !/(^|\/)readme(\.(md|markdown|mdx|rst|txt|adoc))?$/i.test(ps[0]) || !ps[0].includes('/') || plans.some((pl) => pl.g === g) || g.idx.some((i) => files[i].status === 'D')) continue;
+        const root = ps[0].slice(0, ps[0].lastIndexOf('/') + 1);
+        const under = (h) => h.idx.filter((i) => isCode(i) && files[i].path.startsWith(root)).length;
+        const hosts = groups.filter((h) => h !== g && under(h)).sort((x, y) => under(y) - under(x));
+        if (hosts.length && (hosts.length === 1 || under(hosts[0]) > under(hosts[1])) && !blockedPair(g, hosts[0])) plans.push({ g, mine: [...g.idx], to: hosts[0], reason: 'documents it' });
+      }
+      for (const pl of plans) {
+        if (pl.split == null) { pl.g.idx = pl.g.idx.filter((i) => !pl.mine.includes(i)); if (pl.to.idx.length) linkEvidence.push({ a: pl.mine[0], b: pl.to.idx[0], confidence: 0.86, reason: pl.reason }); pl.to.idx.push(...pl.mine); for (const i of pl.mine) why[i].add(pl.reason); continue; }
+        // The page's chunks go separate ways: each to the change it names, the rest stays the page's own edit.
+        const i = pl.split, f = files[i], hs = f.hunks;
+        const stay = hs.filter((_, k) => !pl.votes[k]);
+        const big = (stay.length ? stay : hs).reduce((b, h) => (h.add + h.del > b.add + b.del ? h : b), (stay.length ? stay : hs)[0]);
+        pl.g.idx = [];
+        hs.forEach((h, k) => {
+          const u = { ...f, unitOf: f.path, hunk: h.id, at: k, home: h === big, units: hs.length, diff: h.head + '\n' + (h.all || h.lines).join('\n'), add: h.add, del: h.del, hunks: undefined };
+          let at = i; if (k === 0) files[i] = u; else { files.push(u); why.push(new Set()); at = files.length - 1; }
+          if (pl.votes[k]) { if (pl.votes[k].idx.length) linkEvidence.push({ a: at, b: pl.votes[k].idx[0], confidence: 0.86, reason: 'documents it' }); pl.votes[k].idx.push(at); why[at] = new Set(['documents it']); } else pl.g.idx.push(at);
+        });
+      }
+      groups = groups.filter((g) => g.idx.length);
+    }
   }
   // Groups decided elsewhere (you moved a file, or a test replays real commits): keep them as given
   // and only write their messages. Each group lists paths, or "path#chunk" for single chunks.
@@ -1658,6 +2610,23 @@ function suggestGroups(input, learn = {}) {
       const proper = (w) => ({ typescript: 'TypeScript', coffeescript: 'CoffeeScript', mdx: 'MDX' })[w] || (/^[a-z]+$/.test(w) ? w[0].toUpperCase() + w.slice(1) : w);
       const lead = toolchain.lead, lang = proper(toolchain.said);
       if (lead) shaped = { type: 'build', emoji: '⬆️', gitmoji: `${lead.bumped ? 'Upgraded' : 'Moved'} to ${proper(lead.name)}${lead.version ? ' ' + lead.version : ''} and updated the ${proper(lead.name) === lang ? 'code' : lang} for it` };
+    }
+    // A recolouring says itself, the way any edit made in many places does.
+    if (!shaped && !Array.isArray(learn.fixed)) {
+      const mine = g.idx.filter((i) => recoloured.has(i));
+      if (mine.length >= 3 && mine.length >= 0.75 * g.idx.length) shaped = { type: 'style', emoji: '💄', gitmoji: `Changed colours${mine.length >= 8 ? ' to a new palette' : ''} in ${g.idx.length} places` };
+    }
+    // A helper rolled out: the file that now exports it, and the short edits elsewhere that switch
+    // to it. "Moved commit view, run and ui to the shared MS, EASE and leave in motion".
+    if (!shaped && !Array.isArray(learn.fixed)) {
+      const d = g.idx.find((i) => adopted.has(i)), rec = d != null && adopted.get(d);
+      const takers = rec ? g.idx.filter((i) => rec.takers.has(i)) : [];
+      const where = [...new Set(takers.map((i) => files[i].path))].filter((q) => q !== files[d]?.path);
+      if (rec && where.length >= 2 && takers.length >= 0.5 * g.idx.length) {
+        const say = (q) => stemOf(q).replace(/[-_]+/g, ' ');
+        const gm = `Moved ${list(where.slice(0, 3).map(say))}${where.length > 3 ? ' and more' : ''} to the shared ${list([...rec.names].slice(0, 3))} in ${say(files[d].path)}`;
+        if (gm.length <= 78) shaped = { type: 'refactor', emoji: '♻️', gitmoji: gm };
+      }
     }
     if (shaped) Object.assign(msg, shaped, { conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + toImperative(shaped.gitmoji).replace(/^\w/, (c) => c.toLowerCase()) });
     const distinctPaths = new Set(fs_.map((f) => f.path)).size;
@@ -1740,7 +2709,28 @@ function suggestGroups(input, learn = {}) {
         const out = !rest.length || head.includes(' ') ? head : said ? `${head}: ${said}` : '';
         return out.length >= 8 && out.length <= 52 ? out : '';
       };
-      const thing = titled || top && (scored.slice(0, 3).map(([x]) => commentPhrase(x, g.idx.map((i) => files[i])) || labelPhrase(x, g.idx.map((i) => files[i]))).find(Boolean) || commentPhrase(null, g.idx.map((i) => files[i]).sort((a, b) => b.add - a.add).slice(0, 1)) || divider() || featureName(top[0]));
+      let thing = titled || top && (scored.slice(0, 3).map(([x]) => commentPhrase(x, g.idx.map((i) => files[i])) || labelPhrase(x, g.idx.map((i) => files[i]))).find(Boolean) || commentPhrase(null, g.idx.map((i) => files[i]).sort((a, b) => b.add - a.add).slice(0, 1)) || divider() || featureName(top[0]));
+      // One bare code name ("sfx error") may be one of a family the change brings in together
+      // (sfxError, sfxKey, sfxOpen, sfxCopy): then the family is the subject, "sfx error, key, open and copy".
+      const family = (() => {
+        if (titled || !top || thing !== featureName(top[0])) return '';
+        const split = (x) => x.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+        const mine = split(top[0]);
+        if (mine.length !== 2) return '';
+        const text = g.idx.map((i) => files[i].diff || '').join('\n');
+        const made = new Set([...text.matchAll(/^\+\s*(?:export\s+)?(?:async\s+)?(?:function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]));
+        const was = new Set([...text.matchAll(/^-\s*(?:export\s+)?(?:async\s+)?(?:function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]));
+        for (const at of [0, 1]) {
+          // Shorthand (sel, btn, cfg) names code, not a thing. Verbs in front of one noun (openLightbox,
+          // closeLightbox) are what one thing does, not a family.
+          const kin = [...made].filter((x) => !was.has(x)).map(split).filter((w) => w.length === 2 && w[at] === mine[at] && w[1 - at].length >= 3 && !/^(sel|eng|btn|cfg|pkg|msg|img|src|ctx|evt|err|str|num|obj|arr|tmp|idx|cnt|val|req|res|elem|util|utils|impl|dlg|hdr|ftr|cmp|get|set|init|all|one|new|old)$/.test(w[1 - at]));
+          const rest = [...new Set([mine[1 - at], ...kin.map((w) => w[1 - at])])];
+          if (at === 1 && rest.some((w) => TWO_VERBS.test(w) || w in NOUN_OF)) continue;
+          if (rest.length >= 3 && rest.length <= 6) return at === 0 ? `${mine[0]} ${list(rest)}` : `${list(rest)} ${mine[1]}`;
+        }
+        return '';
+      })();
+      if (family) thing = family;
       if (thing) {
         const spots = [...new Set(fs_.map((f) => (/index\.html?$/.test(f.path) ? 'the page' : nameOf(f.path).toLowerCase())))];
         const place = spots.length >= 4 && !/\bacross\b/.test(thing) ? ` across ${spots.length} files` : '';
@@ -1750,7 +2740,7 @@ function suggestGroups(input, learn = {}) {
         const conv = msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '';
         Object.assign(msg, { type: msg.type === 'style' ? 'style' : 'feat', gitmoji: gm, conventional: conv + (gm[0].toLowerCase() + gm.slice(1)).replace(/^added /, 'add ').replace(/^simplified /, 'simplify ').replace(/^reworked /, 'rework ') });
         msg.emoji = verb === 'Simplified' || verb === 'Reworked' ? '♻️' : msg.type === 'style' ? '💄' : '✨';
-        if (!titled && thing === featureName(top?.[0] || '')) msg.fromIdent = true;
+        if (!titled && (family || thing === featureName(top?.[0] || ''))) msg.fromIdent = true;
         if (verb === 'Simplified' || verb === 'Reworked') msg.type = 'refactor';
       }
     }
@@ -1856,6 +2846,13 @@ function suggestGroups(input, learn = {}) {
       if (copy) Object.assign(msg, { gitmoji: copy, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + toImperative(copy).replace(/^\w/, (c) => c.toLowerCase()) });
     }
     delete msg.fromIdent;
+    // A subject that is one bare code name ("Added fill bar", "Added the list across 6 files") gives way
+    // to what the group's one new file says it is, in the comment it opens with.
+    if (!shaped && !Array.isArray(learn.fixed) && /^(Added|Updated) (the )?(?:[\w-]+ ){0,2}[\w-]+( across \d+ files)?$/.test(msg.gitmoji || '')) {
+      const fresh = [...new Map(fs_.filter((f) => (f.status === 'A' || f.untracked) && f.content && !f.binary && !isAsset(kindOf(f.path)) && CODE_FILE.test(f.path) && !isTestPath(f.path)).map((f) => [f.path, f])).values()];
+      const said = fresh.length === 1 ? newFileTitle(fresh[0]) : '';
+      if (said) Object.assign(msg, { gitmoji: said, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + said[0].toLowerCase() + said.slice(1) });
+    }
     // In-house intent reader for subjects that still say little. No model: it reads what the change
     // itself says, a new file's opening comment or the request fields a handler starts accepting.
     if (!shaped && weakSubject(msg.gitmoji)) {
@@ -1885,6 +2882,33 @@ function suggestGroups(input, learn = {}) {
         const gm = `${m[1]} the ${m[2].toLowerCase()}${kind}`;
         Object.assign(msg, { gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + (TO_IMP[m[1]] || m[1]).toLowerCase() + gm.slice(m[1].length) });
       }
+    }
+    // A dependency bump says which: "Bumped golang.org/x/sys from 0.32.0 to 0.33.0". Read from the
+    // manifest's own lines (go.mod's direct requirements first); a lock on its own is just dependencies.
+    if (!shaped && fs_.every((f) => /(^|\/)(package\.json|Cargo\.toml|go\.mod|pyproject\.toml|Gemfile)$/.test(f.path) || LOCK_FILE.test(f.path)) && /^Updated [\w .,-]+$/.test(msg.gitmoji) && fs_.every((f) => f.status === 'M')) {
+      const depOf = (l) => { const m = l.match(/^\s*"(@?[\w./-]+)"\s*:\s*"[~^>=<\s]*v?(\d[^"\s]*)"/) || l.match(/^\s*(?:require\s+)?([\w.-]+\.[a-z]{2,}\/\S+)\s+v(\d\S*)/) || l.match(/^\s*([A-Za-z][\w.-]*)\s*=\s*(?:\{[^}]*version\s*=\s*)?"[~^>=<\s]*v?(\d[^"\s]*)"/) || l.match(/^\s*gem\s+['"]([\w.-]+)['"]\s*,\s*['"][~^>=<\s]*(\d[^'"\s]*)['"]/); return m && !/^(version|rust-version|edition|go|toolchain)$/.test(m[1]) ? [m[1], m[2]] : null; };
+      const manifests = fs_.filter((f) => !LOCK_FILE.test(f.path) || /go\.mod$/.test(f.path));
+      const read = (keep) => { const from = new Map(), to = new Map(); for (const f of manifests) for (const l of (f.diff || '').split('\n')) { if (!/^[-+]/.test(l) || /^(\+\+\+|---)/.test(l) || !keep(l)) continue; const d = depOf(l.slice(1)); if (d) (l[0] === '-' ? from : to).set(d[0], d[1]); } return [...to].filter(([d, v]) => from.has(d) && from.get(d) !== v).map(([d, v]) => [d, from.get(d), v]); };
+      let bumps = read((l) => !/\/\/\s*indirect/.test(l));
+      if (!bumps.length) bumps = read(() => true);
+      const versionOnly = manifests.length && manifests.every((f) => (f.diff || '').split('\n').filter((l) => /^[-+]/.test(l) && !/^(\+\+\+|---)/.test(l)).every((l) => /^.\s*"?version"?\s*[:=]/.test(l)));
+      const gm = versionOnly ? '' : bumps.length === 1 ? `Bumped ${bumps[0][0]} from ${bumps[0][1]} to ${bumps[0][2]}` : bumps.length >= 2 && bumps.length <= 3 ? `Bumped ${list(bumps.map((b) => b[0].split('/').slice(-2).join('/')))}` : !/^Updated dependencies/.test(msg.gitmoji) && (bumps.length || !manifests.length) ? 'Updated dependencies' : '';
+      if (gm && gm.length <= 72) Object.assign(msg, { type: 'build', emoji: '⬆️', gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + (gm.startsWith('Bumped') ? 'bump' + gm.slice(6) : 'update dependencies') });
+    }
+    // A lint pass says so.
+    if (g.lint && !shaped) {
+      const gm = `Fixed lint issues across ${fs_.length} files`;
+      Object.assign(msg, { type: 'style', emoji: '🚨', gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + 'fix' + gm.slice(5) });
+    }
+    // One word swapped for another everywhere says both words.
+    if (Array.isArray(g.swap) && !shaped && !/^(Changed|Renamed) .* (to|from) /.test(msg.gitmoji)) {
+      const gm = `Changed “${g.swap[0]}” to “${g.swap[1]}” across ${fs_.length} files`;
+      Object.assign(msg, { type: msg.type === 'test' ? 'chore' : msg.type, gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + 'change' + gm.slice(7) });
+    }
+    // A sweep of spelling fixes says so, with the word when there was just one.
+    if (Array.isArray(g.typos) && !shaped) {
+      const gm = g.typos.length === 1 ? `Fixed typo “${g.typos[0][0]}”${fs_.length > 1 ? ` in ${fs_.length} files` : ''}` : `Fixed typos in ${fs_.length > 3 ? fs_.length + ' files' : names}`;
+      Object.assign(msg, { type: 'docs', emoji: '✏️', gitmoji: gm, conventional: (msg.conventional?.match(/^([a-z]+(?:\([^)]*\))?!?: )/)?.[1] || '') + 'fix' + gm.slice(5) });
     }
     // Conventional subjects are imperative whatever path wrote them: "change border", "turn Today into Home".
     if (msg.conventional) msg.conventional = msg.conventional.replace(/^((?:[a-z]+(?:\([^)]*\))?!?: )?)([a-z]+)\b/, (m, pre, w) => { const imp = TO_IMP[w[0].toUpperCase() + w.slice(1)]; return pre + (imp ? imp.toLowerCase() : w); });
@@ -2131,6 +3155,26 @@ function supportFile(f, fs_) {
   // Tests count together with their fixtures: test/engine.test.mjs and test/fixtures/*.json.
   const own = isTestPath(f.path) ? fs_.filter((x) => isTestPath(x.path)).reduce((s2, x) => s2 + (x.add || 0), 0) : (f.add || 0);
   return own * 2 < total;
+}
+// What a new file calls itself in its opening comment, as a subject. "Shrink: makes heavy images
+// and videos in a repo lighter, from the Health view." -> Added Shrink, which makes heavy images and
+// videos in a repo lighter. "One progress bar for the whole app (…): a pill track …" -> Added one
+// progress bar for the whole app. A comment that is not a title (a licence, a to-do, code) says nothing.
+function newFileTitle(f) {
+  const head = [];
+  for (const l of f.content.split('\n').slice(0, 8)) { const t = l.trim(); if (!/^(\/\/|\/\*|\*|#(?![{!]))/.test(t)) break; head.push(t.replace(/^(\/\/+|\/\*+|\*+|#+)\s*/, '').replace(/\s*\*+\/\s*$/, '')); }
+  const first = head.join(' ').replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/)[0].replace(/[.!?:]$/, '');
+  if (!first || /[`{}=<>\[\]]|https?:|copyright|licen[cs]e|todo|eslint|@ts-|use strict/i.test(first)) return '';
+  const named = first.match(/^([A-Z][\w-]{2,24}): ([a-z]+[^s]s) (.{8,})$/);
+  if (named) {
+    const rest = named[3].replace(/\s\(.*$/, '').replace(/,\s.*$/, '').replace(/\s(so|because|since|but|when|while)\s.*$/i, '');
+    const gm = `Added ${named[1]}, which ${named[2]} ${rest}`;
+    return rest.split(' ').length >= 2 && gm.length <= 76 ? gm : '';
+  }
+  const phrase = first.split(/:\s| \(|, /)[0].trim();
+  const words = phrase.split(' ');
+  if (words.length < 4 || words.length > 9 || phrase.length > 60 || !/^(One|A|An|The)\s/.test(phrase) || /[()]/.test(phrase) || /\b(is|are|was|were|does|do)\b/.test(phrase)) return '';
+  return `Added ${phrase.replace(/^The\s/, 'the ').replace(/^(One|A|An)\s/, (m) => m.toLowerCase())}`;
 }
 function readIntent(fs_) {
   // A new file that opens with a sentence about itself: "X uses deterministic local rules for ..."
